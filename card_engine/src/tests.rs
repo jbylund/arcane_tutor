@@ -15766,6 +15766,254 @@ fn subtype_arith_box_declines_with_no_arith_children_present() {
     assert!(!and_trace.considered.iter().any(|g| g.mechanism == "SubtypeArithBox"), "no arith-eligible child at all -- the mechanism must not even be attempted");
 }
 
+/// Shared fixture for Round 50's "anchored independence" tests (`docs/issues/local-engine-nway-
+/// followup-queue.md` item #1): 20 Elf (3 at cmc=6, 17 at cmc=1) + 30 Human (27 at cmc=6, 3 at cmc=1),
+/// 50 cards/printings total. `SubtypeArithBox`'s own exact `(Elf, cmc>=5)` joint is 3 and its own
+/// `(Human, cmc>=5)` joint is 27 -- both far tighter than the registry's own RAW marginals (Elf solo =
+/// 20, Human solo = 30, cmc solo = 30), mirroring the real `t:elf cmc>=5 usd<10` motivating case's own
+/// shape (a box hit that is itself already tighter than either raw marginal, but still price-blind).
+/// Price: the first 39 printings (by push order: all 20 Elf + the first 19 Human) are $5 (< the $10
+/// query bound), the last 11 (the final 11 Human) are $20 (>=) -- whole-corpus `usd<10` solo count is
+/// exactly 39 of 50. Eur: the first 30 printings are EUR3 (< the EUR5 query bound used by the
+/// price-triple-correlation test), the last 20 are EUR10 (>=). Rarity: every printing is `Some(1)`, so
+/// a bare `rarity>=1` leaf (used as the "unclassified residual" stand-in) matches everything -- the
+/// broadest possible leaf, guaranteed not to tighten anything on its own. Legality: the 30 Human
+/// printings are legal, the 20 Elf printings are not (used as the "other IndepClass" stand-in).
+fn anchored_independence_data() -> CardData {
+    let mut vocab = VocabInterner::new();
+    let mut cards = Vec::new();
+    for cmc in [6u8, 6, 6].into_iter().chain(std::iter::repeat_n(1u8, 17)) {
+        let mut c = stub_card(1 + cards.len() as u128, TYPE_CREATURE, &["Elf"], &mut vocab);
+        c.cmc = Some(cmc);
+        c.creature_power = Some(1);
+        c.creature_toughness = Some(1);
+        cards.push(c);
+    }
+    for cmc in std::iter::repeat_n(6u8, 27).chain(std::iter::repeat_n(1u8, 3)) {
+        let mut c = stub_card(100 + cards.len() as u128, TYPE_CREATURE, &["Human"], &mut vocab);
+        c.cmc = Some(cmc);
+        c.creature_power = Some(1);
+        c.creature_toughness = Some(1);
+        cards.push(c);
+    }
+    let n_cards = cards.len();
+    assert_eq!(n_cards, 50, "20 Elf + 30 Human");
+    let printing_counts = vec![1usize; n_cards];
+    let mut data = store_of(cards, &printing_counts, vocab);
+    data.indexes.subtypes = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
+    data.indexes.cmc = build_numeric_index(&data.cards, |c| c.cmc.map(|v| v as i16));
+    data.indexes.power = build_numeric_index(&data.cards, |c| c.creature_power.map(|v| v as i16));
+    data.indexes.toughness = build_numeric_index(&data.cards, |c| c.creature_toughness.map(|v| v as i16));
+    let ptc = build_printing_to_card(&data.offsets);
+    let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
+    data.indexes.subtype_arith = super::build_subtype_arith_tables(&data.cards, &data.printings, &ptc, &data.coll_vocab, max_ag);
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
+    // `store_of`'s within-bucket order is positional here (one printing per card, default
+    // prefer_score), matching every sibling fixture's own established assumption -- printing i lines
+    // up with card i in the same order `cards` was pushed (indices 0..20 = Elf, 20..50 = Human).
+    for (i, p) in data.printings.iter_mut().enumerate() {
+        p.price_usd = Some(if i < 39 { 500 } else { 2_000 });
+        p.price_eur = Some(if i < 30 { 300 } else { 1_000 });
+        p.card_rarity_int = Some(1);
+        p.card_legalities = if i < 20 { 0 } else { 0b01 };
+    }
+    data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
+    data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
+    data.indexes.price_eur = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_eur);
+    // Separate from `build_bit_planes`/`data.indexes.planes` above (#724's printing-space rarity
+    // planes are their own dedicated struct) -- needed for the "unclassified residual" test's bare
+    // `rarity>=1` leaf.
+    data.indexes.rarity_printing = super::build_rarity_printing_planes(&data.printings);
+    data
+}
+
+/// Round 50: direct analog of the validated real `t:elf cmc>=5 usd<10` motivating case
+/// (`local-engine-gathered-scan-card-printing-varying-depth.md`'s Round 48 review). `SubtypeArithBox`'s
+/// own exact `(Elf, cmc>=5)` joint (3) is price-blind; the one residual `usd<10` leaf's own solo rate
+/// (39/50 = 0.78) tightens it further: `round(3 * 0.78) = round(2.34) = 2`, which must win the arm's
+/// final min-fold over the box's own bound (3) AND both raw independence marginals (Elf x price,
+/// cmc x price -- both far looser, since Elf's/cmc's own MARGINAL solo counts are much broader than
+/// their ACTUAL joint with cmc/Elf respectively).
+#[test]
+fn subtype_arith_anchored_independence_tightens_the_box_alone() {
+    let data = anchored_independence_data();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+    assert_eq!(n_printings, 50);
+
+    let elf = FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Elf".to_string(), value_id: None };
+    let cmc_ge5 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Ge, rhs: NumExpr::Const(5.0) };
+    let usd_lt10 = usd_cmp(CmpOp::Lt, 10.0);
+
+    // Sanity: the marginals this fixture's own doc claims, independent of anything this round touches.
+    let elf_solo = super::compose_printing_estimate(&elf, &archived.indexes, &archived.offsets, n_printings, false);
+    assert_eq!(elf_solo.result.printing, 20, "fixture assumption: 20 Elf printings");
+    let cmc_solo = super::compose_printing_estimate(&cmc_ge5, &archived.indexes, &archived.offsets, n_printings, false);
+    assert_eq!(cmc_solo.result.printing, 30, "fixture assumption: 30 printings at cmc>=5 (3 Elf + 27 Human)");
+    let usd_solo = super::compose_printing_estimate(&usd_lt10, &archived.indexes, &archived.offsets, n_printings, false);
+    assert_eq!(usd_solo.result.printing, 39, "fixture assumption: 39 printings at usd<10");
+
+    let f = FilterExpr::And(vec![elf, cmc_ge5, usd_lt10]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+    let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+
+    let box_hit = and_trace.considered.iter().find(|g| g.mechanism == "SubtypeArithBox").expect("SubtypeArithBox must fire on (Elf, cmc>=5)");
+    assert!(box_hit.hit);
+    assert_eq!(box_hit.printing, Some(3), "the exact (Elf, cmc>=5) joint, price-blind");
+
+    let anchored = and_trace
+        .considered
+        .iter()
+        .find(|g| g.mechanism == "SubtypeArithAnchoredIndependence")
+        .expect("the anchored candidate must fire: exactly one SubtypeArithBox hit, exactly one residual Price leaf");
+    assert!(anchored.hit);
+    assert_eq!(anchored.printing, Some(2), "round(3 * 39/50) = round(2.34) = 2");
+    assert_eq!(anchored.leaves.len(), 3, "the box's own two explained leaves (Elf, cmc>=5) plus the one contributing residual (usd<10)");
+
+    assert_eq!(
+        est.result.printing, 2,
+        "the anchored candidate (2) must win the arm's final min-fold -- tighter than the box alone (3) \
+         and both raw independence marginals"
+    );
+    let domain = est.exact_domain.expect("SubtypeArithBox's own EXACT hit still populates exact_domain, unaffected by the Estimate-class anchored candidate riding alongside it");
+    assert_eq!(domain.printing, 3, "exact_domain must stay at the box's own EXACT value (3), never tightened by an Estimate-class candidate");
+}
+
+/// Round 50's own price-triple-correlation guard (mirroring the independence registry's own "2+
+/// occurrences of a class with no combining table, dropped" convention): when TWO residual leaves both
+/// classify as `IndepClass::Price` (here `usd<10` and `eur<5`, unfused -- different printing-range
+/// indices, so `fuse_and_range_children` never merges them), the anchored candidate must be declined
+/// entirely rather than guessing which one to use or multiplying both rates in.
+#[test]
+fn subtype_arith_anchored_independence_declines_with_two_price_residuals() {
+    let data = anchored_independence_data();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let elf = FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Elf".to_string(), value_id: None };
+    let cmc_ge5 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Ge, rhs: NumExpr::Const(5.0) };
+    let usd_lt10 = usd_cmp(CmpOp::Lt, 10.0);
+    let eur_lt5 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::PriceEur), op: CmpOp::Lt, rhs: NumExpr::Const(5.0) };
+
+    let f = FilterExpr::And(vec![elf, cmc_ge5, usd_lt10, eur_lt5]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+    let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+
+    let box_hit = and_trace.considered.iter().find(|g| g.mechanism == "SubtypeArithBox").expect("SubtypeArithBox must still fire on (Elf, cmc>=5)");
+    assert_eq!(box_hit.printing, Some(3), "the box's own bound is unaffected by the price-triple guard");
+    assert!(
+        !and_trace.considered.iter().any(|g| g.mechanism == "SubtypeArithAnchoredIndependence"),
+        "two residual Price-classified leaves present (usd<10, eur<5) -- the anchored candidate must decline entirely, not pick one"
+    );
+}
+
+/// A residual leaf that classifies into some OTHER `IndepClass` (here `Legality`, not `Price`) must be
+/// ignored by the anchored candidate -- no crash, no contribution to the rate, and (since no Price
+/// residual exists in this query at all) the box's own bound stands unimproved.
+#[test]
+fn subtype_arith_anchored_independence_ignores_a_non_price_residual_class() {
+    let data = anchored_independence_data();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let elf = FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Elf".to_string(), value_id: None };
+    let cmc_ge5 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Ge, rhs: NumExpr::Const(5.0) };
+    let legal = FilterExpr::Legality { shift: Some(0), expected: 0b01 };
+
+    let legal_solo = super::compose_printing_estimate(&legal, &archived.indexes, &archived.offsets, n_printings, false);
+    assert_eq!(legal_solo.result.printing, 30, "fixture assumption: 30 legal (Human) printings");
+
+    let f = FilterExpr::And(vec![elf, cmc_ge5, legal]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+    let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+
+    let box_hit = and_trace.considered.iter().find(|g| g.mechanism == "SubtypeArithBox").expect("SubtypeArithBox must fire on (Elf, cmc>=5)");
+    assert_eq!(box_hit.printing, Some(3));
+    assert!(
+        !and_trace.considered.iter().any(|g| g.mechanism == "SubtypeArithAnchoredIndependence"),
+        "no Price-classified residual present at all (Legality isn't Price) -- the anchored candidate must not fire"
+    );
+    assert_eq!(est.result.printing, 3, "no Price residual to anchor against -- the box's own bound (3) stands unimproved");
+}
+
+/// A residual leaf that classifies as `Price` (fires normally) alongside another, unrelated
+/// UNCLASSIFIED residual leaf (here a broad `rarity>=1` leaf, matched by every printing in this
+/// fixture, and not one of `indep_class_of`'s recognized shapes at all) must still let the Price rate
+/// fire -- the unclassified leaf neither blocks it nor contributes to it. The resulting estimate is
+/// folded via `.min()` only: `exact_domain_printing` must stay at the box's own EXACT value, never
+/// tightened by this Estimate-class candidate.
+#[test]
+fn subtype_arith_anchored_independence_fires_despite_an_unclassified_residual_leaf() {
+    let data = anchored_independence_data();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let elf = FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Elf".to_string(), value_id: None };
+    let cmc_ge5 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Ge, rhs: NumExpr::Const(5.0) };
+    let usd_lt10 = usd_cmp(CmpOp::Lt, 10.0);
+    let rarity_ge1 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::RarityInt), op: CmpOp::Ge, rhs: NumExpr::Const(1.0) };
+
+    let rarity_solo = super::compose_printing_estimate(&rarity_ge1, &archived.indexes, &archived.offsets, n_printings, false);
+    assert_eq!(rarity_solo.result.printing, 50, "fixture assumption: every printing has rarity>=1 -- the broadest possible leaf");
+
+    let f = FilterExpr::And(vec![elf, cmc_ge5, usd_lt10, rarity_ge1]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+    let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+
+    let anchored = and_trace
+        .considered
+        .iter()
+        .find(|g| g.mechanism == "SubtypeArithAnchoredIndependence")
+        .expect("the unclassified rarity leaf must not block the Price rate from firing");
+    assert_eq!(anchored.printing, Some(2), "same round(3 * 39/50) = 2 as the plain-Price fixture -- the unclassified leaf contributes nothing");
+
+    assert_eq!(est.result.printing, 2, "the anchored candidate still wins the arm's final min-fold");
+    let domain = est.exact_domain.expect("the box's own EXACT hit still populates exact_domain");
+    assert_eq!(domain.printing, 3, "exact_domain must NOT be tightened to the anchored candidate's own Estimate-class value (2)");
+}
+
+/// A multi-subtype-leaf query (`t:elf t:human cmc>=5 usd<10`-shaped): each subtype leaf must get its
+/// OWN anchored candidate, computed from ITS OWN `SubtypeArithBox` hit (not the other's) -- mirroring
+/// Round 48's own "each subtype leaf tried independently, folded via `.min()`" behavior
+/// (`subtype_arith_box_multiple_subtype_leaves_fold_via_min`). Elf's own box hit is 3 (anchored:
+/// `round(3 * 39/50) = 2`); Human's own box hit is 27 (anchored: `round(27 * 39/50) = round(21.06) =
+/// 21`) -- distinct numbers that prove each hit's own box lookup, not a shared/confused one, fed its
+/// own anchored candidate.
+#[test]
+fn subtype_arith_anchored_independence_multi_subtype_leaves_use_their_own_box_hit() {
+    let data = anchored_independence_data();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let elf = FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Elf".to_string(), value_id: None };
+    let human = FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Human".to_string(), value_id: None };
+    let cmc_ge5 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Ge, rhs: NumExpr::Const(5.0) };
+    let usd_lt10 = usd_cmp(CmpOp::Lt, 10.0);
+
+    let f = FilterExpr::And(vec![elf, human, cmc_ge5, usd_lt10]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+    let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+
+    let box_hits: Vec<_> = and_trace.considered.iter().filter(|g| g.mechanism == "SubtypeArithBox").collect();
+    assert_eq!(box_hits.len(), 2, "both (Elf, cmc>=5) and (Human, cmc>=5) must each get their own box hit");
+    assert!(box_hits.iter().any(|g| g.printing == Some(3)));
+    assert!(box_hits.iter().any(|g| g.printing == Some(27)));
+
+    let anchored_hits: Vec<_> = and_trace.considered.iter().filter(|g| g.mechanism == "SubtypeArithAnchoredIndependence").collect();
+    assert_eq!(anchored_hits.len(), 2, "both subtype leaves must each get their own anchored candidate, using their OWN box hit");
+    let elf_anchored = anchored_hits.iter().find(|g| g.leaves.iter().any(|l| l.contains("Elf"))).expect("Elf's own anchored candidate");
+    assert_eq!(elf_anchored.printing, Some(2), "round(3 * 39/50) = 2, from Elf's OWN box hit (3), not Human's (27)");
+    let human_anchored = anchored_hits.iter().find(|g| g.leaves.iter().any(|l| l.contains("Human"))).expect("Human's own anchored candidate");
+    assert_eq!(human_anchored.printing, Some(21), "round(27 * 39/50) = round(21.06) = 21, from Human's OWN box hit (27), not Elf's (3)");
+
+    assert_eq!(est.result.printing, 2, "the tighter of the two anchored candidates (Elf's 2, not Human's 21) must win via min-folding");
+}
+
 /// Recursively checks Round 37a's own documented invariant on every `"min_fold"` op node in a tree.
 ///
 /// PRINTING: a `min_fold` node's own printing MUST equal `min()` of its children's printings, exactly

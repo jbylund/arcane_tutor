@@ -9251,11 +9251,15 @@ fn and_trace_for(filter: &FilterExpr, indexes: &Archived<CardIndexes>, offsets: 
 /// min). `"Independence"` is Round 38/40's own formula; `"SetCollectorRange"` is Round 33's density
 /// estimate (can undershoot on a non-contiguous set, e.g. Secret Lair Drop); `"SubtypePairEstimate"` is
 /// Round 34's capped independence-product MISS branch (the HIT branch, `"SubtypePairIndexes"`, is a
-/// genuine table lookup and stays in the exact/bound class). Every other mechanism string in this arm
-/// (`"PairTotals"`, `"arith_tuple_count"`, `"PlanePopcount"`, `"PairRangeSum"`, `"ArithIdProbe"`,
-/// `"SubtypePairIndexes"`, `"SubtypeArithBox"`, `"leaves_are_disjoint"`) is exact/bound.
+/// genuine table lookup and stays in the exact/bound class). `"SubtypeArithAnchoredIndependence"`
+/// (Round 50) is `SubtypeArithBox`'s own exact joint multiplied by a single residual `Price` leaf's own
+/// solo rate -- the product of an exact count and an inexact rate is itself inexact, so this stays
+/// ESTIMATE-class even though it's anchored on an exact box hit (see that call site's own doc). Every
+/// other mechanism string in this arm (`"PairTotals"`, `"arith_tuple_count"`, `"PlanePopcount"`,
+/// `"PairRangeSum"`, `"ArithIdProbe"`, `"SubtypePairIndexes"`, `"SubtypeArithBox"`,
+/// `"leaves_are_disjoint"`) is exact/bound.
 fn is_estimate_class_mechanism(mechanism: &str) -> bool {
-    matches!(mechanism, "Independence" | "SetCollectorRange" | "SubtypePairEstimate")
+    matches!(mechanism, "Independence" | "SetCollectorRange" | "SubtypePairEstimate" | "SubtypeArithAnchoredIndependence")
 }
 
 /// No winning group at all means nothing tightened this `And` beyond the per-leaf fold: `root =
@@ -10179,6 +10183,8 @@ fn compose_printing_estimate(
                 let a_positions: Vec<usize> = (0..v.len()).filter(|&i| subtype_pair_leaf(&v[i]).is_some()).collect();
                 let arith_positions: Vec<usize> = (0..v.len()).filter(|&i| is_arith_tuple_eligible(&v[i])).collect();
                 debug_assert_eq!(arith_positions.len(), arith_children.len(), "arith_positions must correspond 1:1 with arith_children");
+                // `arith_positions.clone()` (not a move): the anchored-independence block just below
+                // reuses `arith_positions` directly, so it must survive past this call.
                 scan_two_bucket_exact(
                     v,
                     &mut covered,
@@ -10191,7 +10197,7 @@ fn compose_printing_estimate(
                     true,
                     true,
                     &a_positions,
-                    &[(arith_positions, ())],
+                    &[(arith_positions.clone(), ())],
                     |ai, b_positions| {
                         let mut ps = vec![ai];
                         ps.extend_from_slice(b_positions);
@@ -10199,6 +10205,116 @@ fn compose_printing_estimate(
                     },
                     |leaf, ()| subtype_pair_leaf(leaf).and_then(|subtype| subtype_arith_exact(subtype, &arith_children, indexes)),
                 );
+                // Round 50 ("anchored independence", `docs/issues/local-engine-nway-followup-queue.md`
+                // item #1): `SubtypeArithBox`'s own exact joint above is blind to any OTHER leaf in the
+                // query -- for `t:elf cmc>=5 usd<10`, the box's own exact answer (241) ignores `usd<10`
+                // entirely, even though the box is 1.36x looser than truth (177) precisely because
+                // price correlates with the joint it DID compute. Validated on real data during Round
+                // 48's review: `t:elf cmc>=5` alone also gives 241 (confirming price-blindness);
+                // combining 241 with `usd<10`'s own solo rate (76189/97812 ~= 0.779) gives ~188 --
+                // tighter than the box's bare 241 AND tighter than either RAW-marginal independence
+                // estimate for this query (`Independence(cmc,price)`=17056, `Independence(Elf,price)`=
+                // 1665, both looser than 241 itself), because Elf's/cmc's own MARGINAL solo counts are
+                // much broader than their ACTUAL joint -- the box's own exact joint is a far better
+                // anchor than either marginal alone.
+                //
+                // Deliberately narrow, matching Round 38's/Round 42's own "one hardcoded mechanism
+                // before a registry" discipline: anchors ONLY this mechanism's own hit (not
+                // `SubtypePairIndexes`/`ColorCmcTable`), combines ONLY a residual `IndepClass::Price`
+                // leaf (the one class with a validated real-data example), and -- mirroring the
+                // independence registry's own "2+ occurrences of a class with no combining table,
+                // dropped" convention (`by_class`'s own `_ => {}` arm further down) -- declines
+                // entirely (no product formed) when 2+ residual leaves classify as `Price` (e.g. both
+                // `usd<10` and `eur<5` present, unfused): the price-triple correlation risk already
+                // documented in `local-engine-gathered-scan-card-printing-varying-depth.md` means
+                // multiplying two price rates in is not validated as safe. Folded as an `Estimate` (see
+                // `is_estimate_class_mechanism`'s own updated doc) via `.min()` -- ignoring a residual
+                // leaf this mechanism doesn't recognize only makes the estimate a bound on a LARGER
+                // population (anchor ∩ classified residuals) than the true query (anchor ∩ ALL
+                // residuals, a subset of that), so `.min()`-folding it in is always safe, never a new
+                // correctness risk, only sometimes leaving accuracy on the table for a later round.
+                //
+                // `anchored_leaves_for`/`explained_mask` are a small, self-contained equivalent of the
+                // independence registry's own `leaves_for`/`mask_for` closures (defined further down in
+                // this same function, over `and_sources`, not reachable from here) -- verified to
+                // resolve `AndSource::Child`/`FusedRange` identically to those.
+                let anchored_leaves_for = |i: usize| -> Vec<&FilterExpr> {
+                    match and_sources[i] {
+                        AndSource::Child(c) => vec![c],
+                        AndSource::FusedRange { idx, .. } => {
+                            v.iter().filter(|c| bare_range_bounds(c, indexes).is_some_and(|(i2, ..)| std::ptr::eq(i2, idx))).collect()
+                        }
+                    }
+                };
+                let position_mask = |positions: &[usize]| -> u64 {
+                    positions.iter().fold(0u64, |m, &p| if p < 64 { m | (1u64 << p) } else { m })
+                };
+                for &ai in &a_positions {
+                    let Some(subtype) = subtype_pair_leaf(&v[ai]) else { continue };
+                    // A second, cheap lookup into the same table `scan_two_bucket_exact` already
+                    // queried above -- deliberately not threaded out of that shared helper, keeping
+                    // this mechanism fully decoupled from a helper shared with two other mechanisms
+                    // (mirrors Round 42's own precedent of a small recomputation in exchange for
+                    // decoupling).
+                    let Some((box_printing, _box_cards, _box_artworks)) = subtype_arith_exact(subtype, &arith_children, indexes) else {
+                        continue;
+                    };
+                    let explained: Vec<usize> = std::iter::once(ai).chain(arith_positions.iter().copied()).collect();
+                    let explained_mask = position_mask(&explained);
+                    // Bucket every RESIDUAL `and_source` (entirely disjoint from `explained` -- not
+                    // just non-overlapping at one leaf) by `IndepClass`, mirroring the independence
+                    // registry's own `by_class` bucketing below.
+                    let mut by_class: [Vec<usize>; INDEP_CLASS_COUNT] = Default::default();
+                    for (i, src) in and_sources.iter().enumerate() {
+                        let leaves = anchored_leaves_for(i);
+                        let positions: Vec<usize> = leaves.iter().filter_map(|c| v.iter().position(|vc| std::ptr::eq(vc, *c))).collect();
+                        if positions.is_empty() {
+                            continue;
+                        }
+                        let mask = position_mask(&positions);
+                        if mask & explained_mask != 0 {
+                            continue; // shares a leaf with this hit -- not residual
+                        }
+                        if let Some(class) = indep_class_of(*src, indexes) {
+                            by_class[class as usize].push(i);
+                        }
+                    }
+                    if let [i] = by_class[IndepClass::Price as usize].as_slice()
+                        && n_printings > 0
+                    {
+                        let rate = children_estimates[*i].result.printing as f64 / n_printings as f64;
+                        let anchored_printing = ((box_printing as f64) * rate).round() as usize;
+                        fold_candidate(
+                            &mut result,
+                            &mut exact_domain_cards,
+                            &mut exact_domain_printing,
+                            &mut exact_domain_artworks,
+                            "SubtypeArithAnchoredIndependence",
+                            Candidate::Estimate { printing: anchored_printing },
+                        );
+                        // Round 40's own convention: mark this Estimate-class candidate's own leaves
+                        // (the box's own explained positions PLUS the contributing Price leaf)
+                        // defensively covered, mirroring `SubtypePairEstimate`'s own defensive
+                        // self-mark -- prevents some future mechanism from redundantly re-answering
+                        // the identical combined subset.
+                        let price_leaves = anchored_leaves_for(*i);
+                        let mut cover_leaves: Vec<&FilterExpr> = explained.iter().map(|&p| &v[p]).collect();
+                        cover_leaves.extend(price_leaves.iter().copied());
+                        mark_covered(v, &cover_leaves, &mut covered);
+                        if let Some(t) = and_trace.as_mut() {
+                            let mut leaves: Vec<String> = explained.iter().map(|&p| format!("{:?}", v[p])).collect();
+                            leaves.extend(price_leaves.iter().map(|c| format!("{c:?}")));
+                            t.considered.push(AndTraceGroup {
+                                leaves,
+                                mechanism: "SubtypeArithAnchoredIndependence",
+                                hit: true,
+                                printing: Some(anchored_printing),
+                                card: None,
+                                artwork: None,
+                            });
+                        }
+                    }
+                }
             }
             // Round 44 tightening: a `color:X`/`id:X` leaf And'd with 1+ literal cmc bound children
             // gets an exact triple from `indexes.color_cmc` instead of the plain min-fold above -- see
