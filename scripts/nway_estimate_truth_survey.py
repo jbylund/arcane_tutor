@@ -136,6 +136,33 @@ SUBTYPE_CUBE_SHAPES: tuple[tuple[str, ...], ...] = (
     ("type", "pow", "tou", "cmc"),  # Round 36's own shape
 )
 CN_SET_SHAPES: tuple[tuple[str, ...], ...] = (("cn", "set"),)
+# "Star" 3-leaf shapes: two of a hub class's registered partners plus the hub itself, where the
+# partner PAIR itself is NOT a registered-safe pair -- so `independence_safe_pair`'s residual scan
+# (lib.rs, ~9705-9739) fires TWO separate independence candidates simultaneously (hub x partnerA,
+# hub x partnerB) and `.min()`-folds both into `result`, rather than one candidate the way every
+# existing `TRIPLES`/pair shape above exercises. Neither pairwise calibration round (38: color/
+# identity/cmc x price; 40: legality/type x {cn,released,usd}, id/pow x set) ever measured this
+# "two simultaneous independence estimates" composition -- that's what this catalog is for; see
+# docs/issues/local-engine-nway-compose-independence-search.md's "Triple-level (3+-leaf) independence
+# safety" open item.
+#
+# `Price` (the `usd` hub) has 5 registered partners (`Legality`/`ColorId`/`ColorIdentity`/`Cmc`/
+# `Type` -- families `legality`/`color`/`identity`/`cmc`/`type`): all 10 pairs of those 5 taken 2 at
+# a time. `SetCode` (the `set` hub) has 2 registered partners (`ColorIdentity`/`Pow` -- families
+# `identity`/`pow`): its only pair.
+STAR_SHAPES: tuple[tuple[str, str, str], ...] = (
+    ("legality", "color", "usd"),
+    ("legality", "identity", "usd"),
+    ("legality", "cmc", "usd"),
+    ("legality", "type", "usd"),
+    ("color", "identity", "usd"),
+    ("color", "cmc", "usd"),
+    ("color", "type", "usd"),
+    ("identity", "cmc", "usd"),
+    ("identity", "type", "usd"),
+    ("cmc", "type", "usd"),
+    ("identity", "pow", "set"),
+)
 # Predicate counts for the broad/pathological catch-all -- unrestricted families, no per-family
 # tagging (that detail isn't the point here; breadth and higher-N residual behavior is).
 BROAD_PREDICATE_COUNTS = range(1, 9)
@@ -168,6 +195,7 @@ def all_family_specs() -> list[tuple[str, tuple[str, ...]]]:
     specs += [(f"unsafe:{a}+{b}", (a, b)) for a, b in UNSAFE_PAIRS]
     specs += [(f"safe:{a}+{b}", (a, b)) for a, b in SAFE_PAIRS]
     specs += [(f"triple:{'+'.join(t)}", t) for t in TRIPLES]
+    specs += [(f"star:{'+'.join(t)}", t) for t in STAR_SHAPES]
     specs += [(f"arith:{'+'.join(t)}", t) for t in ARITH_SHAPES]
     specs += [(f"subtype_cube:{'+'.join(t)}", t) for t in SUBTYPE_CUBE_SHAPES]
     specs += [(f"cn_set:{'+'.join(t)}", t) for t in CN_SET_SHAPES]
