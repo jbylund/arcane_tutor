@@ -382,17 +382,16 @@ above):
   just a self-consistent scaled one) is worth its own round is still open. Fixing the floor itself, and
   deciding what (if anything) to do about `arith_tuple_count`, are both explicitly deferred follow-up
   rounds, not attempted in Round 46.
-- **A real, separate nondeterminism bug, found independently by two investigations converging on the
-  same root cause (Round 46).** `build_subtype_pair_tables`'s top-256-per-dimension cutoff sorts by
-  card count with `sort_unstable_by_key` and no secondary tie-break key, and Rust's default `HashMap`
-  hasher is randomly seeded per process — so a pair tied at the exact boundary value can land inside or
-  outside the table depending on which process built it. Reproduced directly: the identical release
-  wheel, re-run four times with no code change, gave `t:monk usd>0.19 c:u` a genuine table HIT on one
-  run and the MISS fallback on the other three, with different real predicted numbers each time. Not
-  fixed — flagged high priority, since it can make a future refactor's own byte-identical verification
-  look like it found a regression when it's really this. A related instance also showed up in the
-  harness's own query generation (identical seed, same corpus, two engine loads produced different
-  query sets) — not chased down, same underlying class of bug.
+- ~~A real, separate nondeterminism bug (Round 46)~~ — **closed in Round 47.** `top_n_and_rest_max`
+  (`build_subtype_pair_tables`'s shared cutoff) now extends past `n` to include every pair tied with
+  the boundary card count, rather than a plain `sort_unstable_by_key` + `truncate` with no tiebreak.
+  Independently re-verified: 5 fresh index builds of the same wheel now give byte-identical results for
+  every previously-flipping query in both affected dimensions (`set`, `colors`), and the now-stable
+  table hits are confirmed exact against ground truth. `identity` and the `SubtypeArithBox`'s own
+  (unrelated, already-correct) cutoff were unaffected. **Still open**: the harness's own query-generation
+  nondeterminism (identical seed, same corpus, two engine loads produced different query sets) — a
+  related instance of the same underlying class of bug, in `scripts/nway_estimate_truth_survey.py`
+  rather than the engine itself, not chased down in either round.
 - **Most leaf types still report `card: None, artwork: None` on their own solo estimate** — `Price`
   confirmed affected (same shape as `SetCode`, fixed for `SetCode` only in Round 45); a full census of
   which `FilterExpr` variants use the card/artwork-less `ComposeEstimate::leaf` path vs. the two that
