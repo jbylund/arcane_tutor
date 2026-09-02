@@ -6723,6 +6723,9 @@ fn bench_checked_vs_unchecked_access() {
         // Same reasoning as `subtype_pairs` immediately above: the real builder, so Round 36's
         // tightening is exercised too, not silently no-op'd.
         subtype_arith:  super::build_subtype_arith_tables(&cards, &printings, &printing_to_card, &vocab.strings, usize::from(artwork_groups.iter().copied().max().unwrap_or(0))),
+        // Not exercised by this test (a pure serialization/access-cost benchmark, unrelated to the
+        // And-arm tightenings above) -- plain default, same as `frame_data`/`artists`/etc above.
+        color_cmc:      super::ColorCmcIndexes::default(),
         sort_perms:     build_sort_permutations(&cards, &offsets),
         max_artwork_groups: artwork_groups.iter().copied().max().unwrap_or(0),
         artwork_groups,
@@ -15675,6 +15678,244 @@ fn exact_result_total_answers_subtype_arith_in_every_space() {
     assert_eq!(super::exact_result_total(&f, &archived.indexes, Mode::Printing), Some(3));
     assert_eq!(super::exact_result_total(&f, &archived.indexes, Mode::Card), Some(3));
     assert_eq!(super::exact_result_total(&f, &archived.indexes, Mode::Artwork), Some(3));
+}
+
+// ─── Round 44: (colors|identity) x cmc exact joint ────────────────────────────
+
+/// Shared fixture for the Round 44 `And`-arm tests below: 6 single-printing cards spanning three raw
+/// `colors` masks (G, G+R, R) and one colorless card, with `cmc` chosen so `cmc<=3` is neither the
+/// whole table nor empty. `colors == color_identity` here (mirrors, like the Round 34 fixture) so the
+/// same raw data backs both tables; the Ge/Le semantics test below is what actually exercises the
+/// difference between them.
+///
+/// card0: G, cmc=1. card1: G, cmc=2. card2: G+R, cmc=2. card3: G, cmc=4. card4: R, cmc=2.
+/// card5: colorless, cmc=0.
+fn color_cmc_fixture() -> (CardData, u8, u8) {
+    let mut vocab = VocabInterner::new();
+    let g = super::color_to_bit("G");
+    let r = super::color_to_bit("R");
+    let mut cards = vec![
+        stub_card(1, TYPE_CREATURE, &[], &mut vocab),
+        stub_card(2, TYPE_CREATURE, &[], &mut vocab),
+        stub_card(3, TYPE_CREATURE, &[], &mut vocab),
+        stub_card(4, TYPE_CREATURE, &[], &mut vocab),
+        stub_card(5, TYPE_CREATURE, &[], &mut vocab),
+        stub_card(6, TYPE_CREATURE, &[], &mut vocab),
+    ];
+    let masks = [g, g, g | r, g, r, 0];
+    let cmcs = [1u8, 2, 2, 4, 2, 0];
+    for (i, c) in cards.iter_mut().enumerate() {
+        c.card_colors = masks[i];
+        c.card_color_identity = masks[i];
+        c.cmc = Some(cmcs[i]);
+    }
+    let mut data = store_of(cards, &[1; 6], vocab);
+    data.indexes.cmc = build_numeric_index(&data.cards, |c| c.cmc.map(|v| v as i16));
+    let ptc = build_printing_to_card(&data.offsets);
+    let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
+    data.indexes.value_totals = build_all_value_totals(&data.cards, &data.printings, &ptc, &data.strings, &data.coll_vocab, max_ag);
+    data.indexes.color_cmc = super::build_color_cmc_tables(&data.cards, &data.printings, &ptc, max_ag);
+    (data, g, r)
+}
+
+/// Table hit fires and is correct for a 2-leaf `color:G cmc<=3`-shaped `And` -- both through
+/// `compose_printing_estimate`'s `And` arm (with a trace confirming the mechanism, not just the
+/// number) and through `exact_result_total`'s own 2-leaf shortcut, in all three `unique=` spaces.
+///
+/// True answer: `cmc<=3` is `[0, 4)`. Green (Ge-superset over G) matches raw masks G and G+R: card0
+/// (G, cmc1), card1 (G, cmc2), card2 (G+R, cmc2) all qualify; card3 (G, cmc4) does not (cmc4 >= 4).
+/// 3 cards, 3 printings (`store_of` gives one printing each), 3 artworks (all distinct illustrations).
+#[test]
+fn color_cmc_table_and_arm_hit_two_leaf() {
+    let (data, g, _r) = color_cmc_fixture();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let green = FilterExpr::ColorCmp { field: ColorField::Colors, op: CmpOp::Ge, mask: g };
+    let cmc_le3 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Le, rhs: NumExpr::Const(3.0) };
+    let f = FilterExpr::And(vec![green, cmc_le3]);
+
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+    assert_eq!(est.result.printing, 3, "green (Ge, includes G+R) with cmc<=3: card0, card1, card2");
+    let domain = est.exact_domain.expect("a table hit is exact -- exact_domain must be populated");
+    assert_eq!((domain.printing, domain.card, domain.artwork), (3, Some(3), Some(3)));
+
+    let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    let hit = and_trace.considered.iter().find(|g| g.mechanism == "ColorCmcTable").expect("ColorCmcTable must be attempted for color:G + cmc<=3");
+    assert!(hit.hit);
+    assert_eq!((hit.printing, hit.card, hit.artwork), (Some(3), Some(3), Some(3)));
+
+    for (label, mode) in [("printing", Mode::Printing), ("card", Mode::Card), ("artwork", Mode::Artwork)] {
+        assert_eq!(super::exact_result_total(&f, &archived.indexes, mode), Some(3), "exact_result_total ({label}) must agree with the And-arm hit");
+    }
+}
+
+/// `colors` resolves via `Ge`/superset semantics and `identity` via `Le`/subset semantics -- a query
+/// naming the SAME multi-bit mask (`G+R`) must sum genuinely DIFFERENT real sets on the two fields,
+/// not just happen to produce the same number.
+///
+/// `c:>=(G+R)` (Ge over mask G+R) matches only raw masks that are supersets of {G,R}: card2 (G+R
+/// exactly) -- 1 card. `id:<=(G+R)` (Le over mask G+R) matches raw masks that are SUBSETS of {G,R}:
+/// card0 (G), card1 (G), card2 (G+R), card3 (G), card4 (R), card5 (colorless) -- all 6 cards, since
+/// every one of this fixture's masks (G, G+R, R, colorless) is a subset of {G,R}. The cmc axis is not
+/// under test here (the pair table's OWN cumulation direction is): a `cmc>=0` bound is included only
+/// to give the And arm a shape it recognizes, and every fixture card satisfies it.
+#[test]
+fn color_cmc_table_ge_le_semantics_differ() {
+    let (data, g, r) = color_cmc_fixture();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+    let gr = g | r;
+
+    let cmc_ge0 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Ge, rhs: NumExpr::Const(0.0) };
+    let colors_gr = FilterExpr::And(vec![FilterExpr::ColorCmp { field: ColorField::Colors, op: CmpOp::Ge, mask: gr }, cmc_ge0.clone()]);
+    let identity_gr = FilterExpr::And(vec![FilterExpr::ColorCmp { field: ColorField::ColorIdentity, op: CmpOp::Le, mask: gr }, cmc_ge0]);
+
+    let colors_est = super::compose_printing_estimate(&colors_gr, &archived.indexes, &archived.offsets, n_printings, false);
+    assert_eq!(colors_est.result.printing, 1, "c:>=(G+R): only card2 (exactly G+R) is a superset of {{G,R}}");
+    let identity_est = super::compose_printing_estimate(&identity_gr, &archived.indexes, &archived.offsets, n_printings, false);
+    assert_eq!(identity_est.result.printing, 6, "id:<=(G+R): every card whose mask is a SUBSET of {{G,R}} -- all 6, since G, R, G+R, and colorless are all subsets");
+
+    assert_ne!(colors_est.result.printing, identity_est.result.printing, "Ge and Le must genuinely sum different real sets, not coincide");
+}
+
+/// A two-sided cmc bound (`cmc>=1 cmc<=5`, two literal `NumericCmp` children -- `cmc` is never fused
+/// by `fuse_and_range_children`) resolves correctly via `cmc_bounds_intersect`'s range intersection,
+/// matching what a single equivalent bound would give.
+///
+/// True answer for green (Ge) with `1 <= cmc <= 5`, i.e. `[1, 6)`: card0 (cmc1), card1 (cmc2), card2
+/// (G+R, cmc2), card3 (cmc4) all qualify -- 4 cards. Compared against a single one-sided bound
+/// (`cmc<=5`, same `[0, 6)` restricted from below by the fixture's own data never going negative) to
+/// confirm the two-child intersection isn't silently using only one side.
+#[test]
+fn color_cmc_table_two_sided_cmc_range_resolves_via_intersection() {
+    let (data, g, _r) = color_cmc_fixture();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let green = || FilterExpr::ColorCmp { field: ColorField::Colors, op: CmpOp::Ge, mask: g };
+    let cmc_ge1 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Ge, rhs: NumExpr::Const(1.0) };
+    let cmc_le5 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Le, rhs: NumExpr::Const(5.0) };
+    let two_sided = FilterExpr::And(vec![green(), cmc_ge1, cmc_le5]);
+
+    let est = super::compose_printing_estimate(&two_sided, &archived.indexes, &archived.offsets, n_printings, true);
+    assert_eq!(est.result.printing, 4, "green with 1<=cmc<=5: card0, card1, card2, card3 (card5 is colorless, excluded by green regardless of cmc=0)");
+    let and_trace = *est.and_trace.expect("want_trace");
+    let hit = and_trace.considered.iter().find(|g| g.mechanism == "ColorCmcTable").expect("ColorCmcTable must fire for the fused two-child cmc range too");
+    assert_eq!(hit.leaves.len(), 3, "must list the color leaf AND both literal cmc children, not just one side");
+    assert_eq!(hit.printing, Some(4));
+}
+
+/// `exact_domain_*`/`result` are unaffected (no panic, no spurious tightening) when the residual has
+/// no color/identity leaf at all, or no cmc leaf at all -- the mechanism's own shape gate
+/// (`!color_cmc_dim_positions.is_empty() && !cmc_leaf_positions.is_empty()`) must decline cleanly, not
+/// just happen to not fire.
+#[test]
+fn color_cmc_table_no_op_without_both_leaves_present() {
+    let (data, g, _r) = color_cmc_fixture();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let green = FilterExpr::ColorCmp { field: ColorField::Colors, op: CmpOp::Ge, mask: g };
+    let cmc_le3 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Le, rhs: NumExpr::Const(3.0) };
+    let power_ge0 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Power), op: CmpOp::Ge, rhs: NumExpr::Const(0.0) };
+
+    // No cmc leaf at all.
+    let color_only = FilterExpr::And(vec![green.clone(), power_ge0.clone()]);
+    let est1 = super::compose_printing_estimate(&color_only, &archived.indexes, &archived.offsets, n_printings, true);
+    let trace1 = *est1.and_trace.expect("want_trace");
+    assert!(!trace1.considered.iter().any(|g| g.mechanism == "ColorCmcTable"), "no cmc leaf present -- must never be attempted");
+
+    // No color/identity leaf at all.
+    let cmc_only = FilterExpr::And(vec![cmc_le3, power_ge0]);
+    let est2 = super::compose_printing_estimate(&cmc_only, &archived.indexes, &archived.offsets, n_printings, true);
+    let trace2 = *est2.and_trace.expect("want_trace");
+    assert!(!trace2.considered.iter().any(|g| g.mechanism == "ColorCmcTable"), "no color/identity leaf present -- must never be attempted");
+}
+
+/// End-to-end regression for the Round 43 star shape (`color:G cmc<=3 usd<=X`): with
+/// `indexes.color_cmc` built, the new exact mechanism fires ALONGSIDE the pre-existing Round 40
+/// independence candidates (`ColorId` x `Price`, `Cmc` x `Price` both still fire -- this mechanism
+/// deliberately does NOT `mark_covered` its own two leaves, unlike every other exact mechanism in this
+/// arm; see the And arm's own Round 44 doc for the measured reason why not) and WINS the `.min()`
+/// fold with its own tighter, exact number -- proving the "no placement rule needed, `.min()` already
+/// composes across an exact mechanism and independence estimates" claim directly. Verified against the
+/// SAME fixture with `indexes.color_cmc` left at its default (empty) value, which reproduces the
+/// pre-fix shape exactly -- both `Independence` candidates fire alone and the folded result is the
+/// worse, degraded number the round's own investigation found.
+///
+/// 100 single-printing cards, prices 1..=100 cents (`usd<=0.50` selects the 50 cheapest). Green
+/// (mask G) is cards 0..=39 (40 cards); `cmc<=3` (`cmc=1`) is cards 0..=9 and 40..=69 (40 cards); the
+/// TRUE joint (green AND cmc<=3) is cards 0..=9 only -- 10 cards, deliberately far tighter than either
+/// marginal, so the two independence estimates (`round(40*50/100) == 20` each) are both provably worse
+/// than the exact joint (10).
+#[test]
+fn color_cmc_table_star_shape_wins_the_min_against_independence() {
+    let build = |install_color_cmc: bool| {
+        let mut vocab = VocabInterner::new();
+        let mut cards: Vec<OracleCard> = (0..100).map(|i| stub_card(1 + i as u128, TYPE_CREATURE, &[], &mut vocab)).collect();
+        let green = super::color_to_bit("G");
+        for (i, c) in cards.iter_mut().enumerate() {
+            if i < 40 {
+                c.card_colors = green;
+            }
+            c.cmc = Some(if i < 10 || (40..70).contains(&i) { 1 } else { 10 });
+        }
+        let mut data = store_of(cards, &[1; 100], vocab);
+        for (i, p) in data.printings.iter_mut().enumerate() {
+            p.price_usd = Some(i as u32 + 1);
+        }
+        data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
+        data.indexes.cmc = build_numeric_index(&data.cards, |c| c.cmc.map(|v| v as i16));
+        let ptc = build_printing_to_card(&data.offsets);
+        data.indexes.value_totals =
+            build_all_value_totals(&data.cards, &data.printings, &ptc, &data.strings, &data.coll_vocab, usize::from(data.indexes.max_artwork_groups));
+        data.indexes.arith_tuple = build_arith_tuple_index(&data.cards);
+        if install_color_cmc {
+            let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
+            data.indexes.color_cmc = super::build_color_cmc_tables(&data.cards, &data.printings, &ptc, max_ag);
+        }
+        (data, green)
+    };
+
+    let query = |data: &CardData, green: u8| {
+        let bytes = rkyv::to_bytes::<Error>(data).expect("serialize");
+        let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+        let n_printings = archived.printings.len();
+        let green_leaf = FilterExpr::ColorCmp { field: ColorField::Colors, op: CmpOp::Ge, mask: green };
+        let cmc_le3 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Le, rhs: NumExpr::Const(3.0) };
+        let cheap = usd_cmp(CmpOp::Le, 0.50);
+        let f = FilterExpr::And(vec![green_leaf, cmc_le3, cheap]);
+        let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+        (est.result.printing, est.exact_domain.and_then(|d| d.card), *est.and_trace.expect("want_trace"))
+    };
+
+    // Before: no color_cmc table. Reproduces the Round 43 bug shape exactly: both `ColorId`x`Price`
+    // and `Cmc`x`Price` independence candidates fire and fold via min to 20, well above the true 10.
+    let (before_data, green) = build(false);
+    let (before_printing, before_domain_card, before_trace) = query(&before_data, green);
+    let independence_hits: Vec<_> = before_trace.considered.iter().filter(|g| g.mechanism == "Independence").collect();
+    assert_eq!(independence_hits.len(), 2, "both ColorId x Price and Cmc x Price must fire without the new table");
+    assert!(independence_hits.iter().all(|g| g.printing == Some(20)), "round(40 * 50 / 100) == 20 for both");
+    assert_eq!(before_printing, 20, "pre-fix: the degraded independence fold, well above the true 10");
+    assert!(before_domain_card.is_none(), "independence is an ESTIMATE -- it must never populate exact_domain");
+
+    // After: with the new table built, the exact (color, cmc) joint fires ALONGSIDE both
+    // independence candidates (neither leaf is covered by this mechanism), and wins the `.min()`.
+    let (after_data, green) = build(true);
+    let (after_printing, after_domain_card, after_trace) = query(&after_data, green);
+    let after_independence: Vec<_> = after_trace.considered.iter().filter(|g| g.mechanism == "Independence").collect();
+    assert_eq!(after_independence.len(), 2, "both independence candidates must STILL fire -- this mechanism must not starve them by covering their leaves");
+    assert!(after_independence.iter().all(|g| g.printing == Some(20)), "the independence candidates' own numbers are unchanged by this mechanism's presence");
+    let hit = after_trace.considered.iter().find(|g| g.mechanism == "ColorCmcTable").expect("ColorCmcTable must fire");
+    assert_eq!(hit.printing, Some(10), "the true joint: green AND cmc<=3 is exactly cards 0..=9");
+    assert_eq!(after_printing, 10, "post-fix: the exact joint wins the min() against both independence candidates (20 each)");
+    assert_eq!(after_domain_card, Some(10), "an exact hit must populate exact_domain, unlike independence");
+    assert!(after_printing < before_printing, "the fix must strictly improve on the Round 43 degraded shape");
 }
 
 // ─── Round 38: color/identity/cmc x price independence tightening ──────────────

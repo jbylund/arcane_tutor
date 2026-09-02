@@ -1976,6 +1976,252 @@ fn subtype_pair_exact<'i>(a: &FilterExpr, b: &FilterExpr, indexes: &'i Archived<
     try_pair(a, b, indexes).or_else(|| try_pair(b, a, indexes))
 }
 
+// ─── Round 44: (colors|identity) x cmc exact joint ────────────────────────────
+// docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md, Round 43/44. Round 43 found
+// that `color:G cmc<=3 usd<=10`-shaped queries fire TWO independence candidates at once (`ColorId` x
+// `Price` and `Cmc` x `Price`, both individually registered safe) whose `.min()`-fold is measurably
+// worse than either component's own baseline -- a composition neither pair's own 2-leaf calibration
+// ever measured. `ColorId`/`ColorIdentity` x `Cmc` itself is NOT in the independence registry (color
+// count correlates with cmc in a real, mostly-monotonic way -- more colored mana symbols needed as a
+// card asks for more colors, plus WotC's own color-pie curve conventions), so the fix is not to
+// decline the star combination but to give `color`/`identity` x `cmc` a real EXACT table: once it's a
+// genuine 2-leaf exact joint, it `.min()`-folds alongside the two independence candidates (Round 42's
+// own finding: any true sub-conjunction is a valid bound, `.min()`-folding across mechanisms is
+// always safe regardless of order) and, being both exact and tight, wins the fold in the cases that
+// were bad.
+//
+// Deliberately RAW per-exact-mask buckets (<=32 rows on the real corpus, one per real `colors`/
+// `color_identity` byte), NOT `ColorSubtypeTable`'s Ge/Le lattice pre-summing (baking "sum over every
+// matching mask" into each of 32 entries at BUILD time) -- that pattern is what surfaced
+// `ColorSubtypeTable`'s own real Ge-vs-Le bug (see that struct's doc), and at this table's size (32
+// masks x ~17 cmc values, 544 cells) there is no size-driven reason to risk it again. Each mask's own
+// CMC axis IS prefix-summed, mirroring `RangeCardCounts` (`distinct_cards`, its `below`/`at_or_above`
+// shape) -- that axis has no directional ambiguity (below/at-or-above over an ordered numeric
+// dimension is unambiguous, unlike Ge/Le over a mask lattice), so reusing that idiom is safe. Query
+// time resolves ANY real comparison op directly against the raw masks via `color_cmp_matches` (the
+// SAME matcher `ColorCmp`'s own per-card evaluator uses), which is actually MORE general than
+// `ColorSubtypeTable`/`subtype_pair_dim`'s restriction to one hard-coded default op per field (`Ge`
+// for colors, `Le` for identity) -- raw storage needs no build-time op scoping at all.
+//
+// Two separate tables (`colors`/`identity`), not one shared table, even though the two fields'
+// underlying DATA is highly redundant (94.1% of distinct real cards have `colors == identity`) --
+// `colors` and `color_identity` have a real, previously-documented asymmetry in which raw masks a
+// given query mask matches (`colors` defaults to `Ge`/superset, `color_identity` to `Le`/subset --
+// see `ColorSubtypeTable`'s own doc), and both `ColorId` x `Price` and `ColorIdentity` x `Price` are
+// independently registered and independently degraded by the star shape, so both need their own exact
+// answer. Built from one shared per-card scan (colors, identity, and cmc are all in hand together).
+
+/// One mask's own cmc axis: `below[i]`/`at_or_above[i]` are SpaceTotals summed over `values[0..i)` /
+/// `values[i..]` respectively -- same shape as `RangeCardCounts`'s two arrays, but a plain additive
+/// running sum rather than a DISTINCT-card count: a card has exactly one cmc value (unlike a card's
+/// several printings, which can each carry a different price/date), so summing disjoint per-value
+/// totals across a range can never double-count, and (unlike `RangeCardCounts`) a general interior
+/// range can be answered exactly too, not just a single value or a fully one-sided range -- see
+/// `range_sum`'s own doc.
+#[derive(Archive, Serialize, Deserialize, Default)]
+struct MaskCmcCounts {
+    below: Vec<SpaceTotals>,
+    at_or_above: Vec<SpaceTotals>,
+}
+
+impl ArchivedMaskCmcCounts {
+    /// Exact `(printings, cards, artworks)` summed over every distinct cmc value in `values` that
+    /// falls in the half-open `[lo, hi)` range. Mirrors `ArchivedRangeCardCounts::lookup`'s own
+    /// branching (same `partition_point` positions, same `below`/`at_or_above` case split), but
+    /// generalizes its one declined shape: `RangeCardCounts` cannot answer a multi-value INTERIOR
+    /// range because distinct-card totals cannot be subtracted (a card with printings on both sides
+    /// of the cut is in both halves) -- here the totals ARE additive (see this struct's own doc), so
+    /// `at_or_above[i] - at_or_above[j]` (a sum over `[i, j)` of the value axis) answers that case
+    /// exactly instead of declining.
+    fn range_sum(&self, values: &Archived<Vec<u16>>, lo: u32, hi: u32) -> (usize, usize, usize) {
+        if values.is_empty() || hi <= lo {
+            return (0, 0, 0);
+        }
+        let pos = |v: u32| values.partition_point(|x| u32::from(u16::from(*x)) < v);
+        let (i, j) = (pos(lo), pos(hi));
+        if j <= i {
+            return (0, 0, 0); // no indexed cmc value falls in the range
+        }
+        let as_usize = |t: &ArchivedSpaceTotals| (u32::from(t.printings) as usize, u32::from(t.cards) as usize, u32::from(t.artworks) as usize);
+        let first = u32::from(u16::from(values[0]));
+        let last_covers_end = j == values.len();
+        match (lo <= first, last_covers_end) {
+            (true, true) => as_usize(&self.at_or_above[0]), // whole table
+            (true, false) => as_usize(&self.below[j]),      // `<` / `<=`
+            (false, true) => as_usize(&self.at_or_above[i]), // `>` / `>=`
+            (false, false) => {
+                let (p1, c1, a1) = as_usize(&self.at_or_above[i]);
+                let (p2, c2, a2) = as_usize(&self.at_or_above[j]);
+                (p1 - p2, c1 - c2, a1 - a2) // interior [i, j): additive, so subtraction is exact
+            }
+        }
+    }
+}
+
+/// `colors`/`color_identity` x cmc -- see this section's own doc for why RAW per-mask (not lattice-
+/// summed) and why the shared `values` axis is stored once per table rather than once per mask (every
+/// mask's `MaskCmcCounts` is parallel to the SAME `values`, so a query only needs to compute `pos(lo)`/
+/// `pos(hi)` once conceptually per table, not once per mask -- though `range_sum` above takes `values`
+/// as a parameter rather than this struct hoisting the position lookup itself, since the caller sums
+/// over several masks per query and only `values` -- not the positions -- is actually mask-invariant
+/// enough to hoist without complicating this struct's own shape).
+#[derive(Archive, Serialize, Deserialize, Default)]
+struct ColorCmcTable {
+    /// Every distinct real cmc value in the table, ascending. Parallel to each mask's own
+    /// `below`/`at_or_above` in `by_mask`.
+    values: Vec<u16>,
+    /// Keyed by the raw `colors`/`color_identity` byte -- <=32 real entries on the production corpus
+    /// (all of WUBRG's 2^5 combinations appear), so a full scan of `by_mask` per query (worst case ~32
+    /// entries x a `log2(17)`-ish binary search each) is cheap, and cheaper than `arith_tuple_count`'s
+    /// own already-shipped ~564-key linear scan.
+    by_mask: HashMap<u8, MaskCmcCounts>,
+}
+
+/// `ColorCmcTable`'s sibling pair -- one field on `CardIndexes` for the same call-site-brevity reason
+/// `SubtypePairIndexes` is (`indexes.color_cmc.colors`/`.identity`).
+#[derive(Archive, Serialize, Deserialize, Default)]
+struct ColorCmcIndexes {
+    colors: ColorCmcTable,
+    identity: ColorCmcTable,
+}
+
+/// Builds `ColorCmcIndexes` from one shared per-card scan: `build_value_totals` reused exactly as
+/// `build_subtype_pair_tables`/`build_subtype_arith_tables` already reuse it (the SAME card/printing/
+/// artwork dedup `ValueTotals`/`PairTotals`/`SubtypePairIndexes`/`SubtypeArithIndexes` all share), not a
+/// hand-rolled accumulator. `card.cmc` is verified never null on a real card (see `SubtypeArithBox`'s
+/// own doc) -- a card with a null `cmc` (a test fixture, typically) simply contributes no key, which is
+/// an exact absence, not a wrong answer, for any range that doesn't happen to need it.
+fn build_color_cmc_tables(cards: &[OracleCard], printings: &[Printing], printing_to_card: &[u32], max_artwork_groups: usize) -> ColorCmcIndexes {
+    let colors_raw: HashMap<(u8, u16), SpaceTotals> = build_value_totals(cards, printings, printing_to_card, max_artwork_groups, |card, _p| {
+        card.cmc.map(|cmc| (card.card_colors, u16::from(cmc))).into_iter().collect()
+    });
+    let identity_raw: HashMap<(u8, u16), SpaceTotals> = build_value_totals(cards, printings, printing_to_card, max_artwork_groups, |card, _p| {
+        card.cmc.map(|cmc| (card.card_color_identity, u16::from(cmc))).into_iter().collect()
+    });
+    ColorCmcIndexes { colors: build_one_color_cmc_table(colors_raw), identity: build_one_color_cmc_table(identity_raw) }
+}
+
+fn build_one_color_cmc_table(raw: HashMap<(u8, u16), SpaceTotals>) -> ColorCmcTable {
+    let mut values: Vec<u16> = raw.keys().map(|(_, cmc)| *cmc).collect();
+    values.sort_unstable();
+    values.dedup();
+    let mut by_raw_mask: HashMap<u8, HashMap<u16, SpaceTotals>> = HashMap::new();
+    for ((mask, cmc), totals) in raw {
+        by_raw_mask.entry(mask).or_default().insert(cmc, totals);
+    }
+    let by_mask: HashMap<u8, MaskCmcCounts> = by_raw_mask.into_iter().map(|(mask, cells)| (mask, build_mask_cmc_counts(&values, &cells))).collect();
+    ColorCmcTable { values, by_mask }
+}
+
+/// One mask's `below`/`at_or_above`, built the same two-pass way `build_range_card_counts` builds its
+/// own forward/backward pair -- forward for `below[i]` (running sum strictly before `values[i]`),
+/// backward for `at_or_above[i]` (running sum from `values[i]` to the end).
+fn build_mask_cmc_counts(values: &[u16], cells: &HashMap<u16, SpaceTotals>) -> MaskCmcCounts {
+    let add = |a: SpaceTotals, b: SpaceTotals| SpaceTotals { printings: a.printings + b.printings, cards: a.cards + b.cards, artworks: a.artworks + b.artworks };
+    let mut below = Vec::with_capacity(values.len());
+    let mut running = SpaceTotals::default();
+    for v in values {
+        below.push(running);
+        if let Some(t) = cells.get(v) {
+            running = add(running, *t);
+        }
+    }
+    let mut at_or_above = vec![SpaceTotals::default(); values.len()];
+    let mut running = SpaceTotals::default();
+    for i in (0..values.len()).rev() {
+        if let Some(t) = cells.get(&values[i]) {
+            running = add(running, *t);
+        }
+        at_or_above[i] = running;
+    }
+    MaskCmcCounts { below, at_or_above }
+}
+
+/// Whichever of `color:X`/`id:X` a leaf is, plus its own comparison op and mask -- ANY op, unlike
+/// `subtype_pair_dim`'s Ge/Le-only scope (see this section's own doc for why the raw-mask design
+/// doesn't need that restriction). `None` for anything else (including `ColorField::ProducedMana`,
+/// which this table doesn't cover -- `produces:` has no documented correlation with cmc the way
+/// colors/identity do, so extending this table to it is out of this round's scope).
+fn color_cmc_dim(f: &FilterExpr) -> Option<(ColorField, CmpOp, u8)> {
+    match f {
+        FilterExpr::ColorCmp { field: field @ (ColorField::Colors | ColorField::ColorIdentity), op, mask } => Some((*field, *op, *mask)),
+        _ => None,
+    }
+}
+
+/// The table `field` reads, or `None` for `ProducedMana` (see `color_cmc_dim`'s own doc).
+fn color_cmc_table_for(field: ColorField, indexes: &Archived<CardIndexes>) -> Option<&Archived<ColorCmcTable>> {
+    match field {
+        ColorField::Colors => Some(&indexes.color_cmc.colors),
+        ColorField::ColorIdentity => Some(&indexes.color_cmc.identity),
+        ColorField::ProducedMana => None,
+    }
+}
+
+/// The exact `(printings, cards, artworks)` triple for one color/identity leaf `(op, query_mask)`
+/// And'd with one resolved `[cmc_lo, cmc_hi)` range, summing every one of the <=32 real stored masks
+/// `table` holds that `color_cmp_matches` (the SAME matcher `ColorCmp`'s own per-card evaluator uses)
+/// says `(op, query_mask)` admits. `None` only when `table` isn't built for this store at all (`by_mask`
+/// empty -- a test fixture, typically, the same convention `arith_tuple_count`'s own `n_cards == 0`
+/// check uses for the identical reason): a store with real data always has 1+ real mask, so an empty
+/// `by_mask` cannot be a genuine "zero real cards" answer, and treating it as one is exactly the bug
+/// this distinction exists to prevent. Once `table` IS built, every real mask contributes its own real
+/// (possibly zero) count, so there is no OTHER miss case -- callers wrap a `Some` in `Some` again purely
+/// for a uniform "hit" trace shape, the same convention `Independence`'s own trace group already uses
+/// for a formula that always produces a value once its shape gate matches.
+fn color_cmc_exact(op: CmpOp, query_mask: u8, cmc_lo: u32, cmc_hi: u32, table: &Archived<ColorCmcTable>) -> Option<(usize, usize, usize)> {
+    if table.by_mask.is_empty() {
+        return None;
+    }
+    let mut total = (0usize, 0usize, 0usize);
+    for (mask, counts) in table.by_mask.iter() {
+        if color_cmp_matches(op, query_mask, *mask) {
+            let (p, c, a) = counts.range_sum(&table.values, cmc_lo, cmc_hi);
+            total = (total.0 + p, total.1 + c, total.2 + a);
+        }
+    }
+    Some(total)
+}
+
+/// One literal `NumericCmp` child on `NumField::Cmc` resolved into the half-open `[lo, hi)` integer
+/// range it admits, via the SAME op-to-bound conversion `bare_range_bounds` itself uses
+/// (`int_range_bounds`) -- shared so this table's own bound resolution can never disagree with the
+/// rest of the engine's cmc-bound handling. `None` for anything not a bare `Cmc op Const` comparison,
+/// or for `Ne` (which `int_range_bounds` itself declines, the same "decline rather than guess"
+/// treatment `bare_range_bounds`/`bare_rarity_bounds` already give it) -- the caller's fold applies
+/// unchanged. A provably-empty window (`int_range_bounds`'s inner `None`) resolves to `(0, 0)`, a
+/// zero-width range that `range_sum` reads as a genuine exact zero, not a decline.
+fn cmc_leaf_bounds(filter: &FilterExpr) -> Option<(u32, u32)> {
+    let (op, value) = match filter {
+        FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op, rhs: NumExpr::Const(v) } => (*op, *v),
+        FilterExpr::NumericCmp { lhs: NumExpr::Const(v), op, rhs: NumExpr::Field(NumField::Cmc) } => (flip_op(*op), *v),
+        _ => return None,
+    };
+    match int_range_bounds(op, value)? {
+        None => Some((0, 0)),
+        Some((lo, hi)) => Some((lo, hi)),
+    }
+}
+
+/// Intersect 1+ resolved cmc `[lo, hi)` windows into the ONE range they jointly admit (tighter lo,
+/// tighter hi) -- unlike `SubtypePairIndexes`' dim/subtype leaves (which COMPETE: 2+ uncovered ones
+/// with no combining table means "decline entirely"), every literal cmc child on the same field always
+/// COMBINES into one range (`cmc>=1 cmc<=5` is two children, one range), since `cmc` is never fused by
+/// `fuse_and_range_children` (only price/collector-number/date/year are) and there is no "which cmc
+/// leaf" ambiguity the way subtype leaves have "which subtype leaf" -- ALL of them narrow the same
+/// axis. `None` only when `children` is empty or any one of them fails to resolve at all (e.g. a `Ne`
+/// child) -- the same "decline rather than guess" precedent used throughout this arm; a resolved-but-
+/// empty intersection (`hi <= lo` after narrowing) is returned as-is, a genuine exact zero rather than
+/// a decline.
+fn cmc_bounds_intersect(children: &[&FilterExpr]) -> Option<(u32, u32)> {
+    let mut acc: Option<(u32, u32)> = None;
+    for &c in children {
+        let (lo, hi) = cmc_leaf_bounds(c)?;
+        acc = Some(acc.map_or((lo, hi), |(alo, ahi)| (alo.max(lo), ahi.min(hi))));
+    }
+    acc
+}
+
 // ─── Round 36: subtype x (cmc, power, toughness) dense prefix-sum cube ────────
 // docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md. `t:X` And'd with a
 // cmc/power/toughness range bound has the SAME gap Rounds 33/34 closed for set/cn and set/c/id/
@@ -4498,6 +4744,9 @@ struct CardIndexes {
     /// Round 36: the top `SUBTYPE_ARITH_TOP_N` subtypes' own dense (cmc, power, toughness) prefix-sum
     /// cube, for `compose_printing_estimate`'s `And` arm. See `SubtypeArithIndexes`'s own doc.
     subtype_arith:  SubtypeArithIndexes,
+    /// Round 44: `colors`/`color_identity` x cmc exact joint, for `compose_printing_estimate`'s `And`
+    /// arm and `exact_result_total`. See `ColorCmcTable`'s own doc.
+    color_cmc:      ColorCmcIndexes,
     sort_perms:     SortPermutations,          // card space (streamed selection)
     artwork_groups: Vec<u16>,                  // card space: distinct illustration groups
     // card space, n_cards+1 entries: prefix sum of artwork_groups, so card c's artworks are the
@@ -9616,6 +9865,75 @@ fn compose_printing_estimate(
                     }
                 }
             }
+            // Round 44 tightening: a `color:X`/`id:X` leaf And'd with 1+ literal cmc bound children
+            // gets an exact triple from `indexes.color_cmc` instead of the plain min-fold above -- see
+            // that table's own doc (right above `subtype_pair_exact`) for the full motivation. Unlike
+            // the `SubtypePairIndexes` scan above (dim leaves paired against COMPETING subtype leaves),
+            // every cmc child present combines into exactly ONE range (`cmc_bounds_intersect`), so this
+            // is a Cartesian product over (dim leaf) x (the one resolved cmc range), mirroring Round
+            // 42's own (dim, subtype) pair scan shape one level simpler. No covered-filtering on
+            // INPUT, for the same reason Round 42's own exact-hit scan skips it: a real table hit's
+            // exact count is a valid upper bound on the whole `And` regardless of whether either leaf
+            // is ALSO part of some other mechanism's joint, and `exact_domain_*`'s
+            // `.map_or(x, |d| d.min(x))` chaining already composes correctly across independently-
+            // exact mechanisms (Round 42's own finding).
+            //
+            // Deliberately does NOT call `mark_covered` on a hit, unlike every other exact mechanism
+            // in this arm -- measured directly (isolated-wheel A/B, `nway_estimate_truth_survey.py`'s
+            // `star:color+cmc+usd`/`star:identity+cmc+usd` shapes, n=300/seed=0) and found to matter:
+            // this table only bounds the (color, cmc) PAIR, ignoring price entirely, and on the star
+            // shape's own query population that 2-leaf bound is routinely LOOSER than what the Round
+            // 40 independence registry's `ColorId`x`Price`/`Cmc`x`Price` candidates would have given
+            // (those DO incorporate price, if only via the independence assumption). Marking the color
+            // and cmc leaf positions covered starves BOTH independence candidates at once (neither has
+            // a partner left to pair against `Price` once both are gone), so the final `min()` was
+            // left holding only this mechanism's own looser number -- median `abs_log_ratio` measured
+            // WORSE after adding `mark_covered` here (0.80->1.08 for `star:color+cmc+usd`, 0.71->1.12
+            // for `star:identity+cmc+usd`) than before this table existed at all. Leaving the leaves
+            // uncovered instead lets every candidate -- this exact pair AND both independence
+            // candidates -- compute independently and `.min()`-fold together, exactly the composition
+            // this round's own design doc describes; measured to fix the regression (see this round's
+            // report for the full before/after numbers). This is safe: unlike two ESTIMATE-class
+            // mechanisms compounding on the identical two leaves (Round 40's own concern),
+            // Independence's two candidates here each share only ONE leaf with this mechanism's pair
+            // (never both), so nothing is being double-counted -- they are genuinely different
+            // sub-conjunctions, not competing answers to the same question.
+            //
+            // `color_cmc_exact` still has ONE miss case (the table isn't built for this store at all --
+            // see its own doc), which just leaves `result`/`exact_domain_*` unimproved, the same
+            // convention `SubtypeArithBox`'s own miss case uses; there is no ESTIMATE-class fallback
+            // beyond that, since every real (mask, cmc) combination the table DOES cover is
+            // representable exactly, including a genuine zero.
+            let color_cmc_dim_positions: Vec<usize> = (0..v.len()).filter(|&i| color_cmc_dim(&v[i]).is_some()).collect();
+            let cmc_leaf_positions: Vec<usize> = (0..v.len()).filter(|&i| numeric_cmp_field(&v[i]) == Some(NumField::Cmc)).collect();
+            if !color_cmc_dim_positions.is_empty()
+                && !cmc_leaf_positions.is_empty()
+                && let Some((cmc_lo, cmc_hi)) = cmc_bounds_intersect(&cmc_leaf_positions.iter().map(|&i| &v[i]).collect::<Vec<_>>())
+            {
+                let cmc_leaves: Vec<&FilterExpr> = cmc_leaf_positions.iter().map(|&i| &v[i]).collect();
+                for &di in &color_cmc_dim_positions {
+                    let (field, op, mask) = color_cmc_dim(&v[di]).expect("color_cmc_dim_positions only holds color_cmc_dim leaves");
+                    let hit = color_cmc_table_for(field, indexes).and_then(|table| color_cmc_exact(op, mask, cmc_lo, cmc_hi, table));
+                    if let Some((printings, cards, artworks)) = hit {
+                        result = result.min(printings);
+                        exact_domain_cards = Some(exact_domain_cards.map_or(cards, |d| d.min(cards)));
+                        exact_domain_printing = Some(exact_domain_printing.map_or(printings, |d| d.min(printings)));
+                        exact_domain_artworks = Some(exact_domain_artworks.map_or(artworks, |d| d.min(artworks)));
+                    }
+                    if let Some(t) = and_trace.as_mut() {
+                        let mut leaves: Vec<String> = vec![format!("{:?}", &v[di])];
+                        leaves.extend(cmc_leaves.iter().map(|c| format!("{c:?}")));
+                        t.considered.push(AndTraceGroup {
+                            leaves,
+                            mechanism: "ColorCmcTable",
+                            hit: hit.is_some(),
+                            printing: hit.map(|(p, _, _)| p),
+                            card: hit.map(|(_, c, _)| c),
+                            artwork: hit.map(|(_, _, a)| a),
+                        });
+                    }
+                }
+            }
             // Round 40 tightening: generalizes Round 38's one hard-coded shape (`color:X`/`id:X`/
             // `cmc<op>N` paired with exactly one price comparison) into a small REGISTRY of confirmed
             // leaf-class pairs (`IndepClass`/`independence_safe_pair`, re-validated directly against
@@ -10651,6 +10969,26 @@ fn exact_result_total(composed: &FilterExpr, indexes: &Archived<CardIndexes>, mo
             && let Some(subtype_child) = children.iter().find(|c| !is_arith_tuple_eligible(c))
             && let Some(subtype) = subtype_pair_leaf(subtype_child)
             && let Some((printings, cards, artworks)) = subtype_arith_exact(subtype, &arith_children, indexes)
+        {
+            return Some(match mode {
+                Mode::Printing => printings,
+                Mode::Card => cards,
+                Mode::Artwork => artworks,
+            });
+        }
+    }
+    // Round 44: `color:X`/`id:X` And'd with exactly one literal cmc bound (nothing else) -- the
+    // strict 2-leaf shape, same as the `PairTotals`/`SubtypePairIndexes` arms above. A two-cmc-child
+    // shape (`color:G cmc>=1 cmc<=5`, a 3-child `And`) only reaches `indexes.color_cmc` via
+    // `compose_printing_estimate`'s own generalized `And`-arm scan, not this shortcut -- same
+    // division of labor `subtype_arith_exact`'s arm just above draws for its own multi-bound shape.
+    if let FilterExpr::And(children) = composed
+        && let [a, b] = children.as_slice()
+    {
+        let dim_cmc = color_cmc_dim(a).zip(cmc_leaf_bounds(b)).or_else(|| color_cmc_dim(b).zip(cmc_leaf_bounds(a)));
+        if let Some(((field, op, mask), (cmc_lo, cmc_hi))) = dim_cmc
+            && let Some(table) = color_cmc_table_for(field, indexes)
+            && let Some((printings, cards, artworks)) = color_cmc_exact(op, mask, cmc_lo, cmc_hi, table)
         {
             return Some(match mode {
                 Mode::Printing => printings,
@@ -16743,6 +17081,14 @@ impl QueryEngine {
             &coll_vocab,
             usize::from(artwork_group_counts.iter().copied().max().unwrap_or(0)),
         );
+        // Same reasoning as `subtype_pairs`/`subtype_arith` above: reads `printing_to_card`, which the
+        // struct literal below moves.
+        let color_cmc = build_color_cmc_tables(
+            &cards,
+            &printings,
+            &printing_to_card,
+            usize::from(artwork_group_counts.iter().copied().max().unwrap_or(0)),
+        );
         let indexes = CardIndexes {
             name_trigram:   build_trigram_index(&cards, |c| c.card_name_folded.as_str()),
             oracle_trigram: build_oracle_text_index(&cards, &strings),
@@ -16810,6 +17156,7 @@ impl QueryEngine {
             pair_totals,
             subtype_pairs,
             subtype_arith,
+            color_cmc,
             name_bigrams:   build_name_bigram_index(&cards),
             name_unigrams:  build_name_unigram_index(&cards),
             legal_divergent: build_divergent_ids(&cards),
