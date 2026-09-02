@@ -406,9 +406,17 @@ above):
   cost of `covered`'s existing leaf-occupancy semantics that was previously only a soundness concern:
   once `SubtypeArithBox` covers a subtype leaf via one exact pairing, `Independence` can never try that
   same leaf against a *different* partner, even when that estimate would have been tighter (`t:elf
-  usd<0.20 cmc>=2`: printing 425→1865 against true 366, a real regression, not a synthetic one). Loosening
-  `covered` to be subset-identity-based rather than leaf-occupancy-based is queued as the next round —
-  see [local-engine-nway-followup-queue.md](local-engine-nway-followup-queue.md)'s item #1.
+  usd<0.20 cmc>=2`: printing 425→1865 against true 366, a real regression, not a synthetic one). ~~Loosening
+  `covered` to be subset-identity-based rather than leaf-occupancy-based~~ — **closed in Round 49**:
+  `covered` became `CoveredState { flags, subsets: Vec<u64> }`, keeping the original leaf-level `flags`
+  (unchanged, still read by `SubtypePairEstimate`'s own narrow-leaf fallback) and adding `subsets`, one
+  bitmask per genuine joint hit. The independence registry no longer excludes a leaf just because SOME
+  mechanism touched it; it declines a candidate pairing only when that pairing's own combined leaf-mask
+  exactly matches an already-recorded subset. Independently reproduced: `t:elf usd<0.20 cmc>=2` recovers
+  exactly to printing=425 (matching the pre-Round-48 answer), and a fresh sweep (66,366 shared rows)
+  found the ratio diagnostic flip from Round 48's own "B is LESS accurate" (+0.001) to "B is MORE
+  accurate" (mean −0.034, 95% CI excludes 0), with all 378 plan-choice flips confined to `root=and`'s
+  `*+usd` star/cube shapes and zero elsewhere.
 - ~~The `color:G format:pioneer t:elf`-shaped 3-leaf joint~~ — **closed in Round 42.** This was
   originally framed as needing a placement rule (`compile_plane` claims `color`+`legality` together
   first in source order, so `SubtypePairIndexes` would need to "win" the leaf instead). That framing

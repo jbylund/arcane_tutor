@@ -201,6 +201,84 @@ total regret by 0.0 ms).
 | 46 | Structural refactor: one `Candidate` enum + `fold_candidate` entry point (replaces ~10 hand-copied fold sites), one shared `scan_two_bucket_exact` helper (three callers: `SubtypePairIndexes`, `ColorCmcTable`, `SubtypeArithBox`), plus a `debug_assert!(cards<=artworks<=printings)` census — no mechanism logic changed | kept | n/a (not this doc's own metric) | Byte-identical bar, independently re-verified: isolated-release `nway_estimate_truth_survey.py --compare`, 65,478 shared rows — only 3 rows (one query, `t:warrior set:shm`, all 3 modes) differ, and re-running the UNMODIFIED before-wheel against itself 3 times reproduces the identical flip with zero code change, confirming it's the pre-existing table nondeterminism below, not a regression; every other row byte-identical, `picked_plan` unchanged everywhere. `cargo test`: 226 passed release / 229 debug. `cargo clippy --all-targets -- -D warnings`: clean (a `--release`-only dead-code warning on an unrelated `#[cfg(debug_assertions)]` test constant confirmed pre-existing on `costcell/trunk` too) | see "Round 46" narrative below — the census found ZERO `debug_assert` violations from any of the six EXACT mechanisms (every one already produces internally self-consistent triples); it found **10,269 root-level violations across 3,421 distinct queries** (`artworks > printings`, never `cards > artworks`) — independently reconfirmed at smaller scale (32% of `root=and` rows in a fresh spot sweep) — all attributable to Round 41's own already-known unclamped floor, confirmed far wider in scope than the single `c:w t:plains` example on record. **A real, independently-converged discovery, found separately by both the implementing agent and me during verification, root-caused precisely**: `build_subtype_pair_tables`'s top-256 cutoff (`items.sort_unstable_by_key(Reverse(cards))`, `lib.rs:1917-1922`) has no deterministic tie-break, and Rust's default `HashMap` hasher is randomly seeded per process — so a pair tied at the exact boundary value can land inside or outside the table on one build/run and not another, with real, different predicted numbers each time (reproduced directly: the identical wheel, re-run 4 times, gave `t:monk usd>0.19 c:u` card=58 via a table HIT on one run and card=48 via the MISS estimate on the other three). Confirmed unrelated to this round (reproduces on plain, unmodified `costcell/trunk`) but flagged as high-priority: it can make a FUTURE byte-identical refactor's own verification look like it found a regression when it's really this. A related manifestation also showed up in the harness's own query generation (the identical `--seed 0` run, same corpus, produced 9 different queries between two separate engine loads) — same underlying class of bug, not chased down further, noted for whoever fixes the root cause |
 | 47 | `top_n_and_rest_max` (`SubtypePairIndexes`'s shared top-256-per-dimension cutoff) now extends past `n` to include every pair tied with the boundary card count, instead of a plain `truncate(n)` with no tiebreak — fixes Round 46's own discovered nondeterminism at its root | kept | n/a (not this doc's own metric) | Independently re-verified: isolated release wheel, 5 fresh index builds each, byte-identical every time for all 4 previously-flipping queries across both affected dimensions (`t:monk usd>0.19 c:u`, `t:warrior set:shm`, `c:b t:advisor`, `c:bw usd>=0.35 t:cleric`) — zero variance, where before this fix at least 3 of these flipped between builds. The now-stable table hits are also independently confirmed EXACT against ground truth (`c:u t:monk`/`c:b t:advisor`/`c:bw t:cleric` all read exactly 38/38/38 real cards, matching `explain_analyze`'s own true totals in all 3 spaces). Sweep (fresh seed, 43,365 shared rows): 43,239 unchanged, 125 improved-or-equal, 1 single-row sub-unit artifact (`t:angel c:b` printing: error 10→13 against true=127) — reproduces the agent's own identical finding exactly (same query, same true_total), explained as the capped-estimate MISS fallback's non-monotonic response to a tighter `rest_max` input, not a shape-level regression. `cargo test`: 230 passed release / 233 debug. `cargo clippy --all-targets -- -D warnings`: clean (debug; the same pre-existing release-only dead-code warning from Round 46 confirmed unrelated again) | see "Round 47" narrative below — the chosen fix (extend to include every tie) over a plain deterministic tiebreak, and why; real boundary/tie numbers for all three dimensions, with an honest note on a real discrepancy in my own independent verification attempt |
 | 48 | `SubtypeArithBox`'s gate generalized from `arith_children.len() + 1 == v.len()` (whole query must be exactly "one subtype leaf + N arith leaves") to just `!arith_children.is_empty()` — scans the residual for every subtype leaf present, mirroring `SubtypePairIndexes`'s own Round 42 generalization; `mark_covered_on_hit` now scoped to only the leaves a given hit actually explains, not all of `v` | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 66,378 shared rows (fresh seed, new curated shape `subtype_cube:type+cmc+usd` added): 74 plan-choice flips (0.1%), concentrated in `subtype_cube:type+cmc+usd` (39/900, 4.3%) and `star:cmc+type+usd` (31/900, 3.4%); base "no residual" shapes (`subtype_cube:type+cmc`, `subtype_cube:type+pow+tou+cmc`) show zero rows changed, confirming strict superset behavior for the case that already worked. Ratio diagnostic: mean abs-log-ratio +0.001 overall — **"B is LESS accurate" in aggregate**, not more (`subtype_cube:type+cmc+usd` 0.402→0.456, 45 improved/64 worsened; `star:cmc+type+usd` 0.354→0.361, 38/42) | see "Round 48" narrative below — the motivating case (`t:elf cmc>=5 usd<10`) improves dramatically (printing 1665→241, true 177), but the aggregate sweep regression is real and independently reproduced: root-caused via `and_trace` to `covered`'s pre-existing leaf-occupancy conservatism (queue item #3) blocking `Independence` from trying `(subtype, price)` once the box covers `(subtype, cmc)` — a live, measured instance of the "loosen covered" gap, not a defect in this round's own logic. A related, validated idea surfaced during review (not built this round, logged in the followup queue): the box's own exact joint, combined via independence with the residual price leaf's solo rate, gives 241×0.779≈188 against true 177 — tighter than the box's price-blind 241 alone |
+| 49 | Loosens the independence registry's `covered` gate from leaf-occupancy to subset-identity: `CoveredState { flags, subsets: Vec<u64> }` replaces the bare `covered: Vec<bool>` — `flags` keeps the unchanged Round-40 leaf-level bookkeeping, `subsets` records one bitmask per genuine joint hit (via `mark_covered`/`pair_bounded_min`). The independence registry no longer skips a leaf merely because SOME other mechanism touched it (`is_covered` deleted); it declines a candidate pairing only when that pairing's own combined leaf-mask exactly equals an already-recorded subset | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 66,366 shared rows (fresh seed): 378 plan-choice flips (0.6%), 100% confined to `root=and`'s `*+usd` star/cube shapes (`star:legality+identity+usd` 13.9%, `star:legality+color+usd` 12.8%, `star:legality+cmc+usd` 4.6%, `star:color+identity+usd` 3.4%, `star:cmc+type+usd` 2.2%, `subtype_cube:type+cmc+usd` 2.2%, `star:identity+type+usd` 1.6%, `star:color+type+usd` 1.3%); `root=leaf`/`root=or` show zero changes. Ratio diagnostic: mean abs-log-ratio **−0.034** (95% CI [−0.036, −0.032], excludes 0) — **"B is MORE accurate"**, reversing Round 48's own "B is LESS accurate" finding | see "Round 49" narrative below — independently reproduced end to end: the regression case (`t:elf usd<0.20 cmc>=2`) recovers exactly to printing=425 (matching the pre-Round-48 answer), Round 48's own motivating case (`t:elf cmc>=5 usd<10`) stays unchanged at 241, both traced via `and_trace` on isolated release wheels built myself, not just the implementing agent's report |
+
+### Round 49
+
+Target: fix the regression Round 48's own review surfaced — a live, measured cost of `covered`'s
+pre-existing leaf-occupancy conservatism, tracked as queue item #1 in
+[local-engine-nway-followup-queue.md](local-engine-nway-followup-queue.md). `covered: Vec<bool>` made a
+leaf permanently unavailable to the independence registry the moment ANY mechanism touched it for ANY
+partner — too conservative, since the only real danger (Round 40's own class-priority rule) is an
+ESTIMATE-class candidate re-answering the IDENTICAL leaf subset something already answered, not a leaf
+merely appearing in some unrelated covered pairing.
+
+**The fix**, implemented by a background agent exactly to a pre-approved plan and independently
+re-verified end to end: `covered` becomes `CoveredState { flags: Vec<bool>, subsets: Vec<u64> }`. `flags`
+keeps the unchanged Round-40 semantics (still read by `SubtypePairEstimate`'s own narrow-leaf fallback,
+deliberately untouched — same class of over-conservatism, a candidate for an identical future fix, but
+out of scope here). `subsets` gets one bitmask pushed per genuine joint hit, from every one of
+`mark_covered`'s 8 call sites and `pair_bounded_min`'s own inline `PairTotals`-hit writes (a real gap on
+its own — without this, an exact `PairTotals` hit would still have blocked independence from ever using
+either leaf again, since it doesn't go through `mark_covered` at all). The independence registry's
+`is_covered` closure — used at exactly one call site, confirmed via a full `\bcovered\b` grep before
+writing the plan — is deleted outright: every residual `and_source` that classifies into an `IndepClass`
+now becomes an eligible unit regardless of leaf-occupancy status, and the narrower, still-real check
+moves to pairing time: `let combined = a.mask | b.mask; if covered.subsets.contains(&combined) {
+continue; }`. Only an EXACT combined-subset match is declined; sharing a single leaf with a covered
+entry is fair game. Deliberately preserved: independence's own multiple pairs sharing a leaf (the design
+doc's "star" cases) still don't self-block each other, since `subsets` is populated only by mechanisms
+OUTSIDE the registry's own loop, run before it.
+
+**What this round does NOT do, worth being precise about since it came up directly during scoping**: it
+builds no new candidate value. `(Elf, price)` and `(cmc, price)` were already-existing independence
+estimates the registry already knew how to compute (they fired pre-Round-48) — this round only removes
+an artificial block on reaching them once `SubtypeArithBox` covers `{Elf, cmc}`. This is different from
+the separately-queued "anchored independence" idea (multiplying an exact joint itself by a residual
+leaf's own solo rate, a genuinely new fourth candidate) — not attempted here.
+
+**Verification, independently reproduced.** `cargo test`: 239 passed debug / 236 passed release (exact
+baseline+3). `cargo clippy --all-targets -- -D warnings`: clean on debug; release shows only the same
+pre-existing `ARITH_TUPLE_BLOWUP_CARDS` dead-code warning confirmed unrelated in prior rounds. One
+pre-existing test asserted the OLD leaf-occupancy behavior directly
+(`and_arm_independence_never_overrides_an_overlapping_exact_pair_total`) — confirmed by hand-computation
+that it exercises the *different-subset* case (a `legality×cn` independence pair against a
+`legality×cmc` `PairTotals` hit — different subsets, correctly now permitted), not the identical-subset
+one, so it was renamed and re-asserted to the new correct value (2,700, not weakened or deleted) rather
+than just updated to pass. New tests: a direct analog of the real regression shape (confirms both
+`(Type, Price)` and `(Cmc, Price)` now fire and the tighter wins); an isolated unit test of
+`CoveredState`'s own mask-equality logic (no live `independence_safe_pair` combo today actually collides
+with anything `PairTotals` can also answer — every registered-safe pair includes `Price`/`SetCode`/
+`ReleasedDate` on one side, none of which `pair_leaf_id` supports — so the identical-subset protection
+is tested directly rather than through a real end-to-end collision, as the plan's own sanctioned
+fallback); a defensive `pos >= 64` guard test (a synthetic 70-leaf `And`, confirming no panic/overflow
+and graceful degradation — not exercised by any real-shaped query in the suite).
+
+Rebuilt both isolated release wheels myself (before = fresh clone at `73b2d5cf`, after = the agent's
+commit) and reproduced the real numbers directly via `and_trace`: `t:elf usd<0.20 cmc>=2` (true 366)
+recovers exactly to printing=425 — `SubtypeArithBox` still fires exact 1865, `Independence` now ALSO
+fires for both `(cmc, price)`=16811 and `(Elf, price)`=425, `min(1865, 16811, 425)=425`, matching the
+plan's predicted numbers exactly. Round 48's own motivating case, `t:elf cmc>=5 usd<10` (true 177), stays
+at 241 on both wheels — `Independence` now also fires here (17056, 1665) but both lose to the box's own
+tighter 241, confirming no regression. Re-ran `nway_estimate_truth_survey.py --compare` myself (fresh
+seed, 66,366 shared rows): 378 plan-choice flips (0.6%), 100% confined to `root=and`'s `*+usd` star/cube
+shapes, zero elsewhere (`root=leaf`/`root=or` both 0.0%) — confirmed directly in the raw compare output,
+not just the agent's summary. Ratio diagnostic mean abs-log-ratio −0.034 (95% CI [−0.036, −0.032]) —
+"B is MORE accurate", reversing Round 48's own "B is LESS accurate" finding; both previously-flagged
+shapes recovered past their pre-Round-48 baseline.
+
+**Timing, reported honestly rather than smoothed over.** Two pure canaries and the two motivating
+queries showed no consistent change beyond same-build noise (which itself ranged up to ~60% on p90/p99
+tails at this sample size). One previously-blocked-now-permitted shape (`t:human cmc>=2 cmc<=6 usd<1`)
+showed a real, non-noise increase (median ~7.2µs→~11.7µs, exceeding the same-build swing observed for
+that query) — an expected, real cost of now computing genuinely more `Independence` candidates for
+exactly the population this fix targets, not a general hot-path tax on unrelated queries, but not free.
+
+Blast radius: `card_engine/src/lib.rs` (+138/-50 lines: `CoveredState` struct, `mark_covered`/
+`pair_bounded_min`/`scan_two_bucket_exact` signature changes, `is_covered` deleted, `IndepUnit` gains
+`mask`), `card_engine/src/tests.rs` (+258/-14 lines, 2 new tests plus 1 renamed/re-asserted, plus a small
+follow-up commit fixing a stale doc comment on an unrelated pre-existing test that still passes
+unchanged under the new mechanism).
 
 ### Round 48
 
