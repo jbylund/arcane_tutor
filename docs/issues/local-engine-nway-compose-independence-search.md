@@ -223,7 +223,14 @@ composition NEITHER pair's own 2-leaf calibration (Round 38/40) ever measured. M
 baseline (median abs-log-ratio ~3.5-32x worse across three seeds, `and_trace` directly confirmed both
 `Independence` groups fire on real queries like `color:G cmc<=3 usd<=10`); `star:identity+pow+set` and
 `star:cmc+type+usd` show the same direction on smaller samples. `star:legality+cmc+usd` and
-`star:legality+type+usd` are only mildly worse, close to their components' own noise. An UNPLANNED,
+`star:legality+type+usd` are only mildly worse, close to their components' own noise. **`color+cmc+usd`
+and `identity+cmc+usd` — the two substantially-bad ones — are CLOSED, Round 44**: a new exact
+`(colors|identity) x cmc` table (`ColorCmcTable`) removes the need for `ColorId`/`ColorIdentity`×`Cmc`
+to ever go through independence at all; median abs-log-ratio 0.80→0.58 / 0.71→0.57 (two independent
+seeds), the pure 2-leaf case now exact in all three spaces. `star:identity+pow+set`/`star:cmc+type+usd`
+(smaller-sample, same direction) and `star:legality+cmc+usd`/`star:legality+type+usd` (mild) are
+UNCHANGED by Round 44 — none of them involve `colors`/`identity`×`cmc` — still open if they ever matter.
+An UNPLANNED,
 independently-reproduced-on-a-third-seed second finding: the 3 star candidates that get swept by an
 EXACT mechanism before independence ever fires (`legality+color+usd`, `legality+identity+usd`,
 `color+identity+usd` — `PlanePopcount` claims the two card-invariant leaves, leaving the price leaf
@@ -333,12 +340,14 @@ above):
   since this was written.
 - **The `popcount_with_bits` redundancy fix** — still needs a real-traffic frequency measurement
   before it's worth shipping on its own; still not done.
-- **A fix for the confirmed "star" degradation** (`color+cmc+usd`, `identity+cmc+usd` substantially
-  worse than either component's own baseline; the swept `legality`/`color`/`identity`×`price` trio
-  also worse) — investigated and confirmed real (see "Triple-level safety" above), not yet fixed. The
-  simplest candidate: decline both independence estimates (fall back to plain min-fold) when a hub
-  class and 2+ of its different registered partners are simultaneously present, mirroring the
-  registry's existing same-class-duplicate ambiguity precedent. A natural next round.
+- ~~A fix for the confirmed "star" degradation~~ — **`color+cmc+usd`/`identity+cmc+usd` closed in
+  Round 44** via an exact `(colors|identity) x cmc` table, not the "decline both estimates" fallback
+  this entry used to recommend (a real exact mechanism beat a conservative decline). The swept
+  `legality`/`color`/`identity`×`price` trio (a different mechanism — `PlanePopcount` plus a
+  plain-min-folded price leaf, not double-independence) is UNCHANGED, still open, still a natural next
+  round if it ever matters for real routing regret. `star:identity+pow+set`/`star:cmc+type+usd`
+  (smaller-sample) and `star:legality+cmc+usd`/`star:legality+type+usd` (mild) also remain open — none
+  are `colors`/`identity`×`cmc`, so Round 44 doesn't touch them.
 - **The residual-size distribution for real (and deliberately pathological) 5+-leaf queries** — the
   `N choose 3/4` bound is still reasoned from what's been sampled, not confirmed at the tail. The
   harness's own `broad:n1..n8` catch-all generates this population; it hasn't been specifically

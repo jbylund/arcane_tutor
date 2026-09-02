@@ -193,6 +193,80 @@ total regret by 0.0 ms).
 | 41 | Card/artwork space in `compose_printing_estimate`'s `And` arm now floors on each UNCOVERED leaf's own exact card/artwork count (`children_estimates`), gated by the SAME `range_too_broad_to_narrow` breadth guard `narrow_rec` already uses — closing an asymmetry printing space never had (its own baseline, `folded.result.printing`, already floors on every leaf unconditionally) | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 8,097 shared rows (independent re-sweep, fresh seed): 23 plan-choice flips (0.3%), all one-directional (`PrintingCompose → StreamedSelect`/`GatheredScan`, never the reverse); ratio diagnostic unchanged (mean 0.184 both builds, "no detectable difference"); zero-true-count hit rate unchanged (77.6% both); border-leaf reproducers (`cmc=1 border:black`, `cmc>=1 cmc<=5 border:black`, etc.) byte-identical before/after, confirming the breadth guard correctly declines on a genuinely broad leaf | see "Round 41" narrative below — found while scoping the general N-way partition search (`local-engine-nway-compose-independence-search.md`): `color:G format:pioneer t:elf` predicted card=1179/true=246 (`t:elf`'s own exact card count, 660, was never considered — a strict subset of what compile_plane's partial color+legality joint reported, itself looser than a bare min-fold would be). This is a previously-scoped, deliberately-deferred fix — `local-engine-domain-cards-existential-arith-and.md`'s own "Ingredient 3" — shipped now with the breadth guard that round asked for, and scoped so the new floor affects ONLY `result_space` (what `explain()` reports), never `exact_domain` (what `scan_units`'s real execution-cost pricing reads), so the two fields — accidentally identical for card/artwork before this round, unlike printing where they already legitimately diverge — now behave the way printing's split always has. Motivating case: `eval_domain` 1179→660 (still not exact — true is 246 — this tightens a bound, it does not solve the underlying "no true 3-leaf joint mechanism exists yet" problem, tracked as a separate Round 42 candidate). `and_estimate_ns` canary: no consistent, reproducible tax detected, not distinguishable from the same-build canary's own noise floor |
 | 42 | Generalizes `SubtypePairIndexes`/`SubtypePairEstimate` past its `v.len() == 2` gate to scan the residual for every `(dim, subtype)` pair present in an `And` of any size — no reordering relative to `compile_plane`, no new placement/priority rule; the existing `.min()`-chain across mechanisms already composes correctly regardless of order | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 8,346 shared rows (independent re-sweep, fresh seed): 23 plan-choice flips (0.3%), concentrated in the newly-covered `triple:color+type+cmc`/`triple:color+legality+type` shapes; ratio diagnostic improved (mean 0.177→0.173, "B is MORE accurate"); border-leaf reproducers byte-identical before/after; the pre-existing 2-leaf `set:eld t:knight` case unchanged | see "Round 42" narrative below — directly closes the doc's own `color:G format:pioneer t:elf` worked example: `eval_domain` 660→560 (Round 41's own floor), now a genuine `SubtypePairIndexes` table HIT (card 560/printing 1917/artwork 790 — still not exact, true is 246, but a real, confirmed tightening). **A first implementation pass shipped a real gap, caught by independent verification, not the implementing agent's own report**: it correctly generalized the gate, but ALSO skipped `covered` leaves on input for both the exact-hit AND estimate branches (mirroring the independence registry's own precedent) — which meant `color` (already covered by `compile_plane`'s joint with `legality`) never reached the new scan at all, so the motivating example got ZERO benefit on the first pass. Root cause: skipping `covered` leaves is necessary for the ESTIMATE-class fallback (an independence-shaped estimate isn't a guaranteed bound and could undershoot below an already-exact value — Round 40's own class-priority reasoning) but NOT for the EXACT-hit branch, where any true sub-conjunction's count is always a valid bound regardless of what else covered a leaf, exactly like `compile_plane`/`pair_bounded_min`/the arith-tuple merge already behave. Fixed by splitting the two branches: the exact-hit scan ignores `covered` entirely; the estimate fallback still respects it, recomputed fresh after the hit loop runs |
 | 43 | Triple-level independence safety investigation — measurement only, no engine code changed | diagnostic | n/a (no code shipped) | n/a | see "Round 43" narrative below — the literal "does joint 3-way independence hold" question isn't reachable (no triangle in the registry's adjacency graph); the real, reachable, CONFIRMED-bad scenario is a "star" (two of a hub's registered partners present simultaneously, both independence estimates fired and `.min()`-folded, a composition neither pair's own 2-leaf calibration ever measured): `star:color+cmc+usd`/`star:identity+cmc+usd` substantially worse than either component's baseline across three independent seeds; an unplanned second finding (three star candidates swept by an exact `PlanePopcount` mechanism instead) are ALSO worse than baseline. Not fixed this round — a follow-up is recommended (decline both estimates when a hub + 2 different partners co-occur), scoped but not built |
+| 44 | New exact `(colors\|identity) x cmc` table (`ColorCmcTable`/`ColorCmcIndexes`) — 32 raw per-mask buckets (no `Ge`/`Le` lattice pre-summing, unlike `ColorSubtypeTable`), each mask's cmc dimension prefix-summed (mirroring `RangeCardCounts` exactly); wired into the `And` arm's residual scan and `exact_result_total`'s 2-leaf shortcut | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 65,541 shared rows (independent re-sweep, fresh seed): only 3 shapes show ANY plan-choice change (`star:identity+cmc+usd` 13.4%, `star:color+cmc+usd` 12.4%, `triple:color+type+cmc` 1.3%), zero elsewhere; ratio diagnostic improved (mean 0.287→0.279, "B is MORE accurate") | see "Round 44" narrative below — directly fixes Round 43's own confirmed-bad star: `star:color+cmc+usd` median abs-log-ratio 0.80→0.58, `star:identity+cmc+usd` 0.71→0.57 (fresh-seed independent re-check: 0.52/0.55) — real, substantial, not just moved sideways. The pure 2-leaf case is now EXACT in all three spaces (verified directly via `and_trace`: `color:G cmc<=3` card 3468/3468, printing 10268/10268; `id:UG cmc>=1 cmc<=5`, a two-sided bound, also exact at 10421/30050 against true). **A real regression found and fixed by the implementing agent itself, before I ever saw it** — my own instructions said to `mark_covered` on a hit, matching every other exact mechanism's convention; measuring against the real corpus showed this was actively harmful (median moved 0.80→1.08, WORSE) because it starves BOTH `ColorId`×`Price` and `Cmc`×`Price` (neither has a partner left once both leaves are claimed), and the new table's own bound — which ignores price entirely — is often looser than what those two (price-aware, if only via independence) estimates gave. Removing `mark_covered` let all three compete via `min()` and fixed it (0.80→0.58). Safe to leave uncovered: unlike two ESTIMATE-class mechanisms compounding on the IDENTICAL two leaves (Round 40's own concern), Independence's two candidates here each share only ONE leaf with this mechanism's pair, never both — genuinely different sub-conjunctions, not competing answers to the same question. Confirmed unrelated to the "swept trio" from Round 43 (`legality`/`color`/`identity`×`price`) — untouched by this round, as expected |
+
+### Round 44
+
+Target: fix Round 43's own confirmed-bad "star" — `color:G cmc<=3 usd<=10`-shaped queries firing two
+never-jointly-calibrated independence estimates simultaneously (`ColorId`×`Price`, `Cmc`×`Price`,
+sharing the `Price` hub) and landing measurably worse than either component's own baseline. Digging
+into why, checked directly against the corpus: color/identity count correlates with cmc in a real,
+mostly-monotonic way (mean cmc climbs from ~2.0-3.3 at 0-1 colors to ~4.5-5.6 at 3-5 colors) — the
+direct consequence of needing more colored mana symbols plus WotC's own color-pie curve conventions.
+The fix isn't to decline the star — it's an EXACT `(colors|identity) x cmc` table, the same way Round
+34 built `SubtypePairIndexes` for `(colors|identity|set) x subtype`. `ColorId`/`ColorIdentity`×`Cmc`
+were never registered against each other in the independence registry at all (only against `Price`),
+so this fills a real gap rather than touching the registry.
+
+**Feasibility, checked directly**: only 32 distinct color masks (all of WUBRG's 2⁵ combinations
+appear) and 17 distinct cmc values (0-16) — a table on the order of 32×17 cells, trivially small, no
+top-K-plus-fallback capping needed (unlike `SubtypePairIndexes`, which caps to the top 256 because the
+`(set, subtype)` space is much bigger).
+
+**Design, deliberately NOT `ColorSubtypeTable`'s lattice pre-summing.** `ColorSubtypeTable` bakes "sum
+over every matching `Ge`/`Le` mask" into each of its 32 entries at build time — a real cost/complexity
+trade worth making for a large sparse `(mask, subtype)` space, but its own doc comment documents a
+real, previously-unnoticed asymmetry bug from doing exactly this (`colors` cumulates `Ge`, `identity`
+cumulates `Le`). At only 544 cells, risking that bug class again wasn't worth it. Chosen instead: RAW
+per-exact-mask buckets (no lattice pre-summing across masks at all — the `Ge`/`Le` distinction only
+ever appears once, at query time, as an `op` parameter to `color_cmp_matches`, the SAME real per-card
+matcher, not a second hand-rolled implementation), with each mask's OWN cmc dimension prefix-summed —
+mirroring `RangeCardCounts` exactly, since that axis (ordered, numeric) has no directional ambiguity
+the way the mask axis does. `colors` and `identity` stay two separate tables (checked directly: they're
+equal for 94.1% of distinct cards, but genuinely differ for the other 5.9%, and answer different query
+shapes — `Ge`/superset vs `Le`/subset — regardless), built from one shared per-card scan.
+
+**Real results, independently re-verified end to end** (not just the implementing agent's own report —
+rebuilt both wheels myself, re-ran every query below directly via `and_trace`, ran a fresh sweep on a
+seed neither the agent nor Round 43 used):
+
+- The pure 2-leaf case is now EXACT in all three spaces where it used to be a plain, sometimes-loose
+  fold: `color:G cmc<=3` card 3468/3468 (was already coincidentally exact), printing 10268/10268 (was
+  18721/true 10268 before — a real fix, not a coincidence); `id:UG cmc<=3` printing 25487/25487 (was
+  39385/true 25487); `id:UG cmc>=1 cmc<=5` (a two-sided bound, two literal children intersected) card
+  10421/10421, printing 30050/30050 — also exact, confirming the range-intersection helper.
+- The 3-leaf star: `color:G cmc<=3 usd<=10` `eval_domain` 6450→3468 against true 3363 (ratio 1.92→1.03);
+  `id:U cmc>=5 usd<=5` `eval_domain` 7102→1543 against true 1373 (ratio 5.17→1.12).
+- Aggregate sweep (65,541 shared rows, fresh seed 11): only 3 shapes show ANY plan-choice change at all
+  (`star:identity+cmc+usd` 13.4%, `star:color+cmc+usd` 12.4%, `triple:color+type+cmc` 1.3%), zero
+  elsewhere; median abs-log-ratio `star:color+cmc+usd` 0.80→0.52, `star:identity+cmc+usd` 0.71→0.55 on
+  this seed (agent's own seed-0 numbers: 0.80→0.58, 0.71→0.57 — consistent direction and magnitude
+  across two independent seeds). The "swept trio" from Round 43 (`legality`/`color`/`identity`×`price`)
+  is confirmed byte-for-byte unchanged, as expected — unrelated mechanism, untouched by this round.
+
+**A real regression found and fixed by the implementing agent itself, before I ever saw it as a
+maintainer.** My own instructions said to `mark_covered` on a table hit, matching every other exact
+mechanism's convention in this arm. Measuring against the real corpus showed this was actively
+harmful: median `abs_log_ratio` for `star:color+cmc+usd` moved 0.80→**1.08** (worse) with `mark_covered`
+in place. Root cause: this table only bounds the `(color, cmc)` pair, ignoring price entirely, and on
+the star's own query population that 2-leaf bound is routinely LOOSER than what `ColorId`×`Price`/
+`Cmc`×`Price`'s independence candidates give (those at least incorporate price, if only via the
+independence assumption). Marking both leaves covered starves BOTH independence candidates at once
+(neither has a partner left to pair against `Price` once both are gone), leaving the final `min()`
+holding only this mechanism's own looser number. Removing `mark_covered` — letting all three candidates
+compute independently and `.min()`-fold together — fixed it (0.80→0.58). This is safe, not just
+empirically lucky: unlike two ESTIMATE-class mechanisms compounding on the IDENTICAL two leaves (Round
+40's own concern), Independence's two candidates here each share only ONE leaf with this mechanism's
+pair (never both) — genuinely different sub-conjunctions, not competing answers to the same question.
+
+Blast radius: `card_engine/src/lib.rs` (+347 lines — `ColorCmcTable`/`ColorCmcIndexes`/`MaskCmcCounts`
+structs, `build_color_cmc_tables` and helpers, the `And`-arm residual-scan addition, the
+`exact_result_total` 2-leaf shortcut), `card_engine/src/tests.rs` (+241 lines, 5 new tests covering
+the 2-leaf hit, the star's min-composition before/after the `mark_covered` fix, `Ge`/`Le` divergence,
+two-sided range intersection, and the no-op case). `cargo test`: 215 passed release / 216 debug (210 +
+5/211 + 5). `cargo clippy --all-targets -- -D warnings`: clean. `and_estimate_ns`: real delta a few
+hundred ns on the two target shapes, within the same-build canary's own ~6% noise floor at this sample
+size — not claimed as a proven cost, consistent with every prior round's own honest reporting here.
 
 ### Round 43
 
