@@ -443,6 +443,9 @@ above):
 
 ## Related docs
 
+- [local-engine-nway-followup-queue.md](local-engine-nway-followup-queue.md) — the active queue of
+  what's left, in the order it's meant to be tackled. This doc is the architecture/rationale; that one
+  is the todo list.
 - [local-engine-gathered-scan-card-printing-varying-depth.md](local-engine-gathered-scan-card-printing-varying-depth.md)
   — the round-by-round ledger this whole arc is tracked in. Rounds 33-36 are the hand-written
   mechanisms this doc originally generalized from; Rounds 37-40 are the measurement infrastructure

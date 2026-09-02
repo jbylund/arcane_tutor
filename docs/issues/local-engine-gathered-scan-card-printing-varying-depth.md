@@ -5,6 +5,9 @@ Extracted from item 1 of
 became an ongoing iteration ledger rather than a single-pass fix. Base branch for all work here is
 `engine-cost-model-cleanup`, never `main`.
 
+This is the round-by-round history. For what's left and in what order, see
+[local-engine-nway-followup-queue.md](local-engine-nway-followup-queue.md).
+
 ## Problem
 
 **Population**: `GatheredScan`/`unique=card` is the worst-agreement, highest-frequency cell in the
