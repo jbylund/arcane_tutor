@@ -9440,34 +9440,45 @@ fn compose_printing_estimate(
             // |d| d.min(x))` chaining (see the arith-ID-probe merge above, and this mechanism's own hit
             // branch below) already composes correctly across mechanisms regardless of what else ran
             // first or what other leaves are present; the actual gap was that this mechanism never
-            // computed a candidate at all past two total leaves. Fixed by scanning the residual
-            // (leaves `covered` doesn't already claim -- the same shape the independence registry scan
-            // below and Round 41's card/artwork narrow-leaf floor both already use) for EVERY (dim,
-            // subtype) pair, not just when the whole `And` happens to have exactly two children.
+            // computed a candidate at all past two total leaves.
             //
             // A table HIT is genuinely exact in all three spaces (`SpaceTotals`, not a flat number --
             // see `SetSubtypeTable`'s own doc for why), so it feeds `exact_domain_*` exactly like
             // `best_other`/the arith-tuple merge above -- `min`-ing across multiple independently-exact
-            // intersections is still exact, same reasoning those two already establish. EVERY (dim,
-            // subtype) pair found gets its own independent lookup and its own trace group (not just the
-            // tightest), mirroring the existential-leaf loop's own "every trial is independently exact"
-            // precedent above.
+            // intersections is still exact, same reasoning those two already establish. Because of that,
+            // the EXACT-hit scan below does NOT filter its two leaf positions by `covered` at all --
+            // unlike the independence registry scan/Round 41's narrow-leaf floor, which skip covered
+            // leaves because THEIR tightening is only safe to apply to genuinely uncovered leaves. A
+            // real table hit's exact count is a valid upper bound on the full `And` regardless of
+            // whether one of its two leaves is ALSO part of some OTHER mechanism's joint (e.g. `color`
+            // already covered by `compile_plane`'s own joint with `legality`) -- `compile_plane`,
+            // `pair_bounded_min`, and the arith-tuple merge above don't filter their own inputs by
+            // `covered` either, for the identical reason. So this scans EVERY (dim, subtype) pair in
+            // the whole `v`, not just the uncovered residual, and each gets its own independent lookup
+            // and its own trace group (not just the tightest), mirroring the existential-leaf loop's own
+            // "every trial is independently exact" precedent above. `mark_covered` below is still called
+            // on every hit (harmless -- and needed by the ESTIMATE fallback's own residual scan just
+            // below -- if a leaf was already covered).
             //
             // A MISS is not exact (`independence_product = dim_card * subtype_card / n_cards`, capped at
             // `rest_max`), so it only narrows `result` (printing space), never `exact_domain_*` -- the
             // same exact/estimate line Round 33's own density tightening draws for the identical reason.
-            // Unlike the exact-hit branch, this fallback deliberately stays SINGLE-PAIR-ONLY: computed
-            // only when, after every hit above has been processed, exactly one uncovered dim leaf and
+            // Unlike the exact-hit scan above, this fallback DOES need to filter by `covered` (computed
+            // fresh, AFTER the exact-hit loop, so its own `mark_covered` calls are reflected): an
+            // independence-shaped estimate can undershoot (Round 40's own class-priority finding), so
+            // computing one for a leaf some OTHER mechanism has ALREADY captured exactly and `min`-ing it
+            // in could pull `result` below the true count -- a real corruption, not just looseness,
+            // unlike the exact-hit scan's `.min()`-chain which can only ever tighten. This fallback also
+            // deliberately stays SINGLE-PAIR-ONLY: computed only when exactly one uncovered dim leaf and
             // exactly one uncovered subtype leaf remain. With 2+ uncovered leaves of either bucket and no
             // table hit for any combination, this declines entirely rather than computing an estimate per
-            // combination and taking their min -- an independence-shaped estimate can undershoot, so
-            // combining several risks compounding an undershoot instead of bounding it. This mirrors the
+            // combination and taking their min -- the same undershoot-compounding risk. This mirrors the
             // independence registry scan's own existing precedent for the identical ambiguity (see "2+
             // occurrences of a class with no combining table" a bit further down in this same function).
-            let dim_positions: Vec<usize> = (0..v.len()).filter(|&i| !covered[i] && subtype_pair_dim(&v[i]).is_some()).collect();
-            let sub_positions: Vec<usize> = (0..v.len()).filter(|&i| !covered[i] && subtype_pair_leaf(&v[i]).is_some()).collect();
-            for &di in &dim_positions {
-                for &si in &sub_positions {
+            let all_dim_positions: Vec<usize> = (0..v.len()).filter(|&i| subtype_pair_dim(&v[i]).is_some()).collect();
+            let all_sub_positions: Vec<usize> = (0..v.len()).filter(|&i| subtype_pair_leaf(&v[i]).is_some()).collect();
+            for &di in &all_dim_positions {
+                for &si in &all_sub_positions {
                     if let Some(totals) = subtype_pair_exact(&v[di], &v[si], indexes) {
                         let printings = totals.get(Mode::Printing);
                         let cards = totals.get(Mode::Card);
@@ -9495,11 +9506,14 @@ fn compose_printing_estimate(
                 }
             }
             // The capped independence-product fallback (see this mechanism's own doc above for why it
-            // stays single-pair-only): re-check how many dim/subtype leaves are STILL uncovered after
-            // every exact hit above (a hit may have covered one or both of the two leaves an estimate
-            // would otherwise have used).
-            let remaining_dims: Vec<usize> = dim_positions.iter().copied().filter(|&i| !covered[i]).collect();
-            let remaining_subs: Vec<usize> = sub_positions.iter().copied().filter(|&i| !covered[i]).collect();
+            // stays single-pair-only AND, unlike the exact-hit scan above, must respect `covered`):
+            // freshly scan `v` for uncovered dim/subtype leaves -- freshly, not derived from
+            // `all_dim_positions`/`all_sub_positions` above (which deliberately include covered
+            // positions), and AFTER the exact-hit loop above so a hit's own `mark_covered` calls (which
+            // may have covered one or both of the two leaves an estimate would otherwise have used) are
+            // reflected here.
+            let remaining_dims: Vec<usize> = (0..v.len()).filter(|&i| !covered[i] && subtype_pair_dim(&v[i]).is_some()).collect();
+            let remaining_subs: Vec<usize> = (0..v.len()).filter(|&i| !covered[i] && subtype_pair_leaf(&v[i]).is_some()).collect();
             if let (&[di], &[si]) = (remaining_dims.as_slice(), remaining_subs.as_slice()) {
                 let dim = subtype_pair_dim(&v[di]).expect("dim_positions only holds subtype_pair_dim leaves");
                 // `dim_est`/`subtype_card` (this leaf's own solo estimate, recomputed directly rather

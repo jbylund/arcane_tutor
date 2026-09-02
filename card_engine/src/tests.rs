@@ -8832,15 +8832,18 @@ fn subtype_pair_estimate_fallback_still_fires_in_three_leaf_and() {
     assert_eq!(hit.printing, Some(3));
 }
 
-/// Round 42: a dim leaf already `covered` by an EARLIER mechanism (`compile_plane`'s own `best_other`
-/// joint, here `color:G AND format:A`) must be excluded from this mechanism's residual scan entirely
-/// -- no double computation, no panic, and no incorrect SECOND contribution for a leaf whose
-/// correlation is already captured exactly by whatever covered it first. A hand-set `(color:G,
-/// t:elf)` table entry is deliberately present (and deliberately SMALLER than `best_other`'s real
-/// count) so that if the covered-exclusion regressed, the wrongly-computed hit would visibly change
-/// `exact_domain_cards` rather than being masked by `.min()` picking the same number either way.
+/// Round 42 (revised): the EXACT-hit scan does NOT filter by `covered` -- a genuine table hit's exact
+/// count is a valid upper bound on the whole `And` regardless of whether one of its two leaves is
+/// ALSO part of a DIFFERENT mechanism's already-computed joint, the same reasoning `compile_plane`/
+/// `pair_bounded_min`/the arith-tuple merge already rely on for their own inputs. `color:G` here is
+/// covered by `compile_plane`'s own `PlanePopcount` joint with `format:A` (`color:G AND format:A` =
+/// {card0, card1} = 2 cards) BEFORE this mechanism runs; a hand-set `(color:G, t:elf)` table entry
+/// smaller than that (`cards: 1`) must still be found and `.min()`-chained in, tightening the final
+/// answer to 1 -- proving the hit scan reaches `color:G` despite it already being covered, which is
+/// exactly what makes the real motivating shape (`color:G format:pioneer t:elf`) able to benefit at
+/// all (see this arm's own doc for why the exact-hit and ESTIMATE branches differ on this point).
 #[test]
-fn subtype_pair_covered_dim_leaf_excluded_from_residual_scan() {
+fn subtype_pair_hit_fires_even_when_dim_leaf_already_covered_by_another_mechanism() {
     let mut vocab = VocabInterner::new();
     let mut cards = vec![
         stub_card(1, TYPE_CREATURE, &["Elf"], &mut vocab),
@@ -8891,13 +8894,83 @@ fn subtype_pair_covered_dim_leaf_excluded_from_residual_scan() {
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
     let plane_hit = and_trace.considered.iter().find(|g| g.mechanism == "PlanePopcount").expect("color:G + format:A must combine into one PlanePopcount joint");
     assert_eq!(plane_hit.card, Some(2), "cards 0 and 1: green and legal in format A");
+    let pair_hit = and_trace
+        .considered
+        .iter()
+        .find(|g| g.mechanism == "SubtypePairIndexes")
+        .expect("color:G + t:elf must still be attempted even though color:G is already covered by PlanePopcount");
+    assert!(pair_hit.hit);
+    assert_eq!(pair_hit.card, Some(1));
+
+    let domain = est.exact_domain.expect("both PlanePopcount and the table hit are exact");
+    assert_eq!(domain.card, Some(1), "the table hit (1) must win over PlanePopcount's own looser count (2), proving the hit scan is not blocked by color:G already being covered");
+}
+
+/// Round 42: the opposite side of the split above -- the ESTIMATE fallback (unlike the exact-hit
+/// scan) genuinely must keep respecting `covered`, because an independence-shaped estimate is not a
+/// guaranteed bound (Round 40's own class-priority finding) and could undershoot a leaf some OTHER
+/// mechanism has already captured exactly. Same fixture as the hit-scan test above, but with NO
+/// hand-set `(color:G, t:elf)` table entry at all (a miss): `color:G` is covered by `PlanePopcount`
+/// before this mechanism runs, so the freshly-computed `remaining_dims` must be empty even though
+/// `t:elf` itself is uncovered -- the fallback must decline, not compute an estimate for a covered
+/// dim leaf.
+#[test]
+fn subtype_pair_estimate_fallback_still_declines_when_dim_leaf_already_covered() {
+    let mut vocab = VocabInterner::new();
+    let mut cards = vec![
+        stub_card(1, TYPE_CREATURE, &["Elf"], &mut vocab),
+        stub_card(2, TYPE_CREATURE, &[], &mut vocab),
+        stub_card(3, TYPE_CREATURE, &[], &mut vocab),
+        stub_card(4, TYPE_CREATURE, &["Elf"], &mut vocab),
+    ];
+    let g = super::color_to_bit("G");
+    let r = super::color_to_bit("R");
+    cards[0].card_colors = g;
+    cards[1].card_colors = g;
+    cards[2].card_colors = g;
+    cards[3].card_colors = r;
+    for c in cards.iter_mut().take(2) {
+        c.card_legalities = 0b01;
+    }
+    let mut data = store_of(cards, &[1, 1, 1, 1], vocab);
+    for (i, p) in data.printings.iter_mut().enumerate() {
+        p.card_set_code = InlineStr::from_str("aaa");
+        if i < 2 {
+            p.card_legalities = 0b01;
+        }
+    }
+    data.indexes.subtypes = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
+    let ptc = build_printing_to_card(&data.offsets);
+    let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
+    data.indexes.value_totals = build_all_value_totals(&data.cards, &data.printings, &ptc, &data.strings, &data.coll_vocab, max_ag);
+    data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
+    // Deliberately NO `subtype_pairs.colors` entry at all -- (color:G, t:elf) must miss the table.
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let f = FilterExpr::And(vec![
+        FilterExpr::ColorCmp { field: ColorField::Colors, op: CmpOp::Ge, mask: g },
+        FilterExpr::Legality { shift: Some(0), expected: 0b01 },
+        FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Elf".to_string(), value_id: None },
+    ]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+
+    let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    let plane_hit = and_trace.considered.iter().find(|g| g.mechanism == "PlanePopcount").expect("color:G + format:A must combine into one PlanePopcount joint");
+    assert_eq!(plane_hit.card, Some(2));
     assert!(
-        !and_trace.considered.iter().any(|g| g.mechanism == "SubtypePairIndexes"),
-        "color:G was already covered by PlanePopcount -- this mechanism must find zero uncovered dim leaves and never even attempt a lookup"
+        !and_trace.considered.iter().any(|g| g.mechanism == "SubtypePairIndexes" && g.hit),
+        "no table entry exists for (color:G, t:elf) -- there must be no hit"
+    );
+    assert!(
+        !and_trace.considered.iter().any(|g| g.mechanism == "SubtypePairEstimate"),
+        "color:G is already covered by PlanePopcount -- the ESTIMATE fallback must decline rather than compute an estimate for a covered dim leaf"
     );
 
     let domain = est.exact_domain.expect("PlanePopcount alone is exact");
-    assert_eq!(domain.card, Some(2), "must equal PlanePopcount's own count, unchanged -- a regression would wrongly pull this down to 1 via the covered color leaf");
+    assert_eq!(domain.card, Some(2), "must equal PlanePopcount's own count, unaffected by the (correctly declined) estimate fallback");
 }
 
 /// Card-space collection containment fields (`type:`/`kw:`/`otag:`) and their printing-space siblings
