@@ -9064,8 +9064,23 @@ fn compose_printing_estimate(
                 if let Some(cc) = card_count {
                     let scaled = (cc * n_printings).checked_div(n_cards).unwrap_or(0);
                     result = result.min(scaled);
-                    // Round 40: exact joint (2+ arith-eligible leaves), so genuinely covers all of them.
-                    mark_covered(v, &arith_children, &mut covered);
+                    // Round 40 (fixed after a real regression a coordinator review caught pre-merge:
+                    // `usd>6.03 cmc>=1 cmc<=1` lost Round 38's own price x cmc combination entirely,
+                    // regressing `safe:cmc+usd` below its Round-38 baseline): only mark `covered` when
+                    // `arith_children` spans 2+ DISTINCT fields (`single_arith_field` returns `None`) --
+                    // a genuine cross-dimension joint, e.g. `cmc<=5 power>=3`, where nothing else in
+                    // this arm could safely reuse either leaf. When every child shares ONE field
+                    // (`single_arith_field` returns `Some`, e.g. `cmc>=1 cmc<=1`), this is NOT a
+                    // cross-dimension intersection at all -- it's resolving that one field's own
+                    // effective value from two partial bounds, exactly the shape Round 38's own
+                    // cmc-combining path already relied on to hand a SINGLE exact cmc unit to the
+                    // independence registry for pairing against price. Marking it covered here silently
+                    // stole those leaves from the registry's own same-field consolidation (the `Cmc`/
+                    // `Pow` arm of the `by_class` grouping below) before it ever got to run, dropping
+                    // the price x cmc pairing Round 38 shipped -- not just failing to add new coverage.
+                    if single_arith_field(&arith_children).is_none() {
+                        mark_covered(v, &arith_children, &mut covered);
+                    }
                 }
                 // Round 37a trace: `card_count` is `None` only when the #743 scan itself declines
                 // (see `arith_tuple_count`'s own doc) -- the shape gate here (2+ arith-eligible
