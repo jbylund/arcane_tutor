@@ -206,6 +206,72 @@ total regret by 0.0 ms).
 | 51 | `ArithTupleIndex` gains `totals: Vec<SpaceTotals>`, one exact (printing,card,artwork) triple per distinct (cmc,power,toughness,loyalty) combination, summed once at build time from that key's own postings (`offsets`/`artwork_base`, already in scope at the one call site). `arith_tuple_count`→`arith_tuple_totals` now returns the exact triple instead of a card count; all 3 call sites updated — the main And-arm joint now folds `Candidate::Exact` (closing Round 46's census blind spot), the independence registry's Cmc/Pow multi-unit gains real `artwork: Some(...)`, the single-leaf fallback gains real card/artwork. `ARCHIVE_FORMAT_VERSION` bumped | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 66,372 shared rows (fresh seed): 144 plan-choice flips (0.2%), 100% confined to cmc/pow/tou-involving shapes; `root=leaf`/`root=or` zero changes. Ratio diagnostic: mean abs-log-ratio −0.003 (95% CI excludes 0) — "B is MORE accurate"; a targeted slice on rows this mechanism won (1,383 rows): `unique=printing` median abs-log-ratio 0.168→0.000 | see "Round 51" narrative below — validated against the real corpus BEFORE scoping (a direct `oracle_id`-grouped check of `corpus.jsonl`, no engine build needed) and independently re-reproduced after merging: `cmc>=8 power<=2` printing 30→21 (true 21, exact); `cmc<=1 power>=1 tou>=1` printing 3225→2786 (true 2786, exact). A real, honestly-flagged pre-existing gap found (not fixed, out of scope): `unique=artwork`'s own acquire path routes through a separate `artwork_estimate` function, not this mechanism's `exact_domain_artworks` — artwork FINAL improves but doesn't fully close (15 vs true 13, was 22) |
 | 52 | Wires `est.result.card`/`.artwork` (`compose_printing_estimate`'s own And-arm fold, already computed) into `acquire_plan_features`'s `unique=card`/`unique=artwork` acquire path, closing Round 51's own artwork gap — folded in as an ADDITIONAL `.min()` tightening on top of the pre-existing calibrated-estimate baseline, never a replacement for it. `exact_result_total` (the existing exact source for these modes) is untouched | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 66,378 shared rows (fresh seed): 184 plan-choice flips (0.3%), `root=leaf` 0.0%/`root=or` 0.0%. Ratio diagnostic: mean abs-log-ratio −0.017 (95% CI excludes 0) — "B is MORE accurate". Independently re-verified row-by-row (not just the aggregate): **zero rows regressed**, 3,038 improved | see "Round 52" narrative below — a real regression in the round's OWN first attempt was caught by the corpus sweep before shipping (a plain outright-replacement merge let a partial-subset exact mechanism's own valid-but-loose bound override a much-better calibrated estimate, `id:ruw usd:0.50 cmc>=2` artwork mode: 123→21,048 against true 123, a 170x regression) — the shipped fix instead layers `est.result.card`/`.artwork` as a tightening-only `.min()`, independently reproduced: both motivating queries now exact (`cmc>=8 power<=2` artwork 15→13, `cmc<=1 power>=1 tou>=1` artwork 1993→1400), and the regression scenario stays correct (123) on both wheels |
 | 53 | `PriceJointTable`: a quantile-bucketed 2D `(usd, eur)` joint (64 buckets/axis, tie-safe construction — never splits a repeated price value, never a degenerate bucket), sparse `HashMap<u32, SpaceTotals>` over only the cell pairs that actually occur, linear-scanned at query time ("any overlap counts fully", no boundary interpolation). Two call sites: a standalone whole-And fold (usd+eur alone) and a new `by_class` special case feeding one combined unit into the existing independence pairing loop (usd+eur + something else) — both `Candidate::Estimate`, never `Exact`. `tix` deliberately untouched (r=0.336, weak) | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 66,378 shared rows (fresh seed): 200 plan-choice flips (0.3%), 100% confined to `unsafe:usd+eur` (690/900, 76.7%); `unsafe:usd+tix`/`unsafe:eur+tix` and every other shape show zero flips; `root=leaf`/`root=or` both 0.0%. Ratio diagnostic: mean abs-log-ratio −0.010 (95% CI excludes 0) — "B is MORE accurate" | see "Round 53" narrative below — validated BEFORE scoping via a real Pearson-correlation check (usd↔eur r=0.877, usd↔tix r=0.336) and a Python 2D-histogram simulation; independently re-verified after merging: all five worst-tail queries land at 1.01-1.24x (was 83-186x). A real, measured inefficiency found by the implementing agent (both call sites firing redundantly for a bare 2-leaf query with nothing to pair against) was fixed before merge, not deferred — see that section for the numbers |
+| 54 | Generalizes `PriceJointTable` (Round 53) past its `usd`×`eur`-only hardcoding to all three currency pairs: `price_joint_usd_eur`/`_usd_tix`/`_eur_tix`, built by the same closure-parameterized `build_price_joint_table`, dispatched via one shared `price_joint_table_for`/`resolve_price_joint_pair` helper replacing two hand-rolled `match` arms. `PRICE_JOINT_BUCKETS` (64) reused unchanged for all three — re-checked directly against the real corpus, not assumed | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 66,378 shared rows (fresh seed): 227 plan-choice flips (0.3%), 100% confined to `unsafe:usd+tix` (108/900, 12.0%) and `unsafe:eur+tix` (119/900, 13.2%); `unsafe:usd+eur` and every other shape show zero flips; `root=leaf`/`root=or` both 0.0%. Ratio diagnostic: mean abs-log-ratio −0.022 (95% CI excludes 0) — "B is MORE accurate" | see "Round 54" narrative below — surfaced by a fresh full-corpus survey run specifically to check what emerged once Round 53 stopped dominating it; validated the same way (Pearson r + a real joint-histogram simulation) BEFORE scoping, closing a real gap the design doc's own historical calibration work had found beneficial but never actually shipped. Independently re-verified: `usd`×`tix`/`eur`×`tix` land at 1.00-1.92x (was 42-87x); one real discrepancy between my own preliminary Python simulation and the shipped Rust result was investigated and resolved as a bug in MY OWN script, not the implementation — see that section for the full account |
+
+### Round 54
+
+Target: `usd`×`tix`/`eur`×`tix`, surfaced by re-running the full-corpus survey specifically to check
+what emerged once Round 53 stopped dominating it. Result confirmed Round 53 worked (`unsafe:usd+eur`
+dropped from the single worst shape to near the bottom of the "worst-first" list, median 0.55+ → 0.08)
+— but the next-worst shapes with real sample size were `unsafe:usd+tix` (median 0.55) and
+`unsafe:eur+tix` (median 0.44). Checked directly: zero mechanism fires for either, the exact same
+"2+ occurrences of `Price`, no combining table, dropped" fallback `usd×eur` had before Round 53.
+
+**A real finding, chased down before scoping this round, not assumed.** This design doc's own earlier
+calibration work had found `usd×tix`/`eur×tix` "net better" under plain independence — but that
+apparently never got wired up (confirmed: 0% mechanism coverage, same as usd×eur pre-Round-53). Checked
+what plain independence would give directly: `tix>0.12 usd<=0.13` — current min-fold predicts 10,438
+against true 120 (87×); plain independence gives 1,313 (11×) — real, but far from tight. Then simulated
+a full 2D quantile-bucketed joint histogram (the same approach validated for usd×eur in Round 53),
+expecting the weak Pearson correlation (r=0.336) to cap how much it could help — instead it landed at
+1.70× on the same query, dramatically better than plain independence's 11×. Two more `eur×tix` examples
+confirmed the pattern. **The methodological lesson**: Pearson r only measures *linear* correlation — a
+low r doesn't mean "no exploitable relationship," only "not a linear one." usd/tix and eur/tix apparently
+have a real, non-linear, exploitable relationship a joint histogram captures and a correlation
+coefficient alone does not.
+
+**The fix**: generalized Round 53's `PriceJointTable`/`build_price_joint_table` past their `usd`×`eur`
+hardcoding — `a_edges`/`b_edges` instead of `usd_edges`/`eur_edges`, two field-accessor closures instead
+of hardcoded `p.price_usd`/`p.price_eur` (mirroring `build_numeric_index`'s own established
+closure-accessor precedent). Three tables now exist (`price_joint_usd_eur` — the Round 53 rename —
+plus new `price_joint_usd_tix`/`price_joint_eur_tix`), all via the same builder. One new shared
+dispatch, `price_joint_table_for`/`resolve_price_joint_pair`, replaces the two hand-rolled
+usd/eur-only `match` arms (the standalone whole-`And` fold and the `by_class` multi-arm) with a single
+resolver covering all three order-independent pairs. The `and_sources.len() > 2` guard (Round 53's own
+post-merge fix for the redundant-computation inefficiency) needed no changes at all — confirmed
+directly it was never pair-specific, it only checks "is there anything left in the query to pair with."
+
+**A real, re-checked-not-assumed calibration finding**: `PRICE_JOINT_BUCKETS` (64, validated for
+usd×eur) needed no adjustment for the two new pairs, but the real corpus profile differs a lot —
+`tix`'s own price values cluster far more heavily than usd/eur's (MTGO tickets trade in a narrower,
+more discretized range), collapsing both new tables to only 22 real buckets on the `tix` axis (against
+usd's 53 / eur's 50 on their own other axis) — but that same clustering makes the tables denser, not
+sparser: `usd`×`tix` populates 1,072 of 1,166 possible cells (92%), `eur`×`tix` 993 of 1,100 (90%), both
+above `usd`×`eur`'s own 64%.
+
+**Verification, independently reproduced, including one discrepancy chased down to its real root
+cause.** `cargo test`: 263 passed debug / 260 passed release (exact baseline+4 — 6 new tests, 2 old
+"still declines" tests removed since that behavior is intentionally reversed by this round). `cargo
+clippy --all-targets -- -D warnings`: clean on debug; release shows only the same pre-existing
+`ARITH_TUPLE_BLOWUP_CARDS` dead-code warning confirmed unrelated in every prior round.
+
+Rebuilt both isolated release wheels myself (before = fresh clone at `1de2a4b0`, after = the agent's
+commit), `__file__` explicitly asserted both times, and reproduced all three motivating queries
+directly via `explain()`/`and_trace`: `tix>0.12 usd<=0.13` 10,438→120 (true 120, exact); `eur<0.10
+tix>0.11` 12,989→188 (true 186, 1.01×); `eur>=0.25 eur<=0.28 tix>1.36` 3,866→179 (true 93, 1.92×) — all
+matching the agent's own reported numbers exactly. The third number is meaningfully looser than this
+round's own pre-scoping simulation suggested (0.87×) — investigated directly rather than left
+unresolved: my own Python simulation script had a real bug, approximating the two-sided `eur` range via
+subtraction of two separately-computed one-sided cumulative queries, which introduces a boundary error
+a direct rectangle-overlap scan doesn't have. A corrected direct-scan version of the same simulation
+gives 1.22×, closer but still not identical to the Rust implementation's own 1.92× — the residual gap is
+expected, ordinary divergence between two independently-implemented quantile-bucketing schemes (Python
+approximation vs. the Rust implementation's own tie-safe construction, verified correct against a
+brute-force scan by its own dedicated tests), not a defect in the shipped mechanism. Re-ran
+`nway_estimate_truth_survey.py --compare` myself (fresh seed, 66,378 shared rows): 227 plan-choice flips
+(0.3%), 100% confined to `unsafe:usd+tix` (108/900, 12.0%) and `unsafe:eur+tix` (119/900, 13.2%);
+`unsafe:usd+eur` and every other shape at exactly 0.0%, `root=leaf`/`root=or` both 0.0%. Ratio
+diagnostic mean abs-log-ratio −0.022 (95% CI excludes 0) — "B is MORE accurate".
 
 ### Round 53
 

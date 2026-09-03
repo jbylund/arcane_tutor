@@ -234,9 +234,19 @@ ratio spans p10=0.346 to p90=1.357, too wide for the single-multiplier shape thi
 `printing_indep`/`card_indep` formula assumes), but with a dedicated `PriceJointTable`: a real,
 Pearson r=0.877-validated correlation, captured via a quantile-bucketed 2D joint histogram instead of
 an independence product, feeding the SAME `by_class`/`IndepUnit` pairing machinery as one more unit so
-it still combines with other classes via the existing loop unmodified. `usd×tix`/`eur×tix` remain
-correctly untouched (r=0.336, weak — the existing plain treatment already reasonable). `set×type`
-(similarly mixed across spaces) is unrelated and still open — don't re-attempt it without new evidence.
+it still combines with other classes via the existing loop unmodified. ~~`usd×tix`/`eur×tix` remain
+correctly untouched (r=0.336, weak -- the existing plain treatment already reasonable)~~ — **also
+closed, in Round 54**: a fresh full-corpus survey run once `usd×eur` stopped dominating it surfaced
+both as the next-worst shapes, still at 0% mechanism coverage (plain independence, despite this doc's
+own "net better" finding above, had never actually been wired up for either). The real, methodologically
+important finding: Pearson r only measures LINEAR correlation, and a direct 2D joint-histogram
+simulation (not plain independence) found both pairs have a real, exploitable, NON-linear relationship
+despite their weak r — 1.70x/1.35x/0.87x on real tail queries in simulation (1.00-1.92x once actually
+shipped and independently re-verified), dramatically better than plain independence's own ~10-11x on
+the same queries. `PriceJointTable` generalized to cover all three pairs via one shared builder/dispatch
+rather than three hand-copied near-duplicates. The 3-way `usd+eur+tix` case remains genuinely open — see
+the followup queue's own item. `set×type` (similarly mixed across spaces) is unrelated and still open —
+don't re-attempt it without new evidence.
 `color×identity` needs no registry entry: confirmed already 100%-covered by the pre-existing
 `PlanePopcount` mechanism, no live gap.
 

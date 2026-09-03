@@ -1,6 +1,6 @@
 # N-Way Estimator Follow-Up Queue
 
-Tracks what's left from the `And`-arm cardinality-estimation arc (Rounds 33-53), in the order we
+Tracks what's left from the `And`-arm cardinality-estimation arc (Rounds 33-54), in the order we
 intend to tackle it. This doc is the queue, not the depth — the round-by-round numbers live in
 [local-engine-gathered-scan-card-printing-varying-depth.md](local-engine-gathered-scan-card-printing-varying-depth.md),
 and the architecture/design rationale lives in
@@ -44,15 +44,21 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
   own baseline via `PlanePopcount` plus a plain-min-folded price leaf, not the double-independence
   question Round 44 fixed) and the two smaller, less-confirmed stars (`identity+pow+set`,
   `cmc+type+usd`). Real, small, not urgent absent evidence they matter for real routing regret.
-- **`PriceJointTable`'s own boundary interpolation.** Round 53 shipped "any overlap counts fully" (no
-  interpolation within a partially-overlapping bucket) — already validated to 1.01-1.24x on the five
-  worst real tail queries, so this is a refinement, not a bug. A real, measured cost to weigh against
-  it: the real corpus populates 1,834 of 2,860 possible cells (64% density, not "far dozen" the way
-  `ColorCmp`'s own much-smaller-scale precedent implied), so the table is already a genuinely non-cheap
-  linear scan — interpolation would add per-cell work on top of that, not shrink the table.
-- **Extend the `(usd, eur)` joint pattern to other correlated dimension pairs**, if any are found —
-  no other pair has been checked for a similarly strong, exploitable correlation; not assumed to exist,
-  not investigated.
+- **`PriceJointTable`'s own boundary interpolation.** Shipped "any overlap counts fully" (no
+  interpolation within a partially-overlapping bucket) for all three pairs now — already validated to
+  1.00-1.92x on the worst real tail queries checked, so this is a refinement, not a bug. A real,
+  measured cost to weigh against it: the tables are already genuinely non-cheap linear scans (64-92%
+  cell density depending on the pair, not "far dozen" the way `ColorCmp`'s own much-smaller-scale
+  precedent implied) — interpolation would add per-cell work on top of that, not shrink the tables.
+- **The 3-way `usd+eur+tix` case.** Explicitly out of scope for both Rounds 53 and 54 — still falls
+  through to the plain per-leaf min-fold. Would need a real 3D histogram (far more cells) with no
+  validated evidence yet that it's needed beyond what the three pairwise joints already capture for a
+  query combining all three. Worth checking directly against the real corpus before building it.
+- **Extend the joint-histogram-over-linear-correlation pattern to other dimension pairs**, if any are
+  found — no other (non-price) pair has been checked for a similarly strong, exploitable relationship;
+  not assumed to exist, not investigated. Also worth re-applying the Round 54 lesson generally: a low
+  Pearson r does NOT rule out a real, non-linear, exploitable relationship — a direct joint-histogram
+  simulation is the right way to check, not correlation alone.
 
 ## Standing principles for anything built here
 
@@ -90,6 +96,10 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
   the worst real tail queries). `tix` deliberately untouched (r=0.336, weak correlation). A real,
   measured redundant-computation inefficiency the implementing agent found was fixed before merging,
   not deferred — see the ledger's own "Round 53" section.
+- Round 54: generalized `PriceJointTable` to `usd`×`tix`/`eur`×`tix` too — closes the NEXT-worst shapes
+  a fresh survey surfaced once Round 53 stopped dominating it (42-87x down to 1.00-1.92x), despite both
+  pairs' own weak linear correlation (Pearson r doesn't rule out a real non-linear relationship a joint
+  histogram still captures). 3-way `usd+eur+tix` remains out of scope — see the queue's own item above.
 - Harness fix (no round number, a Python-only fix outside the engine): `client/query_sampler.py`'s
   `_count_row` folded oracle/flavor words via `Counter.update(set(...))` — bare-set iteration is
   hash-seed-randomized per process, so tied-frequency co-occurring words could swap `most_common()`'s
