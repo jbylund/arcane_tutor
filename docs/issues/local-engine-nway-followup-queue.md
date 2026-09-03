@@ -10,7 +10,52 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
 
 ## Active queue (in order)
 
-1. **Generalize "anchored independence" further.** Round 50 shipped this deliberately narrow: only
+1. **`(subtype, subtype)` top-N table**, closing `same_family:type+type_realistic` (confirmed 0%
+   mechanism coverage today — `t:cleric t:spirit` falls to plain min-fold, 628 vs true 19, 33x over).
+   Design fully settled directly against the real corpus, not yet scoped into a numbered round:
+   - **Top-N membership is the union of per-dimension top-256**, not card-count-ranked alone — checked
+     directly: `Island`×`Swamp` (card=10, printing=107) sits outside top-64-by-card but deep inside
+     top-64-by-printing; at N=256 the union adds 37 printing-only + 21 artwork-only pairs on top of 258
+     card-ranked ones (258 -> 302, +17%). Same "don't silently drop something big in a dimension the
+     sort key doesn't see" philosophy as Round 47's own "include all ties" fix, just extended from one
+     axis to three.
+   - **`rest_max` becomes a real triple** (`rest_max_card`/`rest_max_printing`/`rest_max_artwork`, each
+     the true max in that space among the globally-excluded set) instead of one card-space scalar
+     scaled by a global average reprint ratio (`SetSubtypeTable`'s current pattern). Validated directly:
+     printing-space-native independence+cap beats card-space-then-×3.083-ratio at every percentile
+     (median 0.42x vs 0.64x, p99 18.67x vs 24.67x, max 21x vs 24.67x) on the same N=256 excluded
+     population — the ratio-scaling step assumes a uniform reprint rate across all subtype pairs, which
+     is false. Structurally, only the printing-space number has a live consumer today (`fold_candidate`
+     only ever takes `Candidate::Estimate{printing}` from this fallback per Round 46 — card/artwork
+     space are never touched by it regardless), so the card/artwork rest_max values are "free" (same
+     union-membership pass) but currently unconsumed — fine to store for a future consumer, not a
+     wasted design.
+   - **Keep `min(indep, rest_max)`**, don't simplify to either alone — checked both failure modes on
+     real data. Pure `rest_max` overshoots the deep tail badly (flat regardless of true count — e.g.
+     true=1 pairs get a 31x-over estimate at N=64). Pure independence overshoots for anti-correlated
+     common subtypes (`Human`×`Dragon`: indep=53 vs true=1, 53x over; `Human`×`Spirit`: indep=91 vs
+     true=3, 30x over) — 15/2157 excluded pairs at N=64 exceed `rest_max` this way, meaning the cap is
+     doing real, distinct work, not redundant safety margin.
+   - **N=256** confirmed as the right cutoff (matches existing `SetSubtypeTable` convention, table
+     stays trivially small at 302 entries). N-sweep in printing space: median flat ~0.4-0.5x at every N
+     (independence alone already handles the typical excluded pair); the only lever N pulls is
+     shrinking `rest_max`'s own tail cap, and the return is front-loaded — N=32->256 (7x more table)
+     cuts worst-case 117x->21x, N=256->1024 (another 5x) only gets 21x->3x while the "table" balloons to
+     65% of all pairs, defeating the point of a top-N/fallback split.
+   - **N is not sized by the `StreamedSelect`/`GatheredScan` transition** — checked directly against
+     `STREAM_MIN_MATCHES` (1,024 printings, the same threshold `PairTotals`' own `PAIR_MIN_PRINTINGS`
+     already prunes by, on the identical "below it the sparse floor decides the plan, not the estimate's
+     precision" principle). Only 2 of 2,221 distinct subtype pairs clear 1,024 in ANY space
+     (`Human`×`Wizard`=1,527p, `Human`×`Soldier`=1,428p; the #3 pair is already down to 880p; zero pairs
+     clear 1,024 in card or artwork space). Since `And` is monotonically non-increasing, any query
+     ANDing an excluded pair with more filters has a true total bounded by that pair's own joint count —
+     which is itself bounded by `rest_max_printing` (topped out at 117 even at N=32) — so this mechanism
+     structurally cannot push an estimate across the 1,024 boundary for any N discussed here. N=256 is
+     sized purely for general estimate accuracy (median/tail error above), not this transition.
+2. **Backport the `rest_max` triple + space-native independence fix (above) to `SetSubtypeTable` /
+   `ColorSubtypeTable`.** Both have the identical card-space-then-scale imprecision today — same fix,
+   smaller/separate task, not blocking the new table.
+3. **Generalize "anchored independence" further.** Round 50 shipped this deliberately narrow: only
    `SubtypeArithBox`'s own hit, only a single residual `IndepClass::Price` leaf. Three separate
    directions remain, each its own future round (validate independently, don't bundle):
    - **More residual classes.** Only `Price` has a validated real-data example; other classes
@@ -23,12 +68,12 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
    - **Combining multiple safe residual classes into one product**, not just one — needs the same
      order-statistics-bias care already documented in the design doc (never try residuals separately
      and pick the smallest) once 2+ classes are each independently validated as safe to anchor.
-2. **Measure the residual-size distribution for real 5+-leaf queries.** Still unmeasured since before
+4. **Measure the residual-size distribution for real 5+-leaf queries.** Still unmeasured since before
    this session started. This is the actual answer to "is the general bounded partition search worth
    building at all" — if real residuals rarely exceed 2-3 leaves, the "notice one bad case, build one
    validated mechanism" pattern (8 real gaps closed this way so far: Rounds 34, 40, 42, 44, 45, 48, 51,
    52) may just *be* the right architecture, not a placeholder for a general one.
-3. **Decide on / scope the actual general bounded partition search**, informed by #2's findings and
+5. **Decide on / scope the actual general bounded partition search**, informed by #4's findings and
    built on Round 49's own subset-tracking primitive (`CoveredState`'s `subsets: Vec<u64>`, already
    shipped). Not attempted until the above are in.
 
