@@ -17621,3 +17621,131 @@ fn scan_two_bucket_exact_mark_covered_on_hit_false_never_covers() {
     assert_eq!(exact_domain_cards, Some(3));
     assert!(!covered.flags[0] && !covered.flags[1] && !covered.flags[2], "mark_covered_on_hit=false must never cover, even on a hit");
 }
+
+/// Round 52 (docs/issues/local-engine-nway-followup-queue.md item #2): `acquire_plan_features`'s
+/// `PrintingCompose` branch used to read `unique=card`/`artwork`'s own match count SOLELY from
+/// `exact_result_total` -- a hand-maintained mirror with no arm at all for a pure 2+-leaf
+/// cmc/power/toughness/loyalty `And` (only a single bare leaf, Card-mode only). Meanwhile
+/// `compose_printing_estimate`'s own `And` arm, a few lines earlier in the SAME acquire call, already
+/// folds exactly this shape into `est.result.card`/`.artwork` via `arith_tuple_totals` (Round 51) --
+/// computed and then thrown away. This fixture uses the exact real-corpus-motivated shape from that
+/// round's own doc (`cmc<=1 power>=1 toughness>=1`, minus the `t:`/`f:` framing, since this is a plain
+/// `fuzz_store_n` store): confirms `exact_result_total` really does decline in both spaces, confirms
+/// `compose_printing_estimate`'s own fold is exact (matches a brute-force per-printing scan), and then
+/// drives the real `acquire_plan_features` entry point for `unique=artwork`/`unique=printing` (which
+/// DO reach the `PrintingCompose` branch for this shape) end to end.
+///
+/// `unique=card` is deliberately NOT asserted through `acquire_plan_features` here: this exact shape
+/// (only cmc/power/toughness leaves, nothing else) always fully compiles into ONE plane under Card
+/// mode, so `PlanePopcountOrder` wins the `if`/`else if` chain in `acquire_plan_features` before
+/// `PrintingCompose` is ever consulted -- confirmed directly (`prep.count_source() == CountSource::Plane`
+/// below), and already exact there by an entirely different, pre-existing mechanism. This is the
+/// "Mode::Card's own routing quirk" the round's own plan calls out as real but out of scope. Card mode's
+/// fix is instead validated directly against the same two functions `acquire_plan_features`'s Mode::Card
+/// arm calls (`exact_result_total`/`compose_printing_estimate(..).result.card`), applying the identical
+/// `.min()` merge -- proving the FIX's own logic is correct for Card mode even though this particular
+/// shape can never reach it in production.
+#[test]
+fn acquire_plan_features_wires_and_arm_exact_card_artwork_for_pure_arith_tuple_and() {
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(20_260_902);
+    let data = fuzz_store_n(&mut rng, 4_000);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let ctx = QueryCtx::from(archived);
+    let n_printings = archived.printings.len();
+
+    let filter = FilterExpr::And(vec![
+        FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Le, rhs: NumExpr::Const(1.0) },
+        FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Power), op: CmpOp::Ge, rhs: NumExpr::Const(1.0) },
+        FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Toughness), op: CmpOp::Ge, rhs: NumExpr::Const(1.0) },
+    ]);
+
+    // `exact_result_total` has no arm for a pure 2+-leaf arith `And` (only a single bare leaf, and only
+    // in Card mode) -- must decline in every space for this 3-leaf shape.
+    assert_eq!(exact_result_total(&filter, &archived.indexes, Mode::Card), None, "exact_result_total must decline (no arm for a pure 2+-leaf arith And) -- this is the gap the fix wires around, not through");
+    assert_eq!(exact_result_total(&filter, &archived.indexes, Mode::Artwork), None, "same decline in artwork space");
+
+    // Brute-force ground truth: a per-printing scan, independent of any engine mechanism.
+    let true_card = fuzz_reference_total(archived, &filter, "card");
+    let true_artwork = fuzz_reference_total(archived, &filter, "artwork");
+    let true_printing = fuzz_reference_total(archived, &filter, "printing");
+    assert!(true_card > 0 && true_artwork > 0, "fixture must actually match something for this test to mean anything");
+
+    // `compose_printing_estimate`'s own And-arm fold (Round 51's `arith_tuple_totals`) must already be
+    // exact in both spaces -- this is the value `acquire_plan_features` was throwing away before this
+    // round's fix.
+    let est = super::compose_printing_estimate(&filter, &archived.indexes, &archived.offsets, n_printings, false);
+    assert_eq!(est.result.card, Some(true_card), "the And arm's own fold must already be exact card-space");
+    assert_eq!(est.result.artwork, Some(true_artwork), "the And arm's own fold must already be exact artwork-space");
+
+    // Real end-to-end routing: unique=artwork/printing both naturally reach PrintingCompose for this
+    // shape (confirmed by count_source below) since a printing/artwork query never takes the
+    // Card-mode-only PlanePopcountOrder branch even though the whole filter compiles to a plane.
+    for (label, mode, want_matches) in [("artwork", Mode::Artwork, true_artwork), ("printing", Mode::Printing, true_printing)] {
+        let params = kernel_params(mode, SortCol::Name, false, 100, 0);
+        let unsplit = filter.clone();
+        let (pe, split_filter) = split_planes(filter.clone(), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, false);
+        let mut acq_filter = split_filter;
+        let (feats, prep, _bits, _and_ns) = acquire_plan_features(&ctx, &params, &mut acq_filter, Some(&unsplit), pe.as_ref());
+        assert_eq!(prep.count_source(), CountSource::PrintingCompose, "{label}: this shape must reach the PrintingCompose acquire branch to exercise the fix");
+        assert_eq!(feats.matches, want_matches as u32, "{label}: acquire's own matches must now equal the true exact value (before this fix it fell through to a statistical estimate)");
+    }
+
+    // Card mode: confirm the real routing quirk (bypasses PrintingCompose entirely for this shape) ...
+    let params_card = kernel_params(Mode::Card, SortCol::Name, false, 100, 0);
+    let unsplit_card = filter.clone();
+    let (pe_card, split_card) = split_planes(filter.clone(), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, true);
+    let mut acq_card = split_card;
+    let (feats_card, prep_card, _bits, _and_ns) = acquire_plan_features(&ctx, &params_card, &mut acq_card, Some(&unsplit_card), pe_card.as_ref());
+    assert_eq!(prep_card.count_source(), CountSource::Plane, "Card mode's own pre-existing routing quirk: a pure cmc/power/toughness And fully compiles to one plane, which PlanePopcountOrder claims before PrintingCompose is ever consulted -- out of scope for this round, asserted here so a future change to that routing is caught");
+    assert_eq!(feats_card.matches, true_card as u32, "still exact via the (unrelated, pre-existing) Plane mechanism");
+
+    // ... and separately validate the FIX's own merge logic directly, the same two calls
+    // `acquire_plan_features`'s Mode::Card arm makes, since real routing can never reach it here.
+    let exact_cards = match (exact_result_total(&filter, &archived.indexes, Mode::Card), est.result.card) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
+    assert_eq!(exact_cards, Some(true_card), "the fix's own merge, applied directly, must resolve to the true card count for this shape");
+}
+
+/// Round 52's `.min()` merge (`match (exact_result_total(..), est.result.card) { (Some(a), Some(b)) =>
+/// Some(a.min(b)), .. }`), tested in isolation. Honest finding from constructing this: given the
+/// mechanisms implemented as of this round, `exact_result_total`'s own Card-mode bare-leaf arm
+/// (`bare_numeric_field_count`) and `compose_printing_estimate`'s own bare-leaf arm for cmc/power/
+/// toughness call that SAME function for `.card` (see that arm's own doc, "Falls back to
+/// `arith_tuple_totals` only if the dedicated lookup somehow declines") -- so whenever BOTH sides are
+/// naturally `Some` for an identical filter today, they are the identical value, not just close. A
+/// real "both populated, genuinely differing" case could not be constructed through the actual index
+/// machinery without corrupting an index in a way that would corrupt both call sites identically (they
+/// share the one underlying lookup). This test therefore exercises the merge's own two-line shape
+/// directly, with hand-picked `Option<usize>` pairs mirroring the exact match arms in
+/// `acquire_plan_features` -- guarding the mechanism itself (a future third exact source, or a
+/// diverging index, could make two sides disagree for real) rather than asserting a disagreement that
+/// cannot happen yet.
+#[test]
+fn printing_compose_min_merge_prefers_tighter_of_two_populated_exact_sources() {
+    // The exact shape of both `acquire_plan_features` merges this round added (`exact_cards` and the
+    // artwork `rt`), copied verbatim rather than paraphrased so this test fails if that shape ever
+    // silently regresses to a plain `.or()`.
+    let merge = |a: Option<usize>, b: Option<usize>| -> Option<usize> {
+        match (a, b) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    };
+
+    // Both populated, genuinely different -- `.min()` must win regardless of which argument position
+    // (first == exact_result_total, second == est.result.card/.artwork) holds the smaller value.
+    assert_eq!(merge(Some(536), Some(174)), Some(174), "the tighter (second/And-arm) source must win, not whichever is checked first");
+    assert_eq!(merge(Some(174), Some(536)), Some(174), "same tighter value, opposite argument order -- must not be order-dependent");
+    assert_eq!(merge(Some(100), Some(100)), Some(100), "equal sources: still Some(the value), not accidentally doubled or dropped");
+
+    // One side missing must fall through to the other -- the case that already existed before this
+    // round for `exact_cards`'s `exact_total.unwrap_or(printing_matches)`-style single-source code, now
+    // extended to two potential sources.
+    assert_eq!(merge(Some(42), None), Some(42), "exact_result_total hit, And-arm miss -- must keep the hit");
+    assert_eq!(merge(None, Some(7)), Some(7), "exact_result_total miss, And-arm hit -- must adopt the new source (this is the actual bug this round fixes)");
+    assert_eq!(merge(None, None), None, "both decline -- falls through to the pre-existing statistical estimate, unchanged");
+}

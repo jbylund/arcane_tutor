@@ -15103,7 +15103,22 @@ fn acquire_plan_features(
         // mode, because `eval_domain`, `scan_all` and the artwork capacity all consume a card count.
         // `exact_total` is the answer in the query's OWN mode, and is what `result_total` wants.
         // Conflating them puts an artwork count where cards are expected in artwork mode.
-        let exact_cards = exact_result_total(composed, indexes, Mode::Card);
+        //
+        // `exact_result_total` is a hand-maintained mirror recognizing only specific shapes (bare
+        // ranges, bare rarity, a 2-leaf `Eq`-only pair, `SetSubtypeTable`, a single bare arith leaf)
+        // -- it has no arm for the 2+-leaf arith-tuple combinations `compose_printing_estimate`'s own
+        // `And` arm already folds exactly (Round 51's `arith_tuple_totals`, plus every other exact
+        // mechanism that arm accumulates into `exact_domain_cards`). `est.result.card` already carries
+        // that tighter fold -- structurally exact whenever populated, never an estimate, by the same
+        // guarantee `domain_cards`'/`card_invariant_domain_exact`'s own docs above already rely on --
+        // so merge it in as a second independently-exact source, taking whichever is tighter when both
+        // fire (mirrors this codebase's established `.map_or(x, |d| d.min(x))` two-exact-source
+        // convention; a plain `.or()` would silently prefer whichever source happens to be checked
+        // first even when the other is tighter).
+        let exact_cards = match (exact_result_total(composed, indexes, Mode::Card), est.result.card) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
         let exact_total = if matches!(mode, Mode::Card) {
             exact_cards
         } else {
@@ -15358,7 +15373,17 @@ fn acquire_plan_features(
                 // The two-stage estimate is only reached when nothing exact is available. A bare
                 // one-sided range now answers artwork exactly from the range table's artwork column,
                 // which is the one space every such query used to estimate (0.80-0.87 measured).
-                let rt = exact_total.unwrap_or_else(|| artwork_estimate(printing_matches, capacity_cards, n_cards as usize, n_artworks));
+                //
+                // `exact_total` here is `exact_result_total(.., Mode::Artwork)` -- the same
+                // hand-maintained mirror with no arm for 2+-leaf arith-tuple shapes noted at
+                // `exact_cards`'s own definition above. `est.result.artwork` carries the same
+                // structurally-exact And-arm fold `est.result.card` does, just in artwork space --
+                // merge it in the same way, tighter of the two when both fire.
+                let rt = match (exact_total, est.result.artwork) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (a, b) => a.or(b),
+                }
+                .unwrap_or_else(|| artwork_estimate(printing_matches, capacity_cards, n_cards as usize, n_artworks));
                 // The bitmap `printing_bits_to_artwork_bits` popcounts is n_artworks bits wide, not
                 // n_printings -- 46,112 against 97,206 here, so this was 2.1x over as well.
                 (rt, printing_matches, n_artworks.div_ceil(64), domain_cards, scan_all(domain_cards))
