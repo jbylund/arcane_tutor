@@ -2268,6 +2268,242 @@ fn color_cmc_exact(op: CmpOp, query_mask: u8, cmc_lo: u32, cmc_hi: u32, table: &
     Some(total)
 }
 
+// ─── Round 53: (usd, eur) joint bucket table ──────────────────────────────────
+// docs/issues/local-engine-nway-followup-queue.md. `IndepClass::Price` bundles usd/eur/tix into ONE
+// class (see that enum's own doc): once 2+ price leaves are present, the independence registry's
+// `by_class` bucketing hits its `_ => {}` catch-all ("2+ occurrences of a class with no combining
+// table, dropped") and NEITHER leaf becomes a unit -- the query falls all the way back to a bare
+// per-leaf `min()`-fold. A fresh 108K-row sweep found `usd`x`eur` the worst-performing shape by far
+// (`usd>0.75 eur<0.16`: predicted 25,444 against a true 137, 185x over; several other real examples in
+// the same shape show 75-180x error).
+
+/// Quantile-bucket count per axis for `PriceJointTable` below -- 64 gives a sparse table of at most
+/// 64*64 = 4,096 possible cells (only the `(usd_bucket, eur_bucket)` pairs that actually co-occur
+/// among real printings are stored). Checked directly against the real corpus, not assumed: heavy
+/// ties collapse the real bucket COUNT well below 64 per axis (55 usd / 52 eur buckets, since a
+/// single dominant tied value can absorb many buckets' worth of target share in one step -- see
+/// `build_quantile_edges`'s own doc), but the real corpus still populates 1,834 of the resulting 2,860
+/// possible cells (64%) -- NOT "far fewer", a real, measured cost this table's own `joint_estimate`
+/// pays on every query that reaches it (see that function's own doc for the measured ns impact).
+const PRICE_JOINT_BUCKETS: usize = 64;
+
+/// The `(usd, eur)` joint: validated directly against the real corpus BEFORE being built. Pearson
+/// r=0.877 usd<->eur (strongly correlated -- eur tracks a related but genuinely separate secondary
+/// market, not just an FX rate) -- but the eur/usd ratio itself spans p10=0.346 to p90=1.357, too wide
+/// for a simple "translate the bound" rule to be tight. A real 2D histogram simulation, quantile-
+/// bucketed (64 per axis, equal-*count* not equal-width -- equal-log-width buckets were checked and
+/// rejected: they concentrate 38.6% of all mass in 5 of 64 buckets, since MTG prices are heavily
+/// skewed cheap), gives 1.03-1.52x on the five worst real tail queries -- against 75-180x under
+/// today's fallback.
+///
+/// Deliberately usd<->eur ONLY: `tix` stays out (r=0.336, weak enough that the existing plain
+/// treatment -- a bare per-leaf min-fold -- is already reasonable; no validated need to touch it, and
+/// this table is scoped not to).
+///
+/// Stores each axis's own bucket UPPER edges (exclusive, raw integer cents -- prices are ALREADY
+/// integer cents everywhere else in this codebase, see `Printing::price_usd`'s own doc comment; this
+/// table does not reopen that and does not use floats, unlike an earlier draft of this design) plus a
+/// SPARSE map over only the bucket pairs that actually occur among printings where BOTH `price_usd`
+/// and `price_eur` are populated -- a printing missing either field can never satisfy a two-sided
+/// `usd<op>a eur<op>b` query under this codebase's own `Tri`-valued NULL semantics, so it correctly
+/// contributes to no cell at all.
+///
+/// No dense 2D array or prefix-sum/summed-area table: `color_cmp_value_total`'s own `table.iter()
+/// .filter(...).sum()` linear scan over a `HashMap` is the established precedent this reuses
+/// (`joint_estimate` below) rather than building inclusion-exclusion machinery for a table this
+/// bounded. NOT actually comparable in SCALE to that precedent, though: `color_cmp_value_total`'s own
+/// table holds "at most a few dozen" real entries (its own doc), while this one holds 1,834 on the
+/// real corpus (see `PRICE_JOINT_BUCKETS`'s own doc) -- measured directly (`and_estimate_ns`, isolated
+/// release wheels, same-build canary): a bare `usd<op>a eur<op>b` query (the standalone fold) costs
+/// ~3.6us median where the pre-existing per-leaf min-fold cost ~0.33us, and a THIRD leaf present (the
+/// `by_class` arm, one scan instead of two -- see below) costs ~2.7us where the old baseline cost
+/// ~0.96us. Real, non-trivial overhead, not "cheap" in the absolute sense the `Cmc`/`Pow` multi-arm's
+/// own two-call-site precedent assumed for its own much smaller per-call lookup cost -- but still
+/// microseconds against a query whose OWN acquire cost is routinely in the same range, and a large,
+/// validated accuracy win in exchange (75-180x down to ~1.0-1.5x on the five worst real tail queries).
+///
+/// A known, MEASURED inefficiency this round deliberately ships anyway (flagged for a follow-up round,
+/// not fixed here -- see the followup queue doc): the standalone fold and the `by_class` special case
+/// BOTH run for a bare 2-source `usd<op>a eur<op>b` query with nothing else (the standalone fold's own
+/// gate fires, AND `IndepClass::Price` has exactly 2 occurrences so the `by_class` arm's gate fires
+/// too) -- but the `by_class` arm's own unit can never actually pair with anything in that shape (there
+/// is no third source left to pair against), so its own `joint_estimate` call is entirely wasted work.
+/// Confirmed directly: the bare-2-leaf case's ~3.6us is almost exactly double the 3-leaf case's ~2.7us
+/// minus the old baseline's own leaf costs, consistent with two full table scans where only one payoff
+/// is ever used. Skipping the `by_class` arm's own attempt whenever `and_sources.len() == 2` would be
+/// a safe, zero-behavior-change fix (no pairing is possible in that shape either way) -- not made this
+/// round, since the task was to implement the two call sites as specified, not redesign them.
+///
+/// `cells` is keyed by a single combined `u32` (`(usd_bucket << 16) | eur_bucket`), not a `(u16, u16)`
+/// tuple -- mirroring `PairTotals`'s own combined-key precedent for the identical "two small ids into
+/// one archived map key" shape (every other `#[derive(Archive)]` map key in this file is a single
+/// scalar or `String`, never a tuple; `SetSubtypeTable`'s own doc explains the same preference for
+/// query ergonomics, not an rkyv limitation).
+#[derive(Archive, Serialize, Deserialize, Default)]
+struct PriceJointTable {
+    usd_edges: Vec<u32>,
+    eur_edges: Vec<u32>,
+    cells: HashMap<u32, SpaceTotals>,
+}
+
+impl ArchivedPriceJointTable {
+    /// The bucket index owning raw value `v` on one axis: the count of `edges` entries `<= v` --
+    /// correct both when `v` is a real observed value (which bucket contains it) and when `v` is used
+    /// as an INCLUSIVE lower query bound (which bucket the range should start at), since `edges[i]` is
+    /// stored as the first value of the bucket AFTER `i`, so a bucket containing `v` is never
+    /// miscounted as "entirely below" it. Mirrors `PrintingValueIndex::offset_of`'s own
+    /// `partition_point` idiom for the equivalent half-open-range-to-offset conversion, one level
+    /// coarser (buckets instead of individual values).
+    fn bucket_of(edges: &Archived<Vec<u32>>, v: u32) -> u16 {
+        edges.partition_point(|e| u32::from(*e) <= v) as u16
+    }
+
+    /// The EXCLUSIVE bucket-index upper bound for a half-open query `[.., hi)`: one past the bucket
+    /// that owns `hi`'s own predecessor (`hi - 1`) -- i.e. the bucket containing the LAST value the
+    /// query range actually includes. Deliberately NOT just `bucket_of(hi)`: a `hi` that lands strictly
+    /// INSIDE a bucket (not exactly on a boundary -- the common case for a narrow `Eq`/tight-range
+    /// query) must still count that whole bucket as overlapping (`joint_estimate`'s own "any overlap
+    /// counts fully" convention), which `bucket_of(hi)` alone would miss for a query wholly inside one
+    /// bucket (`bucket_of(lo) == bucket_of(hi)` would read as an apparently-empty range). `hi == 0` is
+    /// the one genuinely-empty case (no cents value is `< 0`), handled by a direct check rather than
+    /// `saturating_sub` silently returning bucket 0's own range for an empty query.
+    ///
+    /// This also handles `hi == u32::MAX` (`int_range_bounds`'s own "no upper bound" sentinel for
+    /// `Ge`/`Gt`) with no separate special case: `bucket_of(u32::MAX - 1)` still lands in the last real
+    /// bucket (only `PRICE_JOINT_BUCKETS - 1` edges are ever stored, see `PriceJointTable`'s own doc,
+    /// so no real edge is anywhere near `u32::MAX`), and `+ 1` correctly reaches one past it.
+    fn hi_bucket_of(edges: &Archived<Vec<u32>>, hi: u32) -> u16 {
+        if hi == 0 {
+            return 0;
+        }
+        Self::bucket_of(edges, hi - 1) + 1
+    }
+
+    fn cell_key(usd_bucket: u16, eur_bucket: u16) -> u32 {
+        (u32::from(usd_bucket) << 16) | u32::from(eur_bucket)
+    }
+
+    /// Exact-cell sum for the bucket-space rectangle covering `[usd_lo, usd_hi)` x `[eur_lo, eur_hi)`
+    /// (raw cents on each axis, half-open, the same convention every other range consumer in this file
+    /// uses), or `None` when the table isn't built for this store at all (`cells` empty -- a test
+    /// fixture, typically, the same convention `color_cmc_exact`'s own miss case uses: a store with
+    /// real data always has 1+ real cell).
+    ///
+    /// "Any overlap counts fully": a bucket whose own range only partially overlaps the query still
+    /// contributes its ENTIRE total, no boundary interpolation -- validated in this table's own
+    /// simulation as already a real, large improvement; interpolation is a plausible future
+    /// refinement, not needed to ship this table (see this table's own top-level doc).
+    fn joint_estimate(&self, usd_lo: u32, usd_hi: u32, eur_lo: u32, eur_hi: u32) -> Option<(usize, usize, usize)> {
+        if self.cells.is_empty() {
+            return None;
+        }
+        // A provably-empty RAW range on either axis (`hi <= lo`, e.g. `bare_range_bounds`'s own `(0, 0)`
+        // convention for a `Ne`-adjacent or out-of-domain bound) is checked directly on the raw values,
+        // before any bucket conversion -- the same "zero-width range trivially resolves to k=0
+        // regardless of which value" property `PrintingValueIndex::range` already has via its own
+        // `offset_of(lo) == offset_of(hi)` fold. This also makes the bucket-space check unnecessary: once
+        // `usd_hi > usd_lo` here, `hi_bucket_of(usd_hi) > bucket_of(usd_lo)` always holds (`bucket_of` is
+        // monotonic non-decreasing and `hi_bucket_of(hi) >= bucket_of(hi - 1) + 1 >= bucket_of(lo) + 1`
+        // whenever `hi - 1 >= lo`), so no separate bucket-space emptiness guard is needed below.
+        if usd_hi <= usd_lo || eur_hi <= eur_lo {
+            return Some((0, 0, 0));
+        }
+        let usd_lo_b = Self::bucket_of(&self.usd_edges, usd_lo);
+        let usd_hi_b = Self::hi_bucket_of(&self.usd_edges, usd_hi);
+        let eur_lo_b = Self::bucket_of(&self.eur_edges, eur_lo);
+        let eur_hi_b = Self::hi_bucket_of(&self.eur_edges, eur_hi);
+        let mut total = (0usize, 0usize, 0usize);
+        for (key, t) in self.cells.iter() {
+            let key = u32::from(*key);
+            let (usd_b, eur_b) = ((key >> 16) as u16, (key & 0xFFFF) as u16);
+            if (usd_lo_b..usd_hi_b).contains(&usd_b) && (eur_lo_b..eur_hi_b).contains(&eur_b) {
+                total.0 += u32::from(t.printings) as usize;
+                total.1 += u32::from(t.cards) as usize;
+                total.2 += u32::from(t.artworks) as usize;
+            }
+        }
+        Some(total)
+    }
+}
+
+/// Tie-safe quantile bucket UPPER edges (exclusive, half-open) for one price axis, built over
+/// `counts` (each distinct raw-cents value's occurrence count among the population `PriceJointTable`
+/// covers -- printings with BOTH prices present). Walks distinct values ascending, accumulating a
+/// running per-bucket count; closes the current bucket (records the edge as `v + 1`, so every value
+/// `<= v` stays in the bucket just closed and every value `> v` starts the next one) only once the
+/// running count reaches the target per-bucket share (`total / PRICE_JOINT_BUCKETS`, rounded up) --
+/// and only at a value boundary, NEVER inside a run of identical values, so a single dominant value
+/// (e.g. the "$0.23 bulk common" tier, 1,500-1,700 occurrences on its own on the real corpus --
+/// comfortably more than one bucket's ~1,282-item target share at 64 buckets) always lands whole in
+/// one bucket, even when that makes the bucket wider than its "ideal" share (the same technique
+/// `pandas.qcut(duplicates='drop')` uses). Also caps the number of edges produced at
+/// `PRICE_JOINT_BUCKETS - 1` (one fewer than the bucket count -- the last bucket has no upper edge, it
+/// silently absorbs everything past the final recorded edge), so a heavy tail of many distinct
+/// large-count values near the end cannot spawn more than `PRICE_JOINT_BUCKETS` buckets. Returns fewer
+/// edges than that cap when a heavy tie or a small population produces fewer real buckets than the
+/// target -- never degenerate (empty), never split.
+fn build_quantile_edges(counts: &HashMap<u32, u32>, total: u32) -> Vec<u32> {
+    if total == 0 {
+        return Vec::new();
+    }
+    let mut values: Vec<u32> = counts.keys().copied().collect();
+    values.sort_unstable();
+    let target = ((f64::from(total) / PRICE_JOINT_BUCKETS as f64).ceil() as u32).max(1);
+    let mut edges = Vec::new();
+    let mut running: u32 = 0;
+    for &v in &values {
+        running += counts[&v];
+        if running >= target && edges.len() + 1 < PRICE_JOINT_BUCKETS {
+            edges.push(v.saturating_add(1));
+            running = 0;
+        }
+    }
+    edges
+}
+
+/// Build-time (unarchived) counterpart to `ArchivedPriceJointTable::bucket_of` -- same
+/// `partition_point` conversion, over a plain `&[u32]` rather than an archived slice, used while
+/// constructing `PriceJointTable::cells` so the build pass and the query-time lookup can never
+/// disagree about which bucket a value falls in. No `u32::MAX` special case here (unlike the query-time
+/// version): `v` is always a REAL observed price in this caller, never a query's own "no upper bound"
+/// sentinel.
+fn price_bucket_of(edges: &[u32], v: u32) -> u16 {
+    edges.partition_point(|&e| e <= v) as u16
+}
+
+/// Builds the Round 53 `(usd, eur)` joint (see `PriceJointTable`'s own doc for the full motivation and
+/// validation). One shared pass over `printings` to find each axis's own quantile edges (only over
+/// printings where BOTH prices are populated -- the same population the cells themselves are scoped
+/// to, so the bucket boundaries and the cells they index can never disagree about which printings
+/// exist), then `build_value_totals` (the SAME exact card/printing/artwork dedup every other exact
+/// table in this file already shares, not a hand-rolled accumulator) for the cell totals, keyed by
+/// each printing's own bucket pair.
+fn build_price_joint_table(cards: &[OracleCard], printings: &[Printing], printing_to_card: &[u32], max_artwork_groups: usize) -> PriceJointTable {
+    let mut usd_counts: HashMap<u32, u32> = HashMap::new();
+    let mut eur_counts: HashMap<u32, u32> = HashMap::new();
+    let mut total: u32 = 0;
+    for p in printings {
+        if let (Some(usd), Some(eur)) = (p.price_usd, p.price_eur) {
+            *usd_counts.entry(usd).or_insert(0) += 1;
+            *eur_counts.entry(eur).or_insert(0) += 1;
+            total += 1;
+        }
+    }
+    let usd_edges = build_quantile_edges(&usd_counts, total);
+    let eur_edges = build_quantile_edges(&eur_counts, total);
+    let cells: HashMap<u32, SpaceTotals> = build_value_totals(cards, printings, printing_to_card, max_artwork_groups, |_card, p| {
+        match (p.price_usd, p.price_eur) {
+            (Some(usd), Some(eur)) => {
+                let usd_bucket = price_bucket_of(&usd_edges, usd);
+                let eur_bucket = price_bucket_of(&eur_edges, eur);
+                vec![ArchivedPriceJointTable::cell_key(usd_bucket, eur_bucket)]
+            }
+            _ => vec![],
+        }
+    });
+    PriceJointTable { usd_edges, eur_edges, cells }
+}
+
 /// One literal `NumericCmp` child on `NumField::Cmc` resolved into the half-open `[lo, hi)` integer
 /// range it admits, via the SAME op-to-bound conversion `bare_range_bounds` itself uses
 /// (`int_range_bounds`) -- shared so this table's own bound resolution can never disagree with the
@@ -4832,6 +5068,9 @@ struct CardIndexes {
     /// Round 44: `colors`/`color_identity` x cmc exact joint, for `compose_printing_estimate`'s `And`
     /// arm and `exact_result_total`. See `ColorCmcTable`'s own doc.
     color_cmc:      ColorCmcIndexes,
+    /// Round 53: the `(usd, eur)` joint bucket table, for `compose_printing_estimate`'s `And` arm and
+    /// the independence registry's own `by_class` multi-arm. See `PriceJointTable`'s own doc.
+    price_joint:    PriceJointTable,
     sort_perms:     SortPermutations,          // card space (streamed selection)
     artwork_groups: Vec<u16>,                  // card space: distinct illustration groups
     // card space, n_cards+1 entries: prefix sum of artwork_groups, so card c's artworks are the
@@ -8712,6 +8951,43 @@ fn is_price_num_field(f: NumField) -> bool {
     matches!(f, NumField::PriceUsd | NumField::PriceEur | NumField::PriceTix)
 }
 
+/// Round 53: which SPECIFIC price field an `IndepClass::Price`-classified `AndSource` represents --
+/// `indep_class_of`'s own classification deliberately does NOT distinguish usd/eur/tix (every other
+/// caller of `IndepClass` only needs "is this the price family", never which currency), so this is a
+/// finer-grained sibling used only by the `PriceJointTable` call sites below. Mirrors
+/// `indep_class_of`'s own `FusedRange` ptr-identity checks exactly, and extends the same treatment to
+/// `AndSource::Child` (via `numeric_cmp_field`), which `indep_class_of` does not currently expose.
+fn price_field_of(src: AndSource<'_, '_>, indexes: &Archived<CardIndexes>) -> Option<NumField> {
+    match src {
+        AndSource::Child(c) => numeric_cmp_field(c).filter(|f| is_price_num_field(*f)),
+        AndSource::FusedRange { idx, .. } => {
+            if std::ptr::eq(idx, &indexes.price_usd) {
+                Some(NumField::PriceUsd)
+            } else if std::ptr::eq(idx, &indexes.price_eur) {
+                Some(NumField::PriceEur)
+            } else if std::ptr::eq(idx, &indexes.price_tix) {
+                Some(NumField::PriceTix)
+            } else {
+                None
+            }
+        }
+    }
+}
+
+/// Round 53: the half-open `[lo, hi)` raw-cents bounds a price `AndSource` resolves to, whichever
+/// shape it is -- a `FusedRange` already carries them; a bare `Child` resolves via `bare_range_bounds`
+/// (the SAME op-to-bound conversion every other printing-range consumer in this file shares), keeping
+/// only the bounds and discarding the index reference (the caller already knows which axis from
+/// `price_field_of`, called separately). Only ever called after `price_field_of` confirms `src` is one
+/// of the three price fields, so there is no risk of silently reusing this for e.g. a `cn`/`released`
+/// bound.
+fn price_leaf_bounds(src: AndSource<'_, '_>, indexes: &Archived<CardIndexes>) -> Option<(u32, u32)> {
+    match src {
+        AndSource::Child(c) => bare_range_bounds(c, indexes).map(|(_, lo, hi)| (lo, hi)),
+        AndSource::FusedRange { lo, hi, .. } => Some((lo, hi)),
+    }
+}
+
 /// Per-`And`-arm bookkeeping for which leaves, and which exact leaf SUBSETS, already have a real
 /// answer.
 ///
@@ -9609,6 +9885,66 @@ fn compose_printing_estimate(
                     t.considered.push(AndTraceGroup {
                         leaves: v.iter().map(|c| format!("{c:?}")).collect(),
                         mechanism: "SetCollectorRange",
+                        hit: estimate_hit.is_some(),
+                        printing: estimate_hit,
+                        card: None,
+                        artwork: None,
+                    });
+                }
+            }
+            // Round 53 (`docs/issues/local-engine-nway-followup-queue.md`): a `usd` bound And'd with an
+            // `eur` bound, and NOTHING else, gets the exact `(usd, eur)` bucketed joint estimate below
+            // instead of the plain min-fold above -- see `PriceJointTable`'s own doc for the full
+            // motivation (`usd>0.75 eur<0.16` predicted 25,444 against a true 137 today, 185x over,
+            // because `IndepClass::Price` bundles usd/eur/tix into ONE class and the `by_class`
+            // registry's own `_ => {}` catch-all further down drops any 2+-occurrence class it has no
+            // combining table for -- neither leaf becomes a unit at all).
+            //
+            // Deliberately narrow, mirroring `SetCollectorRange`'s own strict 2-source shape just above
+            // and `SubtypePairIndexes`/`SubtypeArithBox`'s own "start narrow" discipline: the WHOLE `And`
+            // must be exactly these two sources (`and_sources.len() == 2`), not a residual-scan
+            // generalization (a natural future round, out of scope here -- see the followup queue).
+            // Folded as `Candidate::Estimate`, never `Exact`: the bucketed lookup is a real
+            // approximation (validated to 1.03-1.52x on the five worst real tail queries, not a
+            // guaranteed bound), so it must never feed `exact_domain_*`.
+            if let [a, b] = and_sources.as_slice() {
+                let (a, b) = (*a, *b);
+                let usd_eur = price_field_of(a, indexes)
+                    .zip(price_leaf_bounds(a, indexes))
+                    .zip(price_field_of(b, indexes).zip(price_leaf_bounds(b, indexes)))
+                    .and_then(|((fa, a_bounds), (fb, b_bounds))| match (fa, fb) {
+                        (NumField::PriceUsd, NumField::PriceEur) => Some((a_bounds, b_bounds)),
+                        (NumField::PriceEur, NumField::PriceUsd) => Some((b_bounds, a_bounds)),
+                        _ => None, // usd+tix / eur+tix / same field twice -- not this shape, declines
+                    });
+                let mut estimate_hit: Option<usize> = None;
+                if let Some(((usd_lo, usd_hi), (eur_lo, eur_hi))) = usd_eur
+                    && let Some((printing, _card, _artwork)) = indexes.price_joint.joint_estimate(usd_lo, usd_hi, eur_lo, eur_hi)
+                {
+                    fold_candidate(
+                        &mut result,
+                        &mut exact_domain_cards,
+                        &mut exact_domain_printing,
+                        &mut exact_domain_artworks,
+                        "PriceJointTable",
+                        Candidate::Estimate { printing },
+                    );
+                    estimate_hit = Some(printing);
+                    // Round 40's own convention: mark this Estimate-class candidate's own leaves
+                    // covered, mirroring `SetCollectorRange`'s own defensive self-mark just above --
+                    // prevents some future mechanism from redundantly re-answering the identical usd+eur
+                    // subset (in practice this can't overlap with the `by_class` registry's own Price
+                    // special case below, since that requires a THIRD leaf of some other class to be
+                    // present at all, but this keeps the invariant true structurally, not by accident).
+                    let all_v: Vec<&FilterExpr> = v.iter().collect();
+                    mark_covered(v, &all_v, &mut covered);
+                }
+                if usd_eur.is_some()
+                    && let Some(t) = and_trace.as_mut()
+                {
+                    t.considered.push(AndTraceGroup {
+                        leaves: v.iter().map(|c| format!("{c:?}")).collect(),
+                        mechanism: "PriceJointTable",
                         hit: estimate_hit.is_some(),
                         printing: estimate_hit,
                         card: None,
@@ -10533,6 +10869,55 @@ fn compose_printing_estimate(
                             }
                             // else: the scan itself declined (index not built) -- dropped, no unit
                             // pushed, same as any other shape this tightening doesn't recognize.
+                        }
+                        // Round 53 (`docs/issues/local-engine-nway-followup-queue.md`): exactly 2
+                        // `Price`-classified residual sources present. Before this arm, EVERY 2+-
+                        // occurrence `Price` combination fell straight to the `_ => {}` catch-all below
+                        // (usd+eur included) -- this is the by_class-registry-side half of the Round 53
+                        // fix (the OTHER half is the standalone whole-`And` fold a few hundred lines up,
+                        // for when usd+eur is the entire query with nothing else to pair against; this
+                        // arm is for when a THIRD class -- `Type`, `ColorId`, `Legality`, `Cmc`, etc. --
+                        // is ALSO present, so usd+eur needs to become ONE unit before it can pair against
+                        // that third class via the existing loop below).
+                        //
+                        // Resolves which specific price field each of the two positions is
+                        // (`price_field_of`, `indep_class_of`'s finer-grained sibling); if they resolve
+                        // to exactly one usd and one eur (either order), the SAME `PriceJointTable`
+                        // lookup the standalone fold uses gives this unit a real `(printing, card,
+                        // artwork)` triple -- `est.card`/`.artwork` are `Some(...)`, not `None`, so the
+                        // pairing loop below can compute `card_indep`/`artwork_indep` for this unit for
+                        // the first time, the same upgrade Round 51 gave the `Cmc`/`Pow` arm above.
+                        //
+                        // usd+tix / eur+tix (fields resolve, but not to one usd + one eur) and 3-way
+                        // usd+eur+tix (`multi.len() == 3`, guard fails, never reaches this arm at all)
+                        // are NOT this special case -- both fall through to the unchanged `_ => {}` drop
+                        // below, exactly like before this round.
+                        multi if class == IndepClass::Price && multi.len() == 2 => {
+                            let fields: Vec<Option<NumField>> = multi.iter().map(|&p| price_field_of(and_sources[p], indexes)).collect();
+                            let bounds: Vec<Option<(u32, u32)>> = multi.iter().map(|&p| price_leaf_bounds(and_sources[p], indexes)).collect();
+                            let usd_eur = if let ([Some(fa), Some(fb)], [Some(a_bounds), Some(b_bounds)]) = (fields.as_slice(), bounds.as_slice()) {
+                                match (*fa, *fb) {
+                                    (NumField::PriceUsd, NumField::PriceEur) => Some((*a_bounds, *b_bounds)),
+                                    (NumField::PriceEur, NumField::PriceUsd) => Some((*b_bounds, *a_bounds)),
+                                    _ => None,
+                                }
+                            } else {
+                                None
+                            };
+                            if let Some(((usd_lo, usd_hi), (eur_lo, eur_hi))) = usd_eur
+                                && let Some((printings, cards, artworks)) = indexes.price_joint.joint_estimate(usd_lo, usd_hi, eur_lo, eur_hi)
+                            {
+                                let field_children: Vec<&FilterExpr> = multi.iter().flat_map(|&p| leaves_for(p)).collect();
+                                let mask = mask_for(&field_children);
+                                units.push(IndepUnit {
+                                    class,
+                                    leaves: field_children,
+                                    est: SpaceEstimate { printing: printings, card: Some(cards), artwork: Some(artworks) },
+                                    mask,
+                                });
+                            }
+                            // else: usd+tix / eur+tix / table not built -- dropped, no unit pushed, same
+                            // as the `_ => {}` catch-all below would have done.
                         }
                         // 2+ occurrences of a class with no combining table (e.g. two literal `f:`
                         // leaves) -- dropped rather than guessing which one to use, Round 38's own
@@ -17041,7 +17426,10 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 // 2026090201 — `ArithTupleIndex` gains `totals: Vec<SpaceTotals>`, one exact (printing, card,
 // artwork) triple per distinct (cmc,power,toughness,loyalty) combination, summed at build time from
 // that key's own postings. Same blind spot again: entirely inside `CardIndexes`.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026090201;
+//
+// 2026090202 — new `CardIndexes` field `price_joint` (`PriceJointTable`, the Round 53 `(usd, eur)`
+// quantile-bucket joint). Same blind spot again: entirely inside `CardIndexes`.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026090202;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
@@ -17713,6 +18101,14 @@ impl QueryEngine {
         // `offsets`/`artwork_base`, both of which the struct literal below moves (`artwork_base` via
         // its own shorthand field, before `arith_tuple`'s field position).
         let arith_tuple = build_arith_tuple_index(&cards, &offsets, &artwork_base);
+        // Same reasoning as `subtype_pairs`/`subtype_arith`/`color_cmc` above: reads `printing_to_card`,
+        // which the struct literal below moves.
+        let price_joint = build_price_joint_table(
+            &cards,
+            &printings,
+            &printing_to_card,
+            usize::from(artwork_group_counts.iter().copied().max().unwrap_or(0)),
+        );
         let indexes = CardIndexes {
             name_trigram:   build_trigram_index(&cards, |c| c.card_name_folded.as_str()),
             oracle_trigram: build_oracle_text_index(&cards, &strings),
@@ -17781,6 +18177,7 @@ impl QueryEngine {
             subtype_pairs,
             subtype_arith,
             color_cmc,
+            price_joint,
             name_bigrams:   build_name_bigram_index(&cards),
             name_unigrams:  build_name_unigram_index(&cards),
             legal_divergent: build_divergent_ids(&cards),

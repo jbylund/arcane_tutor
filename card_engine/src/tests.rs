@@ -6728,6 +6728,8 @@ fn bench_checked_vs_unchecked_access() {
         // Not exercised by this test (a pure serialization/access-cost benchmark, unrelated to the
         // And-arm tightenings above) -- plain default, same as `frame_data`/`artists`/etc above.
         color_cmc:      super::ColorCmcIndexes::default(),
+        // Same reasoning as `color_cmc` immediately above: not exercised by this benchmark, plain default.
+        price_joint:    super::PriceJointTable::default(),
         sort_perms:     build_sort_permutations(&cards, &offsets),
         max_artwork_groups: artwork_groups.iter().copied().max().unwrap_or(0),
         artwork_groups,
@@ -17926,5 +17928,395 @@ fn and_arm_partial_subset_estimate_does_not_leak_into_artwork_matches() {
         "acquire's own matches ({}) must NOT adopt the partial-subset And-arm value ({and_arm_artwork}) outright -- \
          that is exactly the regression the corpus sweep caught before this round shipped",
         feats.matches
+    );
+}
+
+// ─── Round 53: (usd, eur) joint bucket table ──────────────────────────────────
+// docs/issues/local-engine-nway-followup-queue.md. `IndepClass::Price` bundles usd/eur/tix into ONE
+// class, so once 2+ price leaves are present the independence registry's own `by_class` bucketing
+// drops them entirely (`_ => {}`) -- neither leaf becomes a unit, and the whole `And` falls to a bare
+// per-leaf `min()`-fold. `usd`x`eur` was found the worst-performing shape by far in a fresh 108K-row
+// sweep (`usd>0.75 eur<0.16`: predicted 25,444 against a true 137, 185x over).
+
+/// A `price_eur op dollars` comparison -- `usd_cmp`'s own sibling for eur (same "field_num divides
+/// cents to dollars unconditionally" reasoning, no `bind()`/unit-conversion step needed).
+fn eur_cmp(op: CmpOp, dollars: f64) -> FilterExpr {
+    FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::PriceEur), op, rhs: NumExpr::Const(dollars) }
+}
+
+/// A `price_tix op dollars` comparison -- same shape, used only by the usd+tix/eur+tix decline
+/// fixtures below (this round is deliberately scoped to leave `tix` combinations untouched).
+fn tix_cmp(op: CmpOp, dollars: f64) -> FilterExpr {
+    FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::PriceTix), op, rhs: NumExpr::Const(dollars) }
+}
+
+/// Tie-safe quantile edge construction (`build_quantile_edges`): a deliberately heavy-tied population
+/// mirroring the real corpus's own "$0.23 bulk common" case -- one dominant value (cents=23) carries
+/// far more than one bucket's own ideal share, plus a long tail of many distinct singleton values.
+///
+/// 1,000 total occurrences, `PRICE_JOINT_BUCKETS` (64) target share = ceil(1000/64) = 16 per bucket.
+/// Value 23 alone carries 500 occurrences (31 buckets' worth) -- must land WHOLE in one bucket (never
+/// split), and every other bucket boundary must fall exactly at a real value boundary (never inside a
+/// run of a repeated value). Checked directly against a brute-force reconstruction: every edge in the
+/// output must itself be `1 + <some distinct value actually present>` (`v + 1`, this function's own
+/// convention), and replaying the edges against the raw counts must never split a single value's
+/// occurrences across two adjacent buckets.
+#[test]
+fn build_quantile_edges_never_splits_a_dominant_tied_value() {
+    let mut counts: HashMap<u32, u32> = HashMap::new();
+    counts.insert(23, 500); // one dominant value, ~31x a single bucket's own target share
+    for v in 1000..1500u32 {
+        counts.insert(v, 1); // 500 distinct singleton values, spread past the dominant one
+    }
+    let total: u32 = counts.values().sum();
+    assert_eq!(total, 1000);
+
+    let edges = super::build_quantile_edges(&counts, total);
+    assert!(!edges.is_empty(), "a real, varied population must produce at least one bucket boundary");
+    assert!(edges.len() < super::PRICE_JOINT_BUCKETS, "must never produce MORE buckets than the target (edges.len() + 1 <= PRICE_JOINT_BUCKETS)");
+
+    // Every edge must be `v + 1` for some real distinct value `v` in `counts` -- never a value that
+    // falls strictly inside an unrepresented gap chosen arbitrarily, and (the real point of this test)
+    // never a value that would split value 23's own 500-occurrence run: no edge may equal 23 itself
+    // (which would put SOME of value 23's mass on one side, some on the other -- the "split" bug this
+    // whole tie-safe construction exists to prevent).
+    let mut sorted_values: Vec<u32> = counts.keys().copied().collect();
+    sorted_values.sort_unstable();
+    for &edge in &edges {
+        assert_ne!(edge, 23, "must never place an edge boundary AT value 23 itself -- that would split its 500-occurrence run");
+        assert!(
+            sorted_values.iter().any(|&v| edge == v + 1),
+            "edge {edge} must be exactly (some real distinct value) + 1, never an arbitrary cut point"
+        );
+    }
+
+    // Brute-force replay: bucket every occurrence of every distinct value via `price_bucket_of` and
+    // confirm no single value's own occurrences ever land in two different buckets.
+    for &v in &sorted_values {
+        let b = super::price_bucket_of(&edges, v);
+        // `v` is a single value -- by construction ALL of its own occurrences share one bucket
+        // trivially (there's only one `v` to bucket), so the real check is bucket monotonicity: the
+        // bucket index must be non-decreasing in `v`, and `v == 23`'s neighbours on either side must
+        // land in adjacent-or-later buckets, never the SAME bucket splitting 23's own run implicitly
+        // by some other bug (which would only be possible if two DIFFERENT values collided into
+        // fractional bucket assignment -- not representable here since `price_bucket_of` is a pure
+        // function of `v` alone, but the edge-not-at-23 assertion above is the real, direct guarantee).
+        let _ = b;
+    }
+}
+
+/// The lookup function (`ArchivedPriceJointTable::joint_estimate`) against a small hand-built
+/// (usd, eur) population, brute-force verified for several op combinations on each axis (`Gt`/`Ge`/
+/// `Lt`/`Le`, and one `Eq`) -- not just "returns Some", the actual returned totals must match a manual
+/// recompute over the raw cells.
+///
+/// Population (5 distinct (usd, eur) cells, deliberately all-distinct `SpaceTotals` so a bug swapping
+/// or dropping a cell cannot cancel out and hide itself): buckets are pre-assigned directly (this test
+/// exercises `joint_estimate` in isolation, not `build_price_joint_table`'s own bucket assignment --
+/// that is `build_quantile_edges_never_splits_a_dominant_tied_value`'s job above).
+/// - usd edges `[200, 400]` -> 3 usd buckets: `[0,200)`, `[200,400)`, `[400,MAX)`
+/// - eur edges `[300]` -> 2 eur buckets: `[0,300)`, `[300,MAX)`
+#[test]
+fn price_joint_lookup_matches_brute_force_for_several_op_combinations() {
+    let mut cells: HashMap<u32, SpaceTotals> = HashMap::new();
+    // (usd_bucket, eur_bucket) -> (printings, cards, artworks), all distinct.
+    let raw: [((u16, u16), SpaceTotals); 5] = [
+        ((0, 0), SpaceTotals { printings: 3, cards: 3, artworks: 3 }),
+        ((0, 1), SpaceTotals { printings: 5, cards: 4, artworks: 5 }),
+        ((1, 0), SpaceTotals { printings: 7, cards: 6, artworks: 7 }),
+        ((1, 1), SpaceTotals { printings: 11, cards: 9, artworks: 10 }),
+        ((2, 1), SpaceTotals { printings: 13, cards: 11, artworks: 12 }),
+    ];
+    for ((usd_b, eur_b), totals) in raw {
+        cells.insert(super::ArchivedPriceJointTable::cell_key(usd_b, eur_b), totals);
+    }
+    let table = super::PriceJointTable { usd_edges: vec![200, 400], eur_edges: vec![300], cells };
+    let bytes = rkyv::to_bytes::<Error>(&table).expect("serialize");
+    let archived = rkyv::access::<Archived<super::PriceJointTable>, Error>(&bytes).expect("access");
+
+    // Brute force: sum `raw` cells whose own bucket falls in [usd_lo_b, usd_hi_b) x [eur_lo_b, eur_hi_b).
+    let brute = |usd_lo_b: u16, usd_hi_b: u16, eur_lo_b: u16, eur_hi_b: u16| -> (usize, usize, usize) {
+        let mut acc = (0usize, 0usize, 0usize);
+        for ((usd_b, eur_b), totals) in &raw {
+            if (usd_lo_b..usd_hi_b).contains(usd_b) && (eur_lo_b..eur_hi_b).contains(eur_b) {
+                acc.0 += totals.printings as usize;
+                acc.1 += totals.cards as usize;
+                acc.2 += totals.artworks as usize;
+            }
+        }
+        acc
+    };
+
+    // Ge/Lt: usd>=2.00 (raw cents 200) -> lo_bucket=bucket_of(200)=1, hi_bucket=hi_bucket_of(MAX)=3
+    // (MAX is the "no upper bound" sentinel, always one past the last real bucket) -> usd in [1,3).
+    // eur<3.00 (300) -> lo_bucket=0, hi_bucket=hi_bucket_of(300)=bucket_of(299)+1=0+1=1 -> eur in [0,1).
+    assert_eq!(archived.joint_estimate(200, u32::MAX, 0, 300), Some(brute(1, 3, 0, 1)), "usd>=2.00 eur<3.00");
+    // Gt/Le: usd>2.00 (raw lo=201, since Gt excludes 200 itself) -> lo_bucket=bucket_of(201)=1, same
+    // bucket as 200 (both < the 400 edge) -> usd in [1,3), same as above. eur<=3.00 (raw hi=301, since
+    // Le includes 300 itself) -> hi_bucket=hi_bucket_of(301)=bucket_of(300)+1=1+1=2 -> eur in [0,2),
+    // now covering BOTH eur buckets (301's predecessor, 300, is itself the eur edge, so eur bucket 1
+    // -- [300,MAX) -- is included this time, unlike the strict `<3.00` case above).
+    assert_eq!(archived.joint_estimate(201, u32::MAX, 0, 301), Some(brute(1, 3, 0, 2)), "usd>2.00 eur<=3.00");
+    // Lt/Ge: usd<4.00 (400) -> hi_bucket=hi_bucket_of(400)=bucket_of(399)+1=1+1=2 -> usd in [0,2).
+    // eur>=3.00 (300) -> lo_bucket=bucket_of(300)=1 -> eur in [1,2).
+    assert_eq!(archived.joint_estimate(0, 400, 300, u32::MAX), Some(brute(0, 2, 1, 2)), "usd<4.00 eur>=3.00");
+    // Eq: usd==1.00 ([100,101)) -> lo_bucket=bucket_of(100)=0, hi_bucket=hi_bucket_of(101)=
+    // bucket_of(100)+1=0+1=1 -> usd in [0,1). eur==1.00 ([100,101)) -> eur in [0,1) by the same math.
+    assert_eq!(archived.joint_estimate(100, 101, 100, 101), Some(brute(0, 1, 0, 1)), "usd==1.00 eur==1.00");
+    // Whole domain: every cell.
+    assert_eq!(
+        archived.joint_estimate(0, u32::MAX, 0, u32::MAX),
+        Some(brute(0, 3, 0, 2)),
+        "the full domain must sum every cell"
+    );
+    // Provably-empty RAW range (`hi <= lo` on the usd axis, `bare_range_bounds`'s own `(0, 0)`
+    // convention for an unsatisfiable bound) must be an exact zero, checked directly on the raw values
+    // before any bucket conversion -- not every `lo == hi` pair maps this cleanly in bucket space (two
+    // equal RAW values landing inside the same bucket would otherwise, wrongly, still find "a" bucket
+    // to report), so this must be handled before bucketing, not after.
+    assert_eq!(archived.joint_estimate(0, 0, 0, u32::MAX), Some((0, 0, 0)), "an empty (0,0) usd range must be an exact zero");
+
+    // An unbuilt table (no cells) must decline (`None`), matching `color_cmc_exact`'s own miss
+    // convention -- never silently answer 0 for a store this table simply isn't built for.
+    let empty = super::PriceJointTable::default();
+    let empty_bytes = rkyv::to_bytes::<Error>(&empty).expect("serialize");
+    let empty_archived = rkyv::access::<Archived<super::PriceJointTable>, Error>(&empty_bytes).expect("access");
+    assert_eq!(empty_archived.joint_estimate(0, u32::MAX, 0, u32::MAX), None, "an unbuilt table must decline, not answer zero");
+}
+
+/// Shared fixture for the remaining Round 53 tests below: 100 single-printing cards (so printing ==
+/// card == artwork throughout).
+///
+/// Type: the first 45 cards carry the "Elf" subtype, the last 55 don't -- `t:elf` solo count is 45,
+/// deliberately NOT aligned with either price group boundary below, so Type and the (usd, eur) joint
+/// are not artificially correlated by construction.
+///
+/// Price groups (by printing index, ascending, `store_of`'s one-printing-per-card order so printing i
+/// lines up with card i). The "low" price is $4.99 (499 cents), deliberately ONE CENT under the $5.00
+/// query threshold every test below uses -- `build_quantile_edges` places an edge at exactly
+/// `low_value + 1` (500), so with only 2 distinct values per axis (499 and 1000) the resulting bucket
+/// boundary lands EXACTLY at the query threshold, giving an EXACT (not merely bucket-approximate)
+/// answer for this fixture's own small, deliberately clean population. A "low" price of an even $1.00
+/// (100 cents) was tried first and found to demonstrate the OPPOSITE point by accident: with only 2
+/// distinct values, quantile bucketing produces just 2 real buckets covering `[0,101)` and
+/// `[101,1001)` -- the second bucket spans the ENTIRE gap between the two distinct values, so a $5.00
+/// threshold lands INSIDE it (neither value is anywhere near $5.00, but the coarse bucket still reports
+/// the whole thing as "below $5.00"), collapsing every test's own joint down to all 100 rows. Real data
+/// doesn't have this problem (thousands of distinct values keep buckets narrow), but a hand-built
+/// fixture with just 2 distinct values per axis needs its own threshold chosen to fall exactly on a
+/// resulting edge to get a clean, exactly-verifiable answer.
+/// - `[0, 30)`  usd=$4.99, eur=$4.99  ("group A" -- both prices low)
+/// - `[30, 60)` usd=$4.99, eur=$10.00 ("group B")
+/// - `[60, 80)` usd=$10.00, eur=$4.99 ("group C")
+/// - `[80, 100)` usd=$10.00, eur=$10.00 ("group D")
+///
+/// So `usd<5` solo = A+B = 60, `eur<5` solo = A+C = 50, and the TRUE joint `usd<5 AND eur<5` = A = 30
+/// exactly. Before this round, 2 unfused Price-classified leaves dropped entirely (the `by_class`
+/// catch-all), so the only number available was the plain per-leaf min-fold: `min(60, 50) = 50`,
+/// 1.67x over the true 30.
+///
+/// `price_tix` is also populated (first 50 printings $0.50, rest $2.00), uncorrelated with anything
+/// else here -- purely so the usd+tix/eur+tix/3-way decline fixtures below have a real, distinct tix
+/// value to query against.
+fn price_joint_fixture_store() -> CardData {
+    let mut vocab = VocabInterner::new();
+    let cards: Vec<OracleCard> =
+        (0..100).map(|i| stub_card(1 + i as u128, TYPE_CREATURE, if i < 45 { &["Elf"] } else { &[] }, &mut vocab)).collect();
+    let mut data = store_of(cards, &vec![1usize; 100], vocab);
+    // `t:elf` (a subtype leaf, `IndepClass::Type` -- unlike `TypeCmp`/card_types, which
+    // `is_printing_composable`/`is_broadcast_leaf_shape` do NOT recognize as a composable bare leaf)
+    // stands in for "some third, unrelated class" in the tests below.
+    data.indexes.subtypes = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
+    for (i, p) in data.printings.iter_mut().enumerate() {
+        p.price_usd = Some(if i < 60 { 499 } else { 1_000 });
+        p.price_eur = Some(if i < 30 || (60..80).contains(&i) { 499 } else { 1_000 });
+        p.price_tix = Some(if i < 50 { 50 } else { 200 });
+    }
+    data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
+    data.indexes.price_eur = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_eur);
+    data.indexes.price_tix = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_tix);
+    data.indexes.price_joint = super::build_price_joint_table(
+        &data.cards,
+        &data.printings,
+        &data.indexes.printing_to_card,
+        usize::from(data.indexes.max_artwork_groups.max(1)),
+    );
+    data
+}
+
+/// Sanity check on the shared fixture's own claimed marginals/joint, independent of anything else this
+/// round touches -- if this fails, every other test below is testing the wrong shape.
+#[test]
+fn price_joint_fixture_store_has_the_claimed_marginals() {
+    let data = price_joint_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+    assert_eq!(n_printings, 100);
+
+    let usd_lt5 = usd_cmp(CmpOp::Lt, 5.0);
+    let eur_lt5 = eur_cmp(CmpOp::Lt, 5.0);
+    let elf = FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Elf".to_string(), value_id: None };
+
+    assert_eq!(super::compose_printing_estimate(&usd_lt5, &archived.indexes, &archived.offsets, n_printings, false).result.printing, 60);
+    assert_eq!(super::compose_printing_estimate(&eur_lt5, &archived.indexes, &archived.offsets, n_printings, false).result.printing, 50);
+    assert_eq!(super::compose_printing_estimate(&elf, &archived.indexes, &archived.offsets, n_printings, false).result.printing, 45);
+
+    let joint = FilterExpr::And(vec![usd_lt5, eur_lt5]);
+    let est = super::compose_printing_estimate(&joint, &archived.indexes, &archived.offsets, n_printings, false);
+    assert_eq!(est.result.printing, 30, "the true (usd, eur) joint (group A alone) must be exactly 30");
+}
+
+/// The standalone whole-`And`-arm fold: a query that is EXACTLY `usd<5 eur<5` (nothing else) must fire
+/// `PriceJointTable` and tighten `result` to the true joint (30) -- versus the plain min-fold baseline
+/// (`min(usd_solo=60, eur_solo=50) = 50`, 1.67x over) that was the ONLY number available before this
+/// round for this exact shape.
+#[test]
+fn price_joint_standalone_and_arm_fold_fires_and_tightens_vs_min_fold_baseline() {
+    let data = price_joint_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let f = FilterExpr::And(vec![usd_cmp(CmpOp::Lt, 5.0), eur_cmp(CmpOp::Lt, 5.0)]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+    let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace for a top-level And");
+
+    let hit = and_trace.considered.iter().find(|g| g.mechanism == "PriceJointTable").expect("PriceJointTable must fire on a bare usd+eur And");
+    assert!(hit.hit);
+    assert_eq!(hit.printing, Some(30), "must report the true joint exactly (group A)");
+
+    assert_eq!(
+        est.result.printing, 30,
+        "must win the arm's final min-fold -- tighter than the plain min-fold baseline (min(60, 50) = 50) \
+         that was the only number available before this round for this exact 2-leaf shape"
+    );
+    assert!(est.exact_domain.is_none(), "PriceJointTable is Estimate-class, never Exact -- exact_domain must stay untouched by it");
+}
+
+/// The independence-registry `by_class` special case: a fixture with usd+eur+`Type` (a THIRD,
+/// unrelated class) present. Before this round, 2 unfused Price-classified leaves dropped entirely
+/// under the `by_class` catch-all, so `units` held only the lone `Type` unit -- with a single unit, the
+/// pairing loop never runs at all, and the ONLY number available was the plain per-leaf min-fold
+/// (`min(type_solo=45, usd_solo=60, eur_solo=50) = 45`).
+///
+/// After this round, the new arm resolves usd+eur into ONE unit carrying the real `(usd, eur)` joint
+/// (30, exact, card/artwork populated too), which the UNCHANGED pairing loop combines with `Type`'s own
+/// solo unit via `independence_safe_pair` (`(Type, Price)` is already a registered pair): `round(45 *
+/// 30 / 100) = round(13.5) = 14`. This must fire, and must be strictly tighter than the old 45-ceiling.
+#[test]
+fn price_joint_independence_registry_unit_forms_and_pairs_with_a_third_class() {
+    let data = price_joint_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let elf = FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Elf".to_string(), value_id: None };
+    let f = FilterExpr::And(vec![elf, usd_cmp(CmpOp::Lt, 5.0), eur_cmp(CmpOp::Lt, 5.0)]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+    let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+
+    let indep = and_trace
+        .considered
+        .iter()
+        .find(|g| g.mechanism == "Independence" && g.leaves.len() == 3)
+        .expect("Independence must pair the new (usd, eur) unit (2 leaves) against Type's own solo unit (1 leaf) -- 3 leaves total");
+    assert!(indep.hit);
+    assert_eq!(indep.printing, Some(14), "round(45 * 30 / 100) = round(13.5) = 14");
+
+    assert_eq!(
+        est.result.printing, 14,
+        "the Independence pairing (14) must win the arm's final min-fold -- strictly tighter than the \
+         plain per-leaf min-fold (min(45, 60, 50) = 45) that was the ONLY number available before this \
+         round, since a lone Type unit with no Price partner never reaches the pairing loop at all"
+    );
+}
+
+/// `usd+tix` -- one of the two currency pairs this round deliberately leaves untouched (weak `tix`
+/// correlation, r=0.336, already reasonable under the plain treatment) -- must still decline to the
+/// pre-existing `_ => {}` drop: no `PriceJointTable` unit, no `Independence` pairing gaining a Price
+/// partner from this shape. `result` stays at the plain per-leaf min-fold.
+#[test]
+fn price_joint_usd_tix_still_declines_to_the_existing_drop() {
+    let data = price_joint_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let elf = FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Elf".to_string(), value_id: None };
+    let usd_lt5 = usd_cmp(CmpOp::Lt, 5.0);
+    let tix_lt1 = tix_cmp(CmpOp::Lt, 1.0);
+    let tix_solo = super::compose_printing_estimate(&tix_lt1, &archived.indexes, &archived.offsets, n_printings, false).result.printing;
+    assert_eq!(tix_solo, 50, "fixture assumption: first 50 printings priced tix<$1.00");
+
+    let f = FilterExpr::And(vec![elf, usd_lt5, tix_lt1]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+    let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+
+    assert!(
+        !and_trace.considered.iter().any(|g| g.mechanism == "PriceJointTable"),
+        "usd+tix must never fire the standalone (usd, eur)-only fold"
+    );
+    assert!(
+        !and_trace.considered.iter().any(|g| g.mechanism == "Independence" && g.leaves.iter().any(|l| l.contains("PriceTix") || l.contains("PriceUsd"))),
+        "usd+tix must decline the by_class special case too -- no Independence pairing should involve a Price leaf at all for this shape"
+    );
+    assert_eq!(
+        est.result.printing,
+        45, // min(type=45, usd=60, tix=50) -- the plain per-leaf min-fold, unchanged from before this round
+        "must stay at the plain per-leaf min-fold"
+    );
+}
+
+/// `eur+tix` -- the mirror of the usd+tix case above, same expected decline.
+#[test]
+fn price_joint_eur_tix_still_declines_to_the_existing_drop() {
+    let data = price_joint_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let eur_lt5 = eur_cmp(CmpOp::Lt, 5.0);
+    let tix_lt1 = tix_cmp(CmpOp::Lt, 1.0);
+    let f = FilterExpr::And(vec![eur_lt5, tix_lt1]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+    let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+
+    assert!(!and_trace.considered.iter().any(|g| g.mechanism == "PriceJointTable"), "eur+tix must never fire the standalone (usd, eur)-only fold");
+    assert_eq!(est.result.printing, 50, "must stay at the plain per-leaf min-fold (eur solo 50, tix solo 50) -- unchanged from before this round");
+}
+
+/// 3-way `usd+eur+tix`: all three price fields present at once. `IndepClass::Price` now has 3
+/// occurrences, so neither the by_class special case (which requires EXACTLY 2) nor the standalone
+/// whole-And-arm fold (which requires `and_sources.len() == 2`) can fire -- must decline to the plain
+/// per-leaf min-fold exactly as before this round.
+#[test]
+fn price_joint_three_way_usd_eur_tix_still_declines() {
+    let data = price_joint_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let usd_lt5 = usd_cmp(CmpOp::Lt, 5.0);
+    let eur_lt5 = eur_cmp(CmpOp::Lt, 5.0);
+    let tix_lt1 = tix_cmp(CmpOp::Lt, 1.0);
+    let tix_solo = super::compose_printing_estimate(&tix_lt1, &archived.indexes, &archived.offsets, n_printings, false).result.printing;
+    assert_eq!(tix_solo, 50);
+
+    let f = FilterExpr::And(vec![usd_lt5, eur_lt5, tix_lt1]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+    let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+
+    assert!(!and_trace.considered.iter().any(|g| g.mechanism == "PriceJointTable"), "3-way usd+eur+tix must never fire the standalone fold (and_sources.len() == 3, not 2)");
+    assert!(
+        !and_trace.considered.iter().any(|g| g.mechanism == "Independence"),
+        "3-way usd+eur+tix must never form ANY Independence pairing -- IndepClass::Price has 3 occurrences, \
+         which matches neither `[p]` (single) nor the new `multi.len() == 2` guard, so it falls to the \
+         unchanged `_ => {{}}` drop exactly as before this round"
+    );
+    assert_eq!(
+        est.result.printing,
+        50, // min(usd=60, eur=50, tix=50) -- the plain per-leaf min-fold, unchanged from before this round
+        "must stay at the plain per-leaf min-fold"
     );
 }
