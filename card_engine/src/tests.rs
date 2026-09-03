@@ -6729,7 +6729,9 @@ fn bench_checked_vs_unchecked_access() {
         // And-arm tightenings above) -- plain default, same as `frame_data`/`artists`/etc above.
         color_cmc:      super::ColorCmcIndexes::default(),
         // Same reasoning as `color_cmc` immediately above: not exercised by this benchmark, plain default.
-        price_joint:    super::PriceJointTable::default(),
+        price_joint_usd_eur: super::PriceJointTable::default(),
+        price_joint_usd_tix: super::PriceJointTable::default(),
+        price_joint_eur_tix: super::PriceJointTable::default(),
         sort_perms:     build_sort_permutations(&cards, &offsets),
         max_artwork_groups: artwork_groups.iter().copied().max().unwrap_or(0),
         artwork_groups,
@@ -18030,7 +18032,7 @@ fn price_joint_lookup_matches_brute_force_for_several_op_combinations() {
     for ((usd_b, eur_b), totals) in raw {
         cells.insert(super::ArchivedPriceJointTable::cell_key(usd_b, eur_b), totals);
     }
-    let table = super::PriceJointTable { usd_edges: vec![200, 400], eur_edges: vec![300], cells };
+    let table = super::PriceJointTable { a_edges: vec![200, 400], b_edges: vec![300], cells };
     let bytes = rkyv::to_bytes::<Error>(&table).expect("serialize");
     let archived = rkyv::access::<Archived<super::PriceJointTable>, Error>(&bytes).expect("access");
 
@@ -18084,7 +18086,7 @@ fn price_joint_lookup_matches_brute_force_for_several_op_combinations() {
     assert_eq!(empty_archived.joint_estimate(0, u32::MAX, 0, u32::MAX), None, "an unbuilt table must decline, not answer zero");
 }
 
-/// Shared fixture for the remaining Round 53 tests below: 100 single-printing cards (so printing ==
+/// Shared fixture for the remaining Round 53/54 tests below: 100 single-printing cards (so printing ==
 /// card == artwork throughout).
 ///
 /// Type: the first 45 cards carry the "Elf" subtype, the last 55 don't -- `t:elf` solo count is 45,
@@ -18115,9 +18117,15 @@ fn price_joint_lookup_matches_brute_force_for_several_op_combinations() {
 /// catch-all), so the only number available was the plain per-leaf min-fold: `min(60, 50) = 50`,
 /// 1.67x over the true 30.
 ///
-/// `price_tix` is also populated (first 50 printings $0.50, rest $2.00), uncorrelated with anything
-/// else here -- purely so the usd+tix/eur+tix/3-way decline fixtures below have a real, distinct tix
-/// value to query against.
+/// `price_tix` is also populated (first 50 printings $0.50, rest $2.00) -- deliberately NOT a simple
+/// prefix/suffix split aligned the same direction as `usd`'s own breakpoint (60) or `eur`'s own two-
+/// group union: `usd<5`/`tix<1` share the SAME "low prefix" shape (`[0,60)`/`[0,50)`, one nested inside
+/// the other, so their intersection trivially equals the smaller marginal -- no tightening to
+/// demonstrate there), so the Round 54 usd+tix tests below deliberately query `tix>=1.00` (the HIGH
+/// side, `[50,100)`) against `usd<5` (`[0,60)`) instead: a real crossing overlap (`[50,60)`, 10 rows)
+/// strictly smaller than either marginal (60, 50), giving something genuine to tighten. `eur`+`tix`
+/// keeps both Lt (eur's own two disjoint groups already make `eur<5`/`tix<1`'s intersection a proper
+/// subset of both marginals without needing a Ge).
 fn price_joint_fixture_store() -> CardData {
     let mut vocab = VocabInterner::new();
     let cards: Vec<OracleCard> =
@@ -18135,12 +18143,13 @@ fn price_joint_fixture_store() -> CardData {
     data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
     data.indexes.price_eur = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_eur);
     data.indexes.price_tix = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_tix);
-    data.indexes.price_joint = super::build_price_joint_table(
-        &data.cards,
-        &data.printings,
-        &data.indexes.printing_to_card,
-        usize::from(data.indexes.max_artwork_groups.max(1)),
-    );
+    let max_artwork_groups = usize::from(data.indexes.max_artwork_groups.max(1));
+    data.indexes.price_joint_usd_eur =
+        super::build_price_joint_table(&data.cards, &data.printings, &data.indexes.printing_to_card, max_artwork_groups, |p| p.price_usd, |p| p.price_eur);
+    data.indexes.price_joint_usd_tix =
+        super::build_price_joint_table(&data.cards, &data.printings, &data.indexes.printing_to_card, max_artwork_groups, |p| p.price_usd, |p| p.price_tix);
+    data.indexes.price_joint_eur_tix =
+        super::build_price_joint_table(&data.cards, &data.printings, &data.indexes.printing_to_card, max_artwork_groups, |p| p.price_eur, |p| p.price_tix);
     data
 }
 
@@ -18244,58 +18253,205 @@ fn price_joint_independence_registry_unit_forms_and_pairs_with_a_third_class() {
     );
 }
 
-/// `usd+tix` -- one of the two currency pairs this round deliberately leaves untouched (weak `tix`
-/// correlation, r=0.336, already reasonable under the plain treatment) -- must still decline to the
-/// pre-existing `_ => {}` drop: no `PriceJointTable` unit, no `Independence` pairing gaining a Price
-/// partner from this shape. `result` stays at the plain per-leaf min-fold.
+/// Round 54: `usd+tix` used to decline to the pre-existing `_ => {}` drop entirely (the same gap
+/// `usd+eur` had pre-Round-53) -- now the generalized dispatch (`resolve_price_joint_pair`/
+/// `price_joint_table_for`) resolves it to `price_joint_usd_tix`, so this is the mirror of
+/// `price_joint_standalone_and_arm_fold_fires_and_tightens_vs_min_fold_baseline` above for this pair.
+///
+/// Deliberately queries `usd<5` (the LOW prefix, `[0,60)`) against `tix>=0.51` (the HIGH side,
+/// `[50,100)`, NOT `tix<...`) -- see `price_joint_fixture_store`'s own doc for why: `usd`'s and `tix`'s
+/// own breakpoints are both simple prefixes of the same 100-row population, so two same-direction
+/// bounds would always be trivially nested (no tightening to demonstrate). The crossing overlap here
+/// is `[50,60)`, exactly 10 rows -- strictly smaller than EITHER marginal (usd solo 60, tix solo 50).
+/// `$0.51` (raw cents 51) is chosen to land exactly on this fixture's own tix quantile edge (51, see
+/// `price_joint_fixture_store`'s own construction: only 2 distinct tix values, 50 and 200 cents, so
+/// `build_quantile_edges` places its one edge at `50 + 1 = 51`) so the bucketed lookup is exact, not
+/// merely "any overlap counts fully" approximate.
 #[test]
-fn price_joint_usd_tix_still_declines_to_the_existing_drop() {
+fn price_joint_usd_tix_standalone_and_arm_fold_fires_and_tightens_vs_min_fold_baseline() {
+    let data = price_joint_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let usd_lt5 = usd_cmp(CmpOp::Lt, 5.0);
+    let tix_ge = tix_cmp(CmpOp::Ge, 0.51);
+    let usd_solo = super::compose_printing_estimate(&usd_lt5, &archived.indexes, &archived.offsets, n_printings, false).result.printing;
+    let tix_solo = super::compose_printing_estimate(&tix_ge, &archived.indexes, &archived.offsets, n_printings, false).result.printing;
+    assert_eq!(usd_solo, 60, "fixture assumption: usd<5 is the first 60 printings");
+    assert_eq!(tix_solo, 50, "fixture assumption: tix>=0.51 is the last 50 printings");
+
+    let f = FilterExpr::And(vec![usd_lt5, tix_ge]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+    let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace for a top-level And");
+
+    let hit = and_trace.considered.iter().find(|g| g.mechanism == "PriceJointTable").expect("PriceJointTable must fire on a bare usd+tix And after Round 54");
+    assert!(hit.hit);
+    assert_eq!(hit.printing, Some(10), "true joint: usd<5 (i<60) intersect tix>=0.51 (i>=50) = [50,60), 10 printings");
+
+    assert_eq!(
+        est.result.printing, 10,
+        "must win the arm's final min-fold -- strictly tighter than the plain min-fold baseline (min(60, 50) = 50)"
+    );
+    assert!(est.exact_domain.is_none(), "PriceJointTable is Estimate-class, never Exact -- exact_domain must stay untouched by it");
+
+    // The `and_sources.len() > 2` guard (see that arm's own doc) checks "anything left to pair
+    // against" -- generalized, not usd/eur-specific -- so a bare 2-leaf usd+tix query must not ALSO
+    // trigger the by_class registry's own redundant unit, exactly like usd+eur.
+    assert!(
+        !and_trace.considered.iter().any(|g| g.mechanism == "Independence"),
+        "a bare 2-leaf usd+tix query has nothing for the by_class registry's own Price unit to pair \
+         with -- it must not even be attempted, not just fail to win"
+    );
+}
+
+/// Round 54 mirror of `price_joint_independence_registry_unit_forms_and_pairs_with_a_third_class`
+/// above, for `usd+tix` specifically: a THIRD, unrelated class (`Type`) present alongside the pair
+/// forces the by_class registry's own arm to resolve `usd+tix` into ONE unit (via the same
+/// `resolve_price_joint_pair` dispatch the standalone fold uses) before pairing it against `Type`'s own
+/// solo unit.
+#[test]
+fn price_joint_usd_tix_by_class_registry_unit_forms_and_pairs_with_a_third_class() {
     let data = price_joint_fixture_store();
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
     let n_printings = archived.printings.len();
 
     let elf = FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Elf".to_string(), value_id: None };
-    let usd_lt5 = usd_cmp(CmpOp::Lt, 5.0);
-    let tix_lt1 = tix_cmp(CmpOp::Lt, 1.0);
-    let tix_solo = super::compose_printing_estimate(&tix_lt1, &archived.indexes, &archived.offsets, n_printings, false).result.printing;
-    assert_eq!(tix_solo, 50, "fixture assumption: first 50 printings priced tix<$1.00");
-
-    let f = FilterExpr::And(vec![elf, usd_lt5, tix_lt1]);
+    let f = FilterExpr::And(vec![elf, usd_cmp(CmpOp::Lt, 5.0), tix_cmp(CmpOp::Ge, 0.51)]);
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
 
-    assert!(
-        !and_trace.considered.iter().any(|g| g.mechanism == "PriceJointTable"),
-        "usd+tix must never fire the standalone (usd, eur)-only fold"
-    );
-    assert!(
-        !and_trace.considered.iter().any(|g| g.mechanism == "Independence" && g.leaves.iter().any(|l| l.contains("PriceTix") || l.contains("PriceUsd"))),
-        "usd+tix must decline the by_class special case too -- no Independence pairing should involve a Price leaf at all for this shape"
-    );
+    let indep = and_trace
+        .considered
+        .iter()
+        .find(|g| g.mechanism == "Independence" && g.leaves.len() == 3)
+        .expect("Independence must pair the new (usd, tix) unit (2 leaves) against Type's own solo unit (1 leaf) -- 3 leaves total");
+    assert!(indep.hit);
+    assert_eq!(indep.printing, Some(5), "round(45 * 10 / 100) = round(4.5) = 5");
+
     assert_eq!(
-        est.result.printing,
-        45, // min(type=45, usd=60, tix=50) -- the plain per-leaf min-fold, unchanged from before this round
-        "must stay at the plain per-leaf min-fold"
+        est.result.printing, 5,
+        "the Independence pairing (5) must win the arm's final min-fold -- strictly tighter than the \
+         plain per-leaf min-fold (min(45, 60, 50) = 45) that was the ONLY number available before Round 54 \
+         for this shape, since a lone Type unit with no Price partner never reaches the pairing loop at all"
     );
 }
 
-/// `eur+tix` -- the mirror of the usd+tix case above, same expected decline.
+/// Round 54: `eur+tix`, the mirror of the usd+tix pair above -- now resolves to `price_joint_eur_tix`
+/// via the SAME generalized dispatch. Unlike `usd+tix`, both bounds can stay `Lt` here: `eur`'s own two
+/// disjoint groups (`price_joint_fixture_store`'s own "group A"/"group C") already make `eur<5`'s
+/// intersection with `tix<0.51` a proper subset of both marginals without needing a crossing `Ge`.
+/// `$0.51` is chosen for the same bucket-edge-alignment reason as the usd+tix test above.
 #[test]
-fn price_joint_eur_tix_still_declines_to_the_existing_drop() {
+fn price_joint_eur_tix_standalone_and_arm_fold_fires_and_tightens_vs_min_fold_baseline() {
     let data = price_joint_fixture_store();
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
     let n_printings = archived.printings.len();
 
     let eur_lt5 = eur_cmp(CmpOp::Lt, 5.0);
-    let tix_lt1 = tix_cmp(CmpOp::Lt, 1.0);
-    let f = FilterExpr::And(vec![eur_lt5, tix_lt1]);
+    let tix_lt = tix_cmp(CmpOp::Lt, 0.51);
+    let eur_solo = super::compose_printing_estimate(&eur_lt5, &archived.indexes, &archived.offsets, n_printings, false).result.printing;
+    let tix_solo = super::compose_printing_estimate(&tix_lt, &archived.indexes, &archived.offsets, n_printings, false).result.printing;
+    assert_eq!(eur_solo, 50, "fixture assumption: eur<5 is groups A+C, 50 printings");
+    assert_eq!(tix_solo, 50, "fixture assumption: tix<0.51 is the first 50 printings");
+
+    let f = FilterExpr::And(vec![eur_lt5, tix_lt]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+    let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace for a top-level And");
+
+    let hit = and_trace.considered.iter().find(|g| g.mechanism == "PriceJointTable").expect("PriceJointTable must fire on a bare eur+tix And after Round 54");
+    assert!(hit.hit);
+    assert_eq!(hit.printing, Some(30), "true joint: eur<5 (groups A+C) intersect tix<0.51 (i<50) = group A alone, [0,30), 30 printings");
+
+    assert_eq!(
+        est.result.printing, 30,
+        "must win the arm's final min-fold -- strictly tighter than the plain min-fold baseline (min(50, 50) = 50)"
+    );
+    assert!(est.exact_domain.is_none(), "PriceJointTable is Estimate-class, never Exact -- exact_domain must stay untouched by it");
+
+    assert!(
+        !and_trace.considered.iter().any(|g| g.mechanism == "Independence"),
+        "a bare 2-leaf eur+tix query has nothing for the by_class registry's own Price unit to pair \
+         with -- it must not even be attempted, not just fail to win"
+    );
+}
+
+/// Round 54 mirror of the `usd+tix` by_class test above, for `eur+tix`.
+#[test]
+fn price_joint_eur_tix_by_class_registry_unit_forms_and_pairs_with_a_third_class() {
+    let data = price_joint_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let elf = FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Elf".to_string(), value_id: None };
+    let f = FilterExpr::And(vec![elf, eur_cmp(CmpOp::Lt, 5.0), tix_cmp(CmpOp::Lt, 0.51)]);
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
 
-    assert!(!and_trace.considered.iter().any(|g| g.mechanism == "PriceJointTable"), "eur+tix must never fire the standalone (usd, eur)-only fold");
-    assert_eq!(est.result.printing, 50, "must stay at the plain per-leaf min-fold (eur solo 50, tix solo 50) -- unchanged from before this round");
+    let indep = and_trace
+        .considered
+        .iter()
+        .find(|g| g.mechanism == "Independence" && g.leaves.len() == 3)
+        .expect("Independence must pair the new (eur, tix) unit (2 leaves) against Type's own solo unit (1 leaf) -- 3 leaves total");
+    assert!(indep.hit);
+    assert_eq!(
+        indep.printing,
+        Some(14),
+        "round(45 * 30 / 100) = round(13.5) = 14 -- coincidentally the SAME number as the usd+eur \
+         by_class test above (both anchor on group A's own 30), not a copy-paste bug"
+    );
+
+    assert_eq!(
+        est.result.printing, 14,
+        "the Independence pairing (14) must win the arm's final min-fold -- strictly tighter than the \
+         plain per-leaf min-fold (min(45, 50, 50) = 45)"
+    );
+}
+
+/// The generalized `build_price_joint_table` (Round 54) against a small population where one axis is
+/// `price_tix` -- impossible before this round's own generalization, since the builder used to
+/// hardcode `p.price_usd`/`p.price_eur`. Exercises the BUILDER itself (bucket assignment + cell
+/// population from raw closures), not just `joint_estimate`'s own lookup logic (already covered by
+/// `price_joint_lookup_matches_brute_force_for_several_op_combinations` above) -- brute-forced directly
+/// against the raw fixture population, bypassing `compose_printing_estimate` entirely.
+#[test]
+fn price_joint_generalized_builder_usd_tix_matches_brute_force() {
+    let data = price_joint_fixture_store();
+    let max_artwork_groups = usize::from(data.indexes.max_artwork_groups.max(1));
+    let table = super::build_price_joint_table(&data.cards, &data.printings, &data.indexes.printing_to_card, max_artwork_groups, |p| p.price_usd, |p| p.price_tix);
+    let bytes = rkyv::to_bytes::<Error>(&table).expect("serialize");
+    let archived = rkyv::access::<Archived<super::PriceJointTable>, Error>(&bytes).expect("access");
+
+    // Brute force ground truth over the raw fixture population directly: usd<5.00 (raw cents <500)
+    // intersect tix>=0.51 (raw cents >=51) -- the same crossing shape as the standalone-fold test above.
+    let brute = data.printings.iter().filter(|p| p.price_usd.is_some_and(|v| v < 500) && p.price_tix.is_some_and(|v| v >= 51)).count();
+    assert_eq!(brute, 10, "fixture assumption: usd<5 (i<60) intersect tix>=0.51 (i>=50) is exactly [50,60)");
+
+    let (printing, card, artwork) = archived.joint_estimate(0, 500, 51, u32::MAX).expect("table must be built for this population");
+    assert_eq!(printing, brute);
+    assert_eq!(card, brute, "fixture is one-printing-per-card");
+    assert_eq!(artwork, brute, "fixture is one-printing-per-artwork");
+}
+
+/// The mirror of the usd+tix builder test above, for `eur+tix`.
+#[test]
+fn price_joint_generalized_builder_eur_tix_matches_brute_force() {
+    let data = price_joint_fixture_store();
+    let max_artwork_groups = usize::from(data.indexes.max_artwork_groups.max(1));
+    let table = super::build_price_joint_table(&data.cards, &data.printings, &data.indexes.printing_to_card, max_artwork_groups, |p| p.price_eur, |p| p.price_tix);
+    let bytes = rkyv::to_bytes::<Error>(&table).expect("serialize");
+    let archived = rkyv::access::<Archived<super::PriceJointTable>, Error>(&bytes).expect("access");
+
+    let brute = data.printings.iter().filter(|p| p.price_eur.is_some_and(|v| v < 500) && p.price_tix.is_some_and(|v| v < 51)).count();
+    assert_eq!(brute, 30, "fixture assumption: eur<5 (groups A+C) intersect tix<0.51 (i<50) is exactly group A, [0,30)");
+
+    let (printing, card, artwork) = archived.joint_estimate(0, 500, 0, 51).expect("table must be built for this population");
+    assert_eq!(printing, brute);
+    assert_eq!(card, brute, "fixture is one-printing-per-card");
+    assert_eq!(artwork, brute, "fixture is one-printing-per-artwork");
 }
 
 /// 3-way `usd+eur+tix`: all three price fields present at once. `IndepClass::Price` now has 3
@@ -18332,3 +18488,4 @@ fn price_joint_three_way_usd_eur_tix_still_declines() {
         "must stay at the plain per-leaf min-fold"
     );
 }
+
