@@ -10806,6 +10806,77 @@ fn compose_printing_estimate(
                     }
                 }
             }
+            // ─── Shared anchored-independence machinery (Rounds 50 and 56) ───────────────────────
+            // "Anchored independence": an EXACT joint this arm already computed (`SubtypeArithBox`'s
+            // `(subtype, cmc/pow/tou)` box below, `ColorCmcTable`'s `(color|identity, cmc)` table
+            // further down) is blind to whatever OTHER leaves the query still carries, so multiplying
+            // that joint by a single residual `IndepClass::Price` leaf's own solo selectivity rate
+            // tightens it dramatically -- see Round 50's own call site below for the full motivation
+            // and its validated real-data example, and Round 56's at the `ColorCmcTable` scan for the
+            // second one.
+            //
+            // Round 50 kept all of this inline in its own block. Round 56 added a SECOND anchor site,
+            // so it lives here instead, called by both -- deliberately hoisted rather than copied, so
+            // the two sites can never drift apart on how a residual source is resolved, which classes
+            // count as residual, or where the price rate is read from. Round 50's own observable
+            // behavior is unchanged by the hoist (its `subtype_arith_anchored_independence_*` tests
+            // pass untouched).
+            //
+            // `anchored_leaves_for`/`position_mask` are a small, self-contained equivalent of the
+            // independence registry's own `leaves_for`/`mask_for` closures (defined further down in
+            // this same function, over the same `and_sources`, but not reachable from here) --
+            // verified to resolve `AndSource::Child`/`FusedRange` identically to those.
+            let anchored_leaves_for = |i: usize| -> Vec<&FilterExpr> {
+                match and_sources[i] {
+                    AndSource::Child(c) => vec![c],
+                    AndSource::FusedRange { idx, .. } => {
+                        v.iter().filter(|c| bare_range_bounds(c, indexes).is_some_and(|(i2, ..)| std::ptr::eq(i2, idx))).collect()
+                    }
+                }
+            };
+            // Buckets every RESIDUAL `and_source` (one entirely disjoint from `explained` -- not just
+            // non-overlapping at a single leaf) by `IndepClass`, mirroring the independence registry's
+            // own `by_class` bucketing below, and returns the ONE residual `Price` source's
+            // `and_sources` index together with its printing-space selectivity rate.
+            //
+            // `None` means "decline, form no product": either no residual `Price` source exists at all,
+            // or 2+ residual sources classify as `Price` (e.g. both `usd<10` and `eur<5` present,
+            // unfused). The latter mirrors the independence registry's own "2+ occurrences of a class
+            // with no combining table, dropped" convention (`by_class`'s own `_ => {}` arm further
+            // down), because the price-triple correlation risk already documented in
+            // `local-engine-gathered-scan-card-printing-varying-depth.md` means multiplying two price
+            // rates in is not validated as safe.
+            //
+            // The rate is read off `children_estimates[i].result.printing`, i.e. off whatever
+            // `fuse_and_range_children` produced for that source -- deliberately NOT re-derived from the
+            // individual literal bounds. That distinction is load-bearing: a two-sided `usd>=0.23
+            // usd<=0.31` is ONE `AndSource::FusedRange` whose `k` is the real fused interval count, and
+            // Round 56 measured the naive product of the two one-sided marginals at 1.98x/2.58x on such
+            // queries where the single fused rate gives 1.22x/1.23x.
+            let anchored_price_residual = |explained: &[usize]| -> Option<(usize, f64)> {
+                let position_mask = |positions: &[usize]| -> u64 {
+                    positions.iter().fold(0u64, |m, &p| if p < 64 { m | (1u64 << p) } else { m })
+                };
+                let explained_mask = position_mask(explained);
+                let mut by_class: [Vec<usize>; INDEP_CLASS_COUNT] = Default::default();
+                for (i, src) in and_sources.iter().enumerate() {
+                    let leaves = anchored_leaves_for(i);
+                    let positions: Vec<usize> = leaves.iter().filter_map(|c| v.iter().position(|vc| std::ptr::eq(vc, *c))).collect();
+                    if positions.is_empty() {
+                        continue;
+                    }
+                    if position_mask(&positions) & explained_mask != 0 {
+                        continue; // shares a leaf with this hit -- not residual
+                    }
+                    if let Some(class) = indep_class_of(*src, indexes) {
+                        by_class[class as usize].push(i);
+                    }
+                }
+                match by_class[IndepClass::Price as usize].as_slice() {
+                    [i] if n_printings > 0 => Some((*i, children_estimates[*i].result.printing as f64 / n_printings as f64)),
+                    _ => None,
+                }
+            };
             // Round 36 tightening: a bare `t:X` subtype leaf And'd with 1+ cmc/power/toughness bound
             // children (nothing else in the `And`) gets an exact triple from `indexes.subtype_arith`
             // (a dense per-subtype 3-D (cmc, power, toughness) prefix-sum cube over the top
@@ -10878,77 +10949,6 @@ fn compose_printing_estimate(
             // candidate here and `scan_two_bucket_exact`'s `B: Copy` bound can't hold a `Vec` anyway --
             // `b_positions` (the tuple's `Vec<usize>` slot, not `B` itself) is what carries the arith
             // positions through to `order_positions`.
-            // ─── Shared anchored-independence machinery (Rounds 50 and 56) ───────────────────────
-            // "Anchored independence": an EXACT joint this arm already computed (`SubtypeArithBox`'s
-            // `(subtype, cmc/pow/tou)` box below, `ColorCmcTable`'s `(color|identity, cmc)` table
-            // further down) is blind to whatever OTHER leaves the query still carries, so multiplying
-            // that joint by a single residual `IndepClass::Price` leaf's own solo selectivity rate
-            // tightens it dramatically -- see Round 50's own call site immediately below for the full
-            // motivation and its validated real-data example, and Round 56's at the `ColorCmcTable`
-            // scan for the second one.
-            //
-            // Round 50 kept all of this inline in its own block. Round 56 added a SECOND anchor site,
-            // so it lives here instead, called by both -- deliberately hoisted rather than copied, so
-            // the two sites can never drift apart on how a residual source is resolved, which classes
-            // count as residual, or where the price rate is read from. Round 50's own observable
-            // behavior is unchanged by the hoist (its `subtype_arith_anchored_independence_*` tests
-            // pass untouched).
-            //
-            // `anchored_leaves_for`/`position_mask` are a small, self-contained equivalent of the
-            // independence registry's own `leaves_for`/`mask_for` closures (defined further down in
-            // this same function, over the same `and_sources`, but not reachable from here) --
-            // verified to resolve `AndSource::Child`/`FusedRange` identically to those.
-            let anchored_leaves_for = |i: usize| -> Vec<&FilterExpr> {
-                match and_sources[i] {
-                    AndSource::Child(c) => vec![c],
-                    AndSource::FusedRange { idx, .. } => {
-                        v.iter().filter(|c| bare_range_bounds(c, indexes).is_some_and(|(i2, ..)| std::ptr::eq(i2, idx))).collect()
-                    }
-                }
-            };
-            // Buckets every RESIDUAL `and_source` (one entirely disjoint from `explained` -- not just
-            // non-overlapping at a single leaf) by `IndepClass`, mirroring the independence registry's
-            // own `by_class` bucketing below, and returns the ONE residual `Price` source's
-            // `and_sources` index together with its printing-space selectivity rate.
-            //
-            // `None` means "decline, form no product": either no residual `Price` source exists at all,
-            // or 2+ residual sources classify as `Price` (e.g. both `usd<10` and `eur<5` present,
-            // unfused). The latter mirrors the independence registry's own "2+ occurrences of a class
-            // with no combining table, dropped" convention (`by_class`'s own `_ => {}` arm further
-            // down), because the price-triple correlation risk already documented in
-            // `local-engine-gathered-scan-card-printing-varying-depth.md` means multiplying two price
-            // rates in is not validated as safe.
-            //
-            // The rate is read off `children_estimates[i].result.printing`, i.e. off whatever
-            // `fuse_and_range_children` produced for that source -- deliberately NOT re-derived from the
-            // individual literal bounds. That distinction is load-bearing: a two-sided `usd>=0.23
-            // usd<=0.31` is ONE `AndSource::FusedRange` whose `k` is the real fused interval count, and
-            // Round 56 measured the naive product of the two one-sided marginals at 1.98x/2.58x on such
-            // queries where the single fused rate gives 1.22x/1.23x.
-            let anchored_price_residual = |explained: &[usize]| -> Option<(usize, f64)> {
-                let position_mask = |positions: &[usize]| -> u64 {
-                    positions.iter().fold(0u64, |m, &p| if p < 64 { m | (1u64 << p) } else { m })
-                };
-                let explained_mask = position_mask(explained);
-                let mut by_class: [Vec<usize>; INDEP_CLASS_COUNT] = Default::default();
-                for (i, src) in and_sources.iter().enumerate() {
-                    let leaves = anchored_leaves_for(i);
-                    let positions: Vec<usize> = leaves.iter().filter_map(|c| v.iter().position(|vc| std::ptr::eq(vc, *c))).collect();
-                    if positions.is_empty() {
-                        continue;
-                    }
-                    if position_mask(&positions) & explained_mask != 0 {
-                        continue; // shares a leaf with this hit -- not residual
-                    }
-                    if let Some(class) = indep_class_of(*src, indexes) {
-                        by_class[class as usize].push(i);
-                    }
-                }
-                match by_class[IndepClass::Price as usize].as_slice() {
-                    [i] if n_printings > 0 => Some((*i, children_estimates[*i].result.printing as f64 / n_printings as f64)),
-                    _ => None,
-                }
-            };
             if !arith_children.is_empty() {
                 let a_positions: Vec<usize> = (0..v.len()).filter(|&i| subtype_pair_leaf(&v[i]).is_some()).collect();
                 let arith_positions: Vec<usize> = (0..v.len()).filter(|&i| is_arith_tuple_eligible(&v[i])).collect();
