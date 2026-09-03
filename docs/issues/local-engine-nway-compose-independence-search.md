@@ -183,6 +183,22 @@ exact/bound coverage structurally, and when forced to choose between two indepen
 decide on domain grounds (which leaves are *actually* correlated, per point 2's own worked example),
 never by comparing their numbers.
 
+**A qualification to the (a)/(b) framing above, demonstrated concretely by Round 55 rather than
+reasoned about.** Case (a)'s "always safe in any order" holds only *among* exact/bound candidates. The
+moment an ESTIMATE-class candidate min-folds against an EXACT one whose subset it OVERLAPS, order
+starts to matter — and not as a subtlety, as a real broken test. An undershooting estimate permanently
+pulls `result` below the truth the instant it folds, and no later exact candidate can raise it back
+(`fold_candidate`'s `Exact` arm only tightens via `.min()` too). The guard that's supposed to prevent
+this — "an estimate may only fill a gap no exact mechanism covers for that exact subset" (point 3 /
+Round 40) — is implemented via `covered`, which by construction only reflects mechanisms that have
+*already run*. So the guard is only as good as the mechanism's POSITION in the arm: Round 55's
+fallback, placed before `SubtypeArithBox`, let an undershot independence guess for two subtype leaves
+beat that mechanism's own available, tighter-but-larger exact box hit on the same leaves. The standing
+rule this yields: **an estimate-class mechanism must be positioned after every exact mechanism whose
+leaves it could compete for, not merely written to respect `covered`.** Numbers and the specific tests
+in [local-engine-gathered-scan-card-printing-varying-depth.md](local-engine-gathered-scan-card-printing-varying-depth.md)'s
+Round 55 section.
+
 ## The safety bar is empirical, not provable independence (revised after Rounds 38/40)
 
 The original version of this doc treated "is this pair independence-safe" as answerable from a static

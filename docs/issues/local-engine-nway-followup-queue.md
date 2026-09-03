@@ -1,6 +1,6 @@
 # N-Way Estimator Follow-Up Queue
 
-Tracks what's left from the `And`-arm cardinality-estimation arc (Rounds 33-54), in the order we
+Tracks what's left from the `And`-arm cardinality-estimation arc (Rounds 33-55), in the order we
 intend to tackle it. This doc is the queue, not the depth — the round-by-round numbers live in
 [local-engine-gathered-scan-card-printing-varying-depth.md](local-engine-gathered-scan-card-printing-varying-depth.md),
 and the architecture/design rationale lives in
@@ -10,52 +10,19 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
 
 ## Active queue (in order)
 
-1. **`(subtype, subtype)` top-N table**, closing `same_family:type+type_realistic` (confirmed 0%
-   mechanism coverage today — `t:cleric t:spirit` falls to plain min-fold, 628 vs true 19, 33x over).
-   Design fully settled directly against the real corpus, not yet scoped into a numbered round:
-   - **Top-N membership is the union of per-dimension top-256**, not card-count-ranked alone — checked
-     directly: `Island`×`Swamp` (card=10, printing=107) sits outside top-64-by-card but deep inside
-     top-64-by-printing; at N=256 the union adds 37 printing-only + 21 artwork-only pairs on top of 258
-     card-ranked ones (258 -> 302, +17%). Same "don't silently drop something big in a dimension the
-     sort key doesn't see" philosophy as Round 47's own "include all ties" fix, just extended from one
-     axis to three.
-   - **`rest_max` becomes a real triple** (`rest_max_card`/`rest_max_printing`/`rest_max_artwork`, each
-     the true max in that space among the globally-excluded set) instead of one card-space scalar
-     scaled by a global average reprint ratio (`SetSubtypeTable`'s current pattern). Validated directly:
-     printing-space-native independence+cap beats card-space-then-×3.083-ratio at every percentile
-     (median 0.42x vs 0.64x, p99 18.67x vs 24.67x, max 21x vs 24.67x) on the same N=256 excluded
-     population — the ratio-scaling step assumes a uniform reprint rate across all subtype pairs, which
-     is false. Structurally, only the printing-space number has a live consumer today (`fold_candidate`
-     only ever takes `Candidate::Estimate{printing}` from this fallback per Round 46 — card/artwork
-     space are never touched by it regardless), so the card/artwork rest_max values are "free" (same
-     union-membership pass) but currently unconsumed — fine to store for a future consumer, not a
-     wasted design.
-   - **Keep `min(indep, rest_max)`**, don't simplify to either alone — checked both failure modes on
-     real data. Pure `rest_max` overshoots the deep tail badly (flat regardless of true count — e.g.
-     true=1 pairs get a 31x-over estimate at N=64). Pure independence overshoots for anti-correlated
-     common subtypes (`Human`×`Dragon`: indep=53 vs true=1, 53x over; `Human`×`Spirit`: indep=91 vs
-     true=3, 30x over) — 15/2157 excluded pairs at N=64 exceed `rest_max` this way, meaning the cap is
-     doing real, distinct work, not redundant safety margin.
-   - **N=256** confirmed as the right cutoff (matches existing `SetSubtypeTable` convention, table
-     stays trivially small at 302 entries). N-sweep in printing space: median flat ~0.4-0.5x at every N
-     (independence alone already handles the typical excluded pair); the only lever N pulls is
-     shrinking `rest_max`'s own tail cap, and the return is front-loaded — N=32->256 (7x more table)
-     cuts worst-case 117x->21x, N=256->1024 (another 5x) only gets 21x->3x while the "table" balloons to
-     65% of all pairs, defeating the point of a top-N/fallback split.
-   - **N is not sized by the `StreamedSelect`/`GatheredScan` transition** — checked directly against
-     `STREAM_MIN_MATCHES` (1,024 printings, the same threshold `PairTotals`' own `PAIR_MIN_PRINTINGS`
-     already prunes by, on the identical "below it the sparse floor decides the plan, not the estimate's
-     precision" principle). Only 2 of 2,221 distinct subtype pairs clear 1,024 in ANY space
-     (`Human`×`Wizard`=1,527p, `Human`×`Soldier`=1,428p; the #3 pair is already down to 880p; zero pairs
-     clear 1,024 in card or artwork space). Since `And` is monotonically non-increasing, any query
-     ANDing an excluded pair with more filters has a true total bounded by that pair's own joint count —
-     which is itself bounded by `rest_max_printing` (topped out at 117 even at N=32) — so this mechanism
-     structurally cannot push an estimate across the 1,024 boundary for any N discussed here. N=256 is
-     sized purely for general estimate accuracy (median/tail error above), not this transition.
-2. **Backport the `rest_max` triple + space-native independence fix (above) to `SetSubtypeTable` /
-   `ColorSubtypeTable`.** Both have the identical card-space-then-scale imprecision today — same fix,
-   smaller/separate task, not blocking the new table.
-3. **Generalize "anchored independence" further.** Round 50 shipped this deliberately narrow: only
+1. **Backport the `rest_max` triple + space-native independence to `SetSubtypeTable` /
+   `ColorSubtypeTable`.** Round 55 shipped both ideas for the new `(subtype, subtype)` table but
+   deliberately left these three untouched, so they still rank their top-256 by CARD count alone and
+   still scale one card-space `rest_max` into printing space by a global reprint ratio. Round 55's own
+   measurement says what that costs: printing-space-native independence+cap beat
+   card-space-×-global-ratio at every percentile on the same excluded population (median 0.42x vs
+   0.64x, p90 3.27x vs 4.45x, max 21x vs 24.67x). `top_n_union_and_rest_max` already exists and is
+   generic over `K` — this is mostly a matter of switching the three `top_n_and_rest_max` call sites
+   and teaching `SubtypePairEstimate` to read the triple natively instead of scaling. Watch the
+   ordering constraint Round 55 surfaced (the fourth standing principle below):
+   `SubtypePairEstimate` is already positioned after its own exact scan, but re-check rather than
+   assume.
+2. **Generalize "anchored independence" further.** Round 50 shipped this deliberately narrow: only
    `SubtypeArithBox`'s own hit, only a single residual `IndepClass::Price` leaf. Three separate
    directions remain, each its own future round (validate independently, don't bundle):
    - **More residual classes.** Only `Price` has a validated real-data example; other classes
@@ -68,12 +35,12 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
    - **Combining multiple safe residual classes into one product**, not just one — needs the same
      order-statistics-bias care already documented in the design doc (never try residuals separately
      and pick the smallest) once 2+ classes are each independently validated as safe to anchor.
-4. **Measure the residual-size distribution for real 5+-leaf queries.** Still unmeasured since before
+3. **Measure the residual-size distribution for real 5+-leaf queries.** Still unmeasured since before
    this session started. This is the actual answer to "is the general bounded partition search worth
    building at all" — if real residuals rarely exceed 2-3 leaves, the "notice one bad case, build one
    validated mechanism" pattern (8 real gaps closed this way so far: Rounds 34, 40, 42, 44, 45, 48, 51,
    52) may just *be* the right architecture, not a placeholder for a general one.
-5. **Decide on / scope the actual general bounded partition search**, informed by #4's findings and
+4. **Decide on / scope the actual general bounded partition search**, informed by #3's findings and
    built on Round 49's own subset-tracking primitive (`CoveredState`'s `subsets: Vec<u64>`, already
    shipped). Not attempted until the above are in.
 
@@ -111,6 +78,14 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
   any number of them, in any order, over any overlapping subsets, is always sound (Round 42).
 - **Estimate-class candidates may only fill a gap no exact mechanism covers for that exact subset,
   never compete by magnitude with one** (Round 40).
+- **An estimate-class mechanism must be POSITIONED after every exact mechanism whose leaves it could
+  compete for** — not merely made to respect `covered`, which only ever reflects what already ran.
+  Round 55 demonstrated this concretely: its fallback, placed (per its own plan) before
+  `SubtypeArithBox`, let an undershot independence guess win the arm's min-fold outright over an
+  available, tighter-but-larger exact box hit on the same leaves, breaking two pre-existing tests.
+  `fold_candidate`'s min-fold is commutative in principle, but an undershooting estimate permanently
+  pulls `result` below the truth and no later exact candidate can raise it back. Exact-class
+  mechanisms have no such constraint (first principle above).
 - **Multiple estimate-class candidates for the identical target must never be selected by magnitude**
   — picking the smallest of several noisy estimates of one quantity is a real, systematic
   undercounting bias (order-statistics selection bias), not mere looseness. See
@@ -128,7 +103,7 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
 - Round 49: `covered` loosened from leaf-occupancy to subset-identity tracking (`CoveredState`) for the
   independence registry — recovers Round 48's own regression and improves the sweep overall.
 - Round 50: "anchored independence" for `SubtypeArithBox` — exact joint × single residual `Price` rate,
-  narrowly scoped (see item #1 above for what's left to generalize).
+  narrowly scoped (see item #2 above for what's left to generalize).
 - Round 51: exact `arith_tuple` (printing, card, artwork) triples, precomputed at build time
   (`ArithTupleIndex.totals`) — closes Round 46's census gap; surfaced the `unique=artwork` acquire-path
   gap, closed by Round 52.
@@ -145,6 +120,12 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
   a fresh survey surfaced once Round 53 stopped dominating it (42-87x down to 1.00-1.92x), despite both
   pairs' own weak linear correlation (Pearson r doesn't rule out a real non-linear relationship a joint
   histogram still captures). 3-way `usd+eur+tix` remains out of scope — see the queue's own item above.
+- Round 55: `(subtype, subtype)` exact top-256 table (`SubtypePairTable`) + a printing-space-native
+  capped-independence fallback — closes `same_family:type+type_realistic`/`_disjoint`'s 0% mechanism
+  coverage (100% after; `t:cleric t:spirit` 628 vs true 19 → exact in all three spaces). First use of
+  the union-of-3-spaces top-N cutoff and a real per-space `rest_max` triple (item #1 above is the
+  backport of both to the three older tables). Surfaced the estimate-placement ordering constraint now
+  recorded as the fourth standing principle above.
 - Harness fix (no round number, a Python-only fix outside the engine): `client/query_sampler.py`'s
   `_count_row` folded oracle/flavor words via `Counter.update(set(...))` — bare-set iteration is
   hash-seed-randomized per process, so tied-frequency co-occurring words could swap `most_common()`'s

@@ -207,6 +207,91 @@ total regret by 0.0 ms).
 | 52 | Wires `est.result.card`/`.artwork` (`compose_printing_estimate`'s own And-arm fold, already computed) into `acquire_plan_features`'s `unique=card`/`unique=artwork` acquire path, closing Round 51's own artwork gap — folded in as an ADDITIONAL `.min()` tightening on top of the pre-existing calibrated-estimate baseline, never a replacement for it. `exact_result_total` (the existing exact source for these modes) is untouched | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 66,378 shared rows (fresh seed): 184 plan-choice flips (0.3%), `root=leaf` 0.0%/`root=or` 0.0%. Ratio diagnostic: mean abs-log-ratio −0.017 (95% CI excludes 0) — "B is MORE accurate". Independently re-verified row-by-row (not just the aggregate): **zero rows regressed**, 3,038 improved | see "Round 52" narrative below — a real regression in the round's OWN first attempt was caught by the corpus sweep before shipping (a plain outright-replacement merge let a partial-subset exact mechanism's own valid-but-loose bound override a much-better calibrated estimate, `id:ruw usd:0.50 cmc>=2` artwork mode: 123→21,048 against true 123, a 170x regression) — the shipped fix instead layers `est.result.card`/`.artwork` as a tightening-only `.min()`, independently reproduced: both motivating queries now exact (`cmc>=8 power<=2` artwork 15→13, `cmc<=1 power>=1 tou>=1` artwork 1993→1400), and the regression scenario stays correct (123) on both wheels |
 | 53 | `PriceJointTable`: a quantile-bucketed 2D `(usd, eur)` joint (64 buckets/axis, tie-safe construction — never splits a repeated price value, never a degenerate bucket), sparse `HashMap<u32, SpaceTotals>` over only the cell pairs that actually occur, linear-scanned at query time ("any overlap counts fully", no boundary interpolation). Two call sites: a standalone whole-And fold (usd+eur alone) and a new `by_class` special case feeding one combined unit into the existing independence pairing loop (usd+eur + something else) — both `Candidate::Estimate`, never `Exact`. `tix` deliberately untouched (r=0.336, weak) | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 66,378 shared rows (fresh seed): 200 plan-choice flips (0.3%), 100% confined to `unsafe:usd+eur` (690/900, 76.7%); `unsafe:usd+tix`/`unsafe:eur+tix` and every other shape show zero flips; `root=leaf`/`root=or` both 0.0%. Ratio diagnostic: mean abs-log-ratio −0.010 (95% CI excludes 0) — "B is MORE accurate" | see "Round 53" narrative below — validated BEFORE scoping via a real Pearson-correlation check (usd↔eur r=0.877, usd↔tix r=0.336) and a Python 2D-histogram simulation; independently re-verified after merging: all five worst-tail queries land at 1.01-1.24x (was 83-186x). A real, measured inefficiency found by the implementing agent (both call sites firing redundantly for a bare 2-leaf query with nothing to pair against) was fixed before merge, not deferred — see that section for the numbers |
 | 54 | Generalizes `PriceJointTable` (Round 53) past its `usd`×`eur`-only hardcoding to all three currency pairs: `price_joint_usd_eur`/`_usd_tix`/`_eur_tix`, built by the same closure-parameterized `build_price_joint_table`, dispatched via one shared `price_joint_table_for`/`resolve_price_joint_pair` helper replacing two hand-rolled `match` arms. `PRICE_JOINT_BUCKETS` (64) reused unchanged for all three — re-checked directly against the real corpus, not assumed | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 66,378 shared rows (fresh seed): 227 plan-choice flips (0.3%), 100% confined to `unsafe:usd+tix` (108/900, 12.0%) and `unsafe:eur+tix` (119/900, 13.2%); `unsafe:usd+eur` and every other shape show zero flips; `root=leaf`/`root=or` both 0.0%. Ratio diagnostic: mean abs-log-ratio −0.022 (95% CI excludes 0) — "B is MORE accurate" | see "Round 54" narrative below — surfaced by a fresh full-corpus survey run specifically to check what emerged once Round 53 stopped dominating it; validated the same way (Pearson r + a real joint-histogram simulation) BEFORE scoping, closing a real gap the design doc's own historical calibration work had found beneficial but never actually shipped. Independently re-verified: `usd`×`tix`/`eur`×`tix` land at 1.00-1.92x (was 42-87x); one real discrepancy between my own preliminary Python simulation and the shipped Rust result was investigated and resolved as a bug in MY OWN script, not the implementation — see that section for the full account |
+| 55 | `(subtype, subtype)` exact top-N table (`SubtypePairTable`), the first mechanism in this arm to pair a subtype against ANOTHER subtype rather than against `set:X`/`c:X`/`id:X`. Two departures from `SetSubtypeTable`'s own shape, each validated against the real corpus before scoping: top-N membership is the UNION of the tie-inclusive top-256 in each of the three spaces independently (not card-count-ranked alone), and `rest_max` is a real per-space TRIPLE consumed natively rather than one card-space scalar scaled by a global reprint ratio. Query time: a residual exact-hit scan over every unordered pair of subtype leaves (`Candidate::Exact`), plus a single-pair-only capped-independence fallback (`Candidate::Estimate`, printing-space-native) | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 55,833 shared rows (fresh seed 7, independently re-run by me): 219 plan-choice flips (0.4%; 0.5% of `root=and`), 100% confined to `same_family:type+type_realistic` (116/750, 15.5%) and `same_family:type+type_disjoint` (103/750, 13.7%); every other shape and both `root=leaf`/`root=or` show zero flips. Mechanism coverage for both `same_family:type` shapes 0% → 100%. Ratio diagnostic: mean abs-log-ratio 0.191 → 0.183 (B−A −0.008, 95% CI [−0.009, −0.007]) — "B is MORE accurate". Zero-true-count hit rate 74.0% → 79.5% | see "Round 55" narrative below — the design (union cutoff, triple `rest_max`, keep `min(indep, rest_max)`, N=256) was settled against real corpus data BEFORE scoping, including a direct check that N is NOT sized by the `StreamedSelect`/`GatheredScan` transition. The implementing agent hit a real regression the existing suite caught and fixed it by MOVING the estimate-class fallback later in the arm — an ordering constraint worth reading, not a detail |
+
+### Round 55
+
+Target: `same_family:type+type_realistic`, found at **100% "(none)" mechanism coverage** in the fresh
+post-Round-54 survey — `t:cleric t:spirit` fell to a plain per-leaf min-fold (628 against a true 19,
+33x over) because `SubtypePairIndexes` only ever pairs a subtype against a DIMENSION (`set:X`/`c:X`/
+`id:X`); nothing in this arm answered a bare (subtype, subtype) pair at all. Confirmed directly on the
+before-wheel: all three spaces uncovered (`mechs=` empty), 1576/628/797 against true 64/19/26.
+
+**Two departures from `SetSubtypeTable`'s existing shape, each validated on the real corpus before the
+plan was written** (the full numbers live in
+[local-engine-nway-followup-queue.md](local-engine-nway-followup-queue.md)'s own completed entry):
+
+- **Union-of-three-spaces top-N**, not card-count-ranked alone. `Island`×`Swamp` (card=10,
+  printing=107) sits outside the top-64-by-card cutoff but deep inside top-64-by-printing — a
+  card-only sort key silently drops what's big in a dimension it never looks at. At N=256 the union
+  adds 37 printing-only + 21 artwork-only pairs to 258 card-ranked ones (258 → 302, +17%). Same
+  "no arbitrary exclusion" philosophy as Round 47's include-all-ties fix, extended from one axis to
+  three.
+- **A real per-space `rest_max` triple**, consumed natively, replacing card-space-then-scale. Measured
+  on the same N=256 excluded population: printing-space-native independence+cap beat
+  card-space-×-global-ratio at every percentile (median 0.42x vs 0.64x, p90 3.27x vs 4.45x, max 21x vs
+  24.67x). The ratio-scaling step assumes a uniform reprint rate across all subtype pairs, which is
+  false. Also checked (and rejected) four local per-leaf printings-per-card scaling variants — the best
+  of them (`min(ratio_a, ratio_b)`) only tied on the tail while losing on median/p90.
+
+Two things were deliberately kept rather than "simplified," each because the data said so.
+`min(indep, rest_max)` stays a genuine two-part formula: pure `rest_max` overshoots the deep tail
+flatly (true=1 pairs read 31x over at N=64), while pure independence overshoots badly for
+anti-correlated common subtypes (`Human`×`Dragon` indep=53 vs true=1; `Human`×`Spirit` indep=91 vs
+true=3, with 15/2157 excluded pairs at N=64 exceeding `rest_max` that way) — the cap is catching a
+distinct failure mode, not adding redundant margin. And N stayed at 256 for **estimate accuracy only**:
+checked explicitly against `STREAM_MIN_MATCHES`/`PAIR_MIN_PRINTINGS` (1,024 printings, the threshold
+`PairTotals` already prunes by on the identical "below it the sparse floor decides the plan, not the
+estimate's precision" principle), only **2 of 2,221** distinct subtype pairs clear it in any space
+(`Human`×`Wizard` 1,527p, `Human`×`Soldier` 1,428p; #3 is already down to 880p, and zero pairs clear it
+in card or artwork space). Since `And` is monotonically non-increasing, an excluded pair's contribution
+to a larger query is bounded by its own small joint count regardless of N — so this mechanism
+structurally cannot push an estimate across that routing boundary, and N is not sized by it.
+
+**A real ordering constraint the implementing agent found, and the fix.** The plan placed both new
+blocks together, right after `SubtypePairIndexes`/`SubtypePairEstimate`. That broke two PRE-EXISTING
+tests (`subtype_arith_box_multiple_subtype_leaves_fold_via_min`,
+`subtype_arith_anchored_independence_multi_subtype_leaves_use_their_own_box_hit`) — caught by the
+existing suite, not by the corpus sweep. Root cause: `fold_candidate`'s min-fold is commutative in
+principle, but an ESTIMATE that undershoots permanently pulls `result` below the truth the moment it
+folds, and no later EXACT candidate can raise it back (the `Exact` arm only tightens via `.min()` too).
+A two-bare-subtype-leaf query with an arith bound is simultaneously this mechanism's "exactly 2
+uncovered" shape AND `SubtypeArithBox`'s "multiple subtype leaves" shape, so running the fallback first
+let an undershot independence guess win outright over an available, tighter-but-larger exact box hit.
+The fix: the ESTIMATE-class fallback moved to run AFTER `SubtypeArithBox`/
+`SubtypeArithAnchoredIndependence`, so their `mark_covered` calls are reflected in `covered` before its
+fresh scan — it then correctly declines on any leaf a real exact mechanism already explained. The
+exact-hit scan stayed at the planned position: an exact hit is a valid bound on the whole `And`
+regardless of order, so it cannot corrupt `result` the way an estimate can. **The general lesson,
+already implicit in Round 40's class-priority finding but now demonstrated as a concrete ordering
+constraint: estimate-class mechanisms must be positioned after every exact mechanism whose leaves they
+could compete for, because `covered` only reflects what ran before them.**
+
+**Independent re-verification** (my own wheels, `__file__` asserted against the isolated extraction
+path per this session's own stale-binary lesson; before = `costcell/trunk` `be9fae2e`, after =
+`47c5fbbf`): `t:cleric t:spirit` now **exact in all three spaces** — 1576→64, 628→19, 797→26 against
+true 64/19/26, via `SubtypeSubtypeExact`. `t:human t:wizard`/`t:human t:soldier`/`t:warrior t:zombie`/
+`t:aura t:curse` all exact too. The residual scan holds: `t:cleric t:spirit cmc<3` still hits
+`SubtypeSubtypeExact` with the third leaf present (19 vs true 9, 2.11x — was `SubtypeArithBox`'s 155,
+17.2x). The anti-correlated pairs land on the capped fallback as designed: `t:human t:dragon` 394→12
+card / 1513→**21** printing against true 1, and `t:human t:spirit` 679→12 card against true 3 (226x→4x).
+That printing value is worth naming — **21 is exactly the `rest_max_printing` I had computed
+independently in Python at N=256 before the round was scoped**, an unplanned but clean cross-validation
+that the union cutoff and triple `rest_max` are built the way the analysis assumed.
+
+Correctness gates re-run by me: `cargo test` 269 passed debug / 266 release (the 3-test gap is
+`#[cfg(debug_assertions)]`-gated, expected), `cargo clippy --all-targets -- -D warnings` clean in
+debug (CI's exact invocation). The one release-only dead-code warning (`ARITH_TUPLE_BLOWUP_CARDS`) was
+confirmed pre-existing rather than assumed so: `git log -S` traces it to Round 51's own `f051eaf7`, and
+it is present on `costcell/trunk` itself.
+
+Timing: the agent's paired canary measurement found the touched shapes not distinguishable from noise
+on `type_realistic` (+56ns, CI [−8,121]) and a small but real +74ns (CI [63,85]) on `type_disjoint`,
+against that shape's own ~700-2000ns `and_estimate_ns` baseline. My own paired check from the sweep
+rows agrees on magnitude (+83ns on `type_realistic` against a 1584ns baseline, +0ns overall) but cannot
+resolve the effect — my two sweeps ran concurrently, and untouched shapes wobbled ±83ns in both
+directions, the same size as the signal. The agent's canaried numbers are the real measurement; mine
+only rules out an order-of-magnitude blowup.
 
 ### Round 54
 
