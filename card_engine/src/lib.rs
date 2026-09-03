@@ -9826,6 +9826,9 @@ fn and_trace_for(filter: &FilterExpr, indexes: &Archived<CardIndexes>, offsets: 
 /// (Round 50) is `SubtypeArithBox`'s own exact joint multiplied by a single residual `Price` leaf's own
 /// solo rate -- the product of an exact count and an inexact rate is itself inexact, so this stays
 /// ESTIMATE-class even though it's anchored on an exact box hit (see that call site's own doc).
+/// `"ColorCmcAnchoredIndependence"` (Round 56) is the exact same construction one anchor over --
+/// `ColorCmcTable`'s own exact `(color|identity, cmc)` joint times a single residual `Price` leaf's own
+/// solo rate -- and stays ESTIMATE-class for the identical reason.
 /// `"SubtypeSubtypeEstimate"` (Round 55) is the direct one-bucket analog of `"SubtypePairEstimate"` --
 /// `SubtypePairTable`'s own capped independence-product MISS branch (the HIT branch,
 /// `"SubtypeSubtypeExact"`, is a genuine table lookup and stays in the exact/bound class, same split as
@@ -9836,7 +9839,12 @@ fn and_trace_for(filter: &FilterExpr, indexes: &Archived<CardIndexes>, offsets: 
 fn is_estimate_class_mechanism(mechanism: &str) -> bool {
     matches!(
         mechanism,
-        "Independence" | "SetCollectorRange" | "SubtypePairEstimate" | "SubtypeArithAnchoredIndependence" | "SubtypeSubtypeEstimate"
+        "Independence"
+            | "SetCollectorRange"
+            | "SubtypePairEstimate"
+            | "SubtypeArithAnchoredIndependence"
+            | "ColorCmcAnchoredIndependence"
+            | "SubtypeSubtypeEstimate"
     )
 }
 
@@ -10870,6 +10878,77 @@ fn compose_printing_estimate(
             // candidate here and `scan_two_bucket_exact`'s `B: Copy` bound can't hold a `Vec` anyway --
             // `b_positions` (the tuple's `Vec<usize>` slot, not `B` itself) is what carries the arith
             // positions through to `order_positions`.
+            // ─── Shared anchored-independence machinery (Rounds 50 and 56) ───────────────────────
+            // "Anchored independence": an EXACT joint this arm already computed (`SubtypeArithBox`'s
+            // `(subtype, cmc/pow/tou)` box below, `ColorCmcTable`'s `(color|identity, cmc)` table
+            // further down) is blind to whatever OTHER leaves the query still carries, so multiplying
+            // that joint by a single residual `IndepClass::Price` leaf's own solo selectivity rate
+            // tightens it dramatically -- see Round 50's own call site immediately below for the full
+            // motivation and its validated real-data example, and Round 56's at the `ColorCmcTable`
+            // scan for the second one.
+            //
+            // Round 50 kept all of this inline in its own block. Round 56 added a SECOND anchor site,
+            // so it lives here instead, called by both -- deliberately hoisted rather than copied, so
+            // the two sites can never drift apart on how a residual source is resolved, which classes
+            // count as residual, or where the price rate is read from. Round 50's own observable
+            // behavior is unchanged by the hoist (its `subtype_arith_anchored_independence_*` tests
+            // pass untouched).
+            //
+            // `anchored_leaves_for`/`position_mask` are a small, self-contained equivalent of the
+            // independence registry's own `leaves_for`/`mask_for` closures (defined further down in
+            // this same function, over the same `and_sources`, but not reachable from here) --
+            // verified to resolve `AndSource::Child`/`FusedRange` identically to those.
+            let anchored_leaves_for = |i: usize| -> Vec<&FilterExpr> {
+                match and_sources[i] {
+                    AndSource::Child(c) => vec![c],
+                    AndSource::FusedRange { idx, .. } => {
+                        v.iter().filter(|c| bare_range_bounds(c, indexes).is_some_and(|(i2, ..)| std::ptr::eq(i2, idx))).collect()
+                    }
+                }
+            };
+            // Buckets every RESIDUAL `and_source` (one entirely disjoint from `explained` -- not just
+            // non-overlapping at a single leaf) by `IndepClass`, mirroring the independence registry's
+            // own `by_class` bucketing below, and returns the ONE residual `Price` source's
+            // `and_sources` index together with its printing-space selectivity rate.
+            //
+            // `None` means "decline, form no product": either no residual `Price` source exists at all,
+            // or 2+ residual sources classify as `Price` (e.g. both `usd<10` and `eur<5` present,
+            // unfused). The latter mirrors the independence registry's own "2+ occurrences of a class
+            // with no combining table, dropped" convention (`by_class`'s own `_ => {}` arm further
+            // down), because the price-triple correlation risk already documented in
+            // `local-engine-gathered-scan-card-printing-varying-depth.md` means multiplying two price
+            // rates in is not validated as safe.
+            //
+            // The rate is read off `children_estimates[i].result.printing`, i.e. off whatever
+            // `fuse_and_range_children` produced for that source -- deliberately NOT re-derived from the
+            // individual literal bounds. That distinction is load-bearing: a two-sided `usd>=0.23
+            // usd<=0.31` is ONE `AndSource::FusedRange` whose `k` is the real fused interval count, and
+            // Round 56 measured the naive product of the two one-sided marginals at 1.98x/2.58x on such
+            // queries where the single fused rate gives 1.22x/1.23x.
+            let anchored_price_residual = |explained: &[usize]| -> Option<(usize, f64)> {
+                let position_mask = |positions: &[usize]| -> u64 {
+                    positions.iter().fold(0u64, |m, &p| if p < 64 { m | (1u64 << p) } else { m })
+                };
+                let explained_mask = position_mask(explained);
+                let mut by_class: [Vec<usize>; INDEP_CLASS_COUNT] = Default::default();
+                for (i, src) in and_sources.iter().enumerate() {
+                    let leaves = anchored_leaves_for(i);
+                    let positions: Vec<usize> = leaves.iter().filter_map(|c| v.iter().position(|vc| std::ptr::eq(vc, *c))).collect();
+                    if positions.is_empty() {
+                        continue;
+                    }
+                    if position_mask(&positions) & explained_mask != 0 {
+                        continue; // shares a leaf with this hit -- not residual
+                    }
+                    if let Some(class) = indep_class_of(*src, indexes) {
+                        by_class[class as usize].push(i);
+                    }
+                }
+                match by_class[IndepClass::Price as usize].as_slice() {
+                    [i] if n_printings > 0 => Some((*i, children_estimates[*i].result.printing as f64 / n_printings as f64)),
+                    _ => None,
+                }
+            };
             if !arith_children.is_empty() {
                 let a_positions: Vec<usize> = (0..v.len()).filter(|&i| subtype_pair_leaf(&v[i]).is_some()).collect();
                 let arith_positions: Vec<usize> = (0..v.len()).filter(|&i| is_arith_tuple_eligible(&v[i])).collect();
@@ -10925,21 +11004,10 @@ fn compose_printing_estimate(
                 // residuals, a subset of that), so `.min()`-folding it in is always safe, never a new
                 // correctness risk, only sometimes leaving accuracy on the table for a later round.
                 //
-                // `anchored_leaves_for`/`explained_mask` are a small, self-contained equivalent of the
-                // independence registry's own `leaves_for`/`mask_for` closures (defined further down in
-                // this same function, over `and_sources`, not reachable from here) -- verified to
-                // resolve `AndSource::Child`/`FusedRange` identically to those.
-                let anchored_leaves_for = |i: usize| -> Vec<&FilterExpr> {
-                    match and_sources[i] {
-                        AndSource::Child(c) => vec![c],
-                        AndSource::FusedRange { idx, .. } => {
-                            v.iter().filter(|c| bare_range_bounds(c, indexes).is_some_and(|(i2, ..)| std::ptr::eq(i2, idx))).collect()
-                        }
-                    }
-                };
-                let position_mask = |positions: &[usize]| -> u64 {
-                    positions.iter().fold(0u64, |m, &p| if p < 64 { m | (1u64 << p) } else { m })
-                };
+                // Round 56: the residual-bucketing and leaf-resolution steps this block used to keep
+                // inline now live in `anchored_price_residual`/`anchored_leaves_for`, hoisted to And-arm
+                // scope so `ColorCmcTable`'s own anchor site can share them verbatim -- see that
+                // helper's own doc above. This block's behavior is unchanged by the hoist.
                 for &ai in &a_positions {
                     let Some(subtype) = subtype_pair_leaf(&v[ai]) else { continue };
                     // A second, cheap lookup into the same table `scan_two_bucket_exact` already
@@ -10951,29 +11019,7 @@ fn compose_printing_estimate(
                         continue;
                     };
                     let explained: Vec<usize> = std::iter::once(ai).chain(arith_positions.iter().copied()).collect();
-                    let explained_mask = position_mask(&explained);
-                    // Bucket every RESIDUAL `and_source` (entirely disjoint from `explained` -- not
-                    // just non-overlapping at one leaf) by `IndepClass`, mirroring the independence
-                    // registry's own `by_class` bucketing below.
-                    let mut by_class: [Vec<usize>; INDEP_CLASS_COUNT] = Default::default();
-                    for (i, src) in and_sources.iter().enumerate() {
-                        let leaves = anchored_leaves_for(i);
-                        let positions: Vec<usize> = leaves.iter().filter_map(|c| v.iter().position(|vc| std::ptr::eq(vc, *c))).collect();
-                        if positions.is_empty() {
-                            continue;
-                        }
-                        let mask = position_mask(&positions);
-                        if mask & explained_mask != 0 {
-                            continue; // shares a leaf with this hit -- not residual
-                        }
-                        if let Some(class) = indep_class_of(*src, indexes) {
-                            by_class[class as usize].push(i);
-                        }
-                    }
-                    if let [i] = by_class[IndepClass::Price as usize].as_slice()
-                        && n_printings > 0
-                    {
-                        let rate = children_estimates[*i].result.printing as f64 / n_printings as f64;
+                    if let Some((price_src, rate)) = anchored_price_residual(&explained) {
                         let anchored_printing = ((box_printing as f64) * rate).round() as usize;
                         fold_candidate(
                             &mut result,
@@ -10988,7 +11034,7 @@ fn compose_printing_estimate(
                         // defensively covered, mirroring `SubtypePairEstimate`'s own defensive
                         // self-mark -- prevents some future mechanism from redundantly re-answering
                         // the identical combined subset.
-                        let price_leaves = anchored_leaves_for(*i);
+                        let price_leaves = anchored_leaves_for(price_src);
                         let mut cover_leaves: Vec<&FilterExpr> = explained.iter().map(|&p| &v[p]).collect();
                         cover_leaves.extend(price_leaves.iter().copied());
                         mark_covered(v, &cover_leaves, &mut covered);
@@ -11123,6 +11169,11 @@ fn compose_printing_estimate(
             // convention `SubtypeArithBox`'s own miss case uses; there is no ESTIMATE-class fallback
             // beyond that, since every real (mask, cmc) combination the table DOES cover is
             // representable exactly, including a genuine zero.
+            //
+            // Round 56 added an ESTIMATE-class companion immediately after this scan
+            // (`ColorCmcAnchoredIndependence`) that multiplies this table's own exact joint by a single
+            // residual `Price` leaf's rate. It inherits this call site's "never `mark_covered`" decision
+            // for the same measured reason -- see its own doc below.
             let color_cmc_dim_positions: Vec<usize> = (0..v.len()).filter(|&i| color_cmc_dim(&v[i]).is_some()).collect();
             let cmc_leaf_positions: Vec<usize> = (0..v.len()).filter(|&i| numeric_cmp_field(&v[i]) == Some(NumField::Cmc)).collect();
             // Round 46: shared `scan_two_bucket_exact` helper -- bucket A is every `color_cmc_dim`
@@ -11158,6 +11209,97 @@ fn compose_printing_estimate(
                         color_cmc_table_for(field, indexes).and_then(|table| color_cmc_exact(op, mask, lo, hi, table))
                     },
                 );
+                // Round 56 ("anchored independence" for `ColorCmcTable`, the second half of
+                // `docs/issues/local-engine-nway-followup-queue.md` item #2): exactly the pattern Round
+                // 50 shipped for `SubtypeArithBox`, applied to this table's own exact hit. The
+                // `(color|identity, cmc)` joint above is EXACT and wins this arm's `.min()`-fold outright
+                // on the `*+cmc+usd` star shapes -- at which point the query's price leaf contributes
+                // nothing at all, because the joint is blind to it. Traced directly on the real corpus:
+                //
+                //   'cmc=4 id:b usd<0.21'  pred=3669  true=801
+                //     HIT ColorCmcTable  printing=3669  [id:b, cmc=4]   <- exact, wins the min-fold
+                //     HIT Independence   printing=5173  [id:b, usd<0.21]
+                //     HIT Independence   printing=3966  [cmc=4, usd<0.21]
+                //   marginal usd<0.21 = 21014/97812 = 21.5%  ->  3669 * 0.215 = 788  vs true 801 (0.98x)
+                //
+                // Validated BEFORE scoping on 70 queries sampled at random from the full 245-query
+                // printing-mode population of `star:identity+cmc+usd` (deliberately not the straddling
+                // tail, to avoid calibrating on it): median ratio 1.97x -> 1.01x, mean 2.17x -> 1.06x,
+                // p90 3.59x -> 1.28x, and the routing-relevant count of rows landing on the WRONG side of
+                // the 1,024 `STREAM_MIN_MATCHES` boundary 5 -> 0. NO fudge factor: a sweep
+                // (1.05/1.10/1.15/1.25/1.50) was measured on that same population and every non-trivial
+                // factor made routing WORSE (1.10-1.25 put one wrong-side row back, 1.50 put two), since
+                // 83% of routing-relevant misses in this whole survey are already over-estimates and
+                // biasing upward pushes genuinely-small queries back over the line this exists to get
+                // them under. That matches Round 38's own finding that `fudge = 1.0` was strictly optimal
+                // for the independence registry; plain `anchor * rate` it is.
+                //
+                // Stated tradeoff, identical to the one Round 50 already accepted: this moves the shape
+                // from systematically over (96% over) to roughly unbiased (median 1.01x, 44% of rows
+                // below truth, worst 0.62x). Strictly more accurate and strictly better for routing on
+                // the measured population, but it gives up the "errors are always in the safe direction"
+                // property. The change is monotone -- an `Estimate` folded via `.min()` can only ever
+                // LOWER `result`, never raise it.
+                //
+                // Deliberately does NOT call `mark_covered`, unlike Round 50's otherwise-identical site.
+                // This is the one place this round diverges, and it is load-bearing: `ColorCmcTable`'s
+                // own exact scan just above deliberately never covers its leaves either, because
+                // covering them starves BOTH `Independence` candidates at once (`ColorId` x `Price` and
+                // `Cmc` x `Price`) and measured WORSE (median `abs_log_ratio` 0.71 -> 1.12 for
+                // `star:identity+cmc+usd`) -- see that scan's own doc for the full measurement. Covering
+                // here would re-introduce exactly that. It is also unnecessary: the anchored estimate is
+                // already the SMALLEST candidate in every traced case (788 against the table's own 3669
+                // and the two independence candidates' 5173/3966), so it wins the `.min()`-fold on merit
+                // without starving anything.
+                //
+                // Placement: immediately after the exact scan it anchors on, mirroring Round 50's own
+                // placement right after `SubtypeArithBox`'s. Round 55's ordering constraint (an
+                // ESTIMATE-class mechanism must run after every EXACT mechanism whose leaves it could
+                // compete for, since `covered` only reflects what already ran and an undershooting
+                // estimate permanently pulls `result` below truth through the min-fold) is satisfied:
+                // everything after this point in the arm is the estimate-class independence registry
+                // (`"Independence"`) and the final `narrow_floor`/`result_space` assembly -- no exact
+                // candidate is folded after here that this could undercut.
+                //
+                // Folded as `Candidate::Estimate` (never `Exact`) so it narrows `result` only and never
+                // touches `exact_domain_*` -- the product of an exact count and an inexact rate is
+                // itself inexact, the same exact/estimate line Round 50's own site draws.
+                for &ai in &color_cmc_dim_positions {
+                    let (field, op, mask) = color_cmc_dim(&v[ai]).expect("color_cmc_dim_positions only holds color_cmc_dim leaves");
+                    // A second, cheap lookup into the same table `scan_two_bucket_exact` already
+                    // queried above -- not threaded out of that shared helper, keeping this mechanism
+                    // decoupled from a helper shared with two others (Round 50's own precedent, and
+                    // Round 42's before it).
+                    let Some((joint_printing, _joint_cards, _joint_artworks)) =
+                        color_cmc_table_for(field, indexes).and_then(|table| color_cmc_exact(op, mask, cmc_lo, cmc_hi, table))
+                    else {
+                        continue;
+                    };
+                    let explained: Vec<usize> = std::iter::once(ai).chain(cmc_leaf_positions.iter().copied()).collect();
+                    if let Some((price_src, rate)) = anchored_price_residual(&explained) {
+                        let anchored_printing = ((joint_printing as f64) * rate).round() as usize;
+                        fold_candidate(
+                            &mut result,
+                            &mut exact_domain_cards,
+                            &mut exact_domain_printing,
+                            &mut exact_domain_artworks,
+                            "ColorCmcAnchoredIndependence",
+                            Candidate::Estimate { printing: anchored_printing },
+                        );
+                        if let Some(t) = and_trace.as_mut() {
+                            let mut leaves: Vec<String> = explained.iter().map(|&p| format!("{:?}", v[p])).collect();
+                            leaves.extend(anchored_leaves_for(price_src).iter().map(|c| format!("{c:?}")));
+                            t.considered.push(AndTraceGroup {
+                                leaves,
+                                mechanism: "ColorCmcAnchoredIndependence",
+                                hit: true,
+                                printing: Some(anchored_printing),
+                                card: None,
+                                artwork: None,
+                            });
+                        }
+                    }
+                }
             }
             // Round 40 tightening: generalizes Round 38's one hard-coded shape (`color:X`/`id:X`/
             // `cmc<op>N` paired with exactly one price comparison) into a small REGISTRY of confirmed

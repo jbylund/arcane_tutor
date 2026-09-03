@@ -17084,6 +17084,18 @@ fn set_leaf_floor_does_not_widen_exact_domain() {
 /// pre-fix shape exactly -- both `Independence` candidates fire alone and the folded result is the
 /// worse, degraded number the round's own investigation found.
 ///
+/// Round 56 update: this fixture's `And` now also produces a `ColorCmcAnchoredIndependence` candidate
+/// (the same exact joint times `usd<=0.50`'s own solo rate, `round(10 * 50/100) = 5`), which folds
+/// BELOW the exact joint and takes over the arm's final number. Every structural claim this test was
+/// written to make is unchanged and still asserted below -- both `Independence` candidates still fire
+/// at 20 each (nothing was starved by a `mark_covered`), `ColorCmcTable`'s own group is still the exact
+/// 10, and `exact_domain` is still the exact 10 and never the estimate. Only the arm's final
+/// `result.printing` moved, 10 -> 5, and that is exactly Round 56's own documented tradeoff: this
+/// fixture is the synthetic worst case for it, because green ∩ `cmc<=3` is *by construction* cards
+/// 0..=9, i.e. precisely the ten CHEAPEST printings, so price is perfectly redundant given the joint
+/// and the independence assumption undershoots by the full 2x. Real corpus behavior is the opposite
+/// direction (median 1.97x over -> 1.01x); see the And arm's own Round 56 doc.
+///
 /// 100 single-printing cards, prices 1..=100 cents (`usd<=0.50` selects the 50 cheapest). Green
 /// (mask G) is cards 0..=39 (40 cards); `cmc<=3` (`cmc=1`) is cards 0..=9 and 40..=69 (40 cards); the
 /// TRUE joint (green AND cmc<=3) is cards 0..=9 only -- 10 cards, deliberately far tighter than either
@@ -17149,9 +17161,301 @@ fn color_cmc_table_star_shape_wins_the_min_against_independence() {
     assert!(after_independence.iter().all(|g| g.printing == Some(20)), "the independence candidates' own numbers are unchanged by this mechanism's presence");
     let hit = after_trace.considered.iter().find(|g| g.mechanism == "ColorCmcTable").expect("ColorCmcTable must fire");
     assert_eq!(hit.printing, Some(10), "the true joint: green AND cmc<=3 is exactly cards 0..=9");
-    assert_eq!(after_printing, 10, "post-fix: the exact joint wins the min() against both independence candidates (20 each)");
-    assert_eq!(after_domain_card, Some(10), "an exact hit must populate exact_domain, unlike independence");
+    assert!(hit.printing < after_independence[0].printing, "the exact joint must beat both independence candidates (20 each) on its own merit");
+    // Round 56: the anchored companion (exact joint x the residual price rate) folds below the exact
+    // joint and now decides the arm -- see this test's own doc for why this fixture is its worst case.
+    let anchored = after_trace
+        .considered
+        .iter()
+        .find(|g| g.mechanism == "ColorCmcAnchoredIndependence")
+        .expect("Round 56's anchored companion must fire: one ColorCmcTable hit, one residual Price leaf");
+    assert_eq!(anchored.printing, Some(5), "round(10 * 50/100) = 5");
+    assert_eq!(after_printing, 5, "post-Round-56: the anchored candidate is the smallest and wins the min()-fold on merit");
+    assert_eq!(
+        after_domain_card,
+        Some(10),
+        "an exact hit must populate exact_domain, unlike independence -- and the anchored Estimate must never tighten it"
+    );
     assert!(after_printing < before_printing, "the fix must strictly improve on the Round 43 degraded shape");
+}
+
+// ─── Round 56: anchored independence for `ColorCmcTable` ──────────────────────
+
+/// Shared fixture for Round 56's `ColorCmcAnchoredIndependence` tests: 100 single-printing cards laid
+/// out so the exact `(colors, cmc)` joint, the price marginal, and their TRUE 3-leaf intersection are
+/// all distinct, hand-checkable numbers.
+///
+/// - `colors` (and `color_identity`, kept equal so the same raw data backs both tables, mirroring
+///   `color_cmc_fixture`): green for cards 0..=39 (40 cards), colorless above.
+/// - `cmc`: 1 for cards 0..=19 and 40..=69, 10 elsewhere. So `cmc<=3` is 50 cards, and the exact
+///   green ∩ `cmc<=3` joint is cards 0..=19 -- 20, deliberately tighter than either marginal.
+/// - `price_usd`: `((i % 10) + 1) * 10` cents, i.e. the ten values 10..=100 cents cycling every ten
+///   cards. Deliberately index-CYCLIC rather than index-monotone (the Round 44 star fixture's own
+///   layout, which is that mechanism's synthetic worst case -- see
+///   `color_cmc_table_star_shape_wins_the_min_against_independence`'s doc) so price is genuinely
+///   uncorrelated with the color/cmc blocks and the independence assumption lands ON the truth here,
+///   which is what makes these tests assert exact expected numbers rather than inequalities.
+/// - `price_eur`: 100 cents for cards 0..=49, 900 above -- used only by the two-residual-price decline
+///   test, and deliberately a different index carve from `price_usd` so the two leaves are genuinely
+///   separate `AndSource`s and never fuse.
+/// - `creature_power`: 1 on every card, so a bare `power>=0` leaf (the non-`Price` residual class
+///   stand-in) matches all 100 -- the broadest possible leaf, guaranteed not to tighten anything.
+///
+/// `store_of` gives one printing per card in push order, so printing i lines up with card i (the same
+/// assumption every sibling fixture in this file makes).
+fn color_cmc_anchored_fixture() -> (CardData, u8) {
+    let mut vocab = VocabInterner::new();
+    let green = super::color_to_bit("G");
+    let mut cards: Vec<OracleCard> = (0..100).map(|i| stub_card(1 + i as u128, TYPE_CREATURE, &[], &mut vocab)).collect();
+    for (i, c) in cards.iter_mut().enumerate() {
+        if i < 40 {
+            c.card_colors = green;
+            c.card_color_identity = green;
+        }
+        c.cmc = Some(if i < 20 || (40..70).contains(&i) { 1 } else { 10 });
+        c.creature_power = Some(1);
+    }
+    let mut data = store_of(cards, &[1; 100], vocab);
+    for (i, p) in data.printings.iter_mut().enumerate() {
+        p.price_usd = Some(((i as u32 % 10) + 1) * 10);
+        p.price_eur = Some(if i < 50 { 100 } else { 900 });
+    }
+    data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
+    data.indexes.price_eur = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_eur);
+    data.indexes.cmc = build_numeric_index(&data.cards, |c| c.cmc.map(|v| v as i16));
+    data.indexes.power = build_numeric_index(&data.cards, |c| c.creature_power.map(|v| v as i16));
+    let ptc = build_printing_to_card(&data.offsets);
+    let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
+    data.indexes.value_totals = build_all_value_totals(&data.cards, &data.printings, &ptc, &data.strings, &data.coll_vocab, max_ag);
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards, &data.offsets, &data.indexes.artwork_base);
+    data.indexes.color_cmc = super::build_color_cmc_tables(&data.cards, &data.printings, &ptc, max_ag);
+    (data, green)
+}
+
+/// Direct analog of Round 56's validated real motivating case (`cmc=4 id:b usd<0.21`: `ColorCmcTable`
+/// alone predicted 3,669 against a true 801, and `3669 * 21014/97812 = 788` instead). The exact
+/// `(green, cmc<=3)` joint (20) is price-blind; the one residual `usd<=0.55` leaf's own solo rate
+/// (50/100) tightens it to `round(20 * 0.5) = 10`, which is exactly the true 3-leaf answer here
+/// (cards 0..=19 whose `i % 10` is in 0..=4).
+///
+/// Also asserts this round's two load-bearing structural properties directly:
+///
+/// 1. **No `mark_covered`** -- both pre-existing `Independence` candidates (`ColorId` x `Price` and
+///    `Cmc` x `Price`) must still fire, exactly as they do for the bare `ColorCmcTable` scan this
+///    anchors on. Covering here would starve them both at once, which is the measured regression that
+///    scan's own call-site doc records.
+/// 2. **Wins on merit, not by starvation** -- the anchored value is the strict minimum of every
+///    candidate in the arm, so it takes the fold without needing to cover anything.
+///
+/// And that it is ESTIMATE-class: `exact_domain` must stay at the table's own EXACT 20 in all three
+/// spaces, never pulled down to 10.
+#[test]
+fn color_cmc_anchored_independence_tightens_the_exact_joint() {
+    let (data, green) = color_cmc_anchored_fixture();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+    assert_eq!(n_printings, 100);
+
+    let green_leaf = FilterExpr::ColorCmp { field: ColorField::Colors, op: CmpOp::Ge, mask: green };
+    let cmc_le3 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Le, rhs: NumExpr::Const(3.0) };
+    let cheap = usd_cmp(CmpOp::Le, 0.55);
+
+    // Fixture assumptions, independent of anything this round touches.
+    for (label, leaf, want) in [
+        ("green", &green_leaf, 40usize),
+        ("cmc<=3", &cmc_le3, 50),
+        ("usd<=0.55", &cheap, 50),
+    ] {
+        let solo = super::compose_printing_estimate(leaf, &archived.indexes, &archived.offsets, n_printings, false);
+        assert_eq!(solo.result.printing, want, "fixture assumption: {label}'s own solo printing count");
+    }
+
+    let f = FilterExpr::And(vec![green_leaf, cmc_le3, cheap]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+    let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+
+    let table_hit = and_trace.considered.iter().find(|g| g.mechanism == "ColorCmcTable").expect("ColorCmcTable must fire on (green, cmc<=3)");
+    assert!(table_hit.hit);
+    assert_eq!(table_hit.printing, Some(20), "the exact (green, cmc<=3) joint -- cards 0..=19, price-blind");
+
+    let anchored = and_trace
+        .considered
+        .iter()
+        .find(|g| g.mechanism == "ColorCmcAnchoredIndependence")
+        .expect("the anchored candidate must fire: one ColorCmcTable hit, exactly one residual Price leaf");
+    assert!(anchored.hit);
+    assert_eq!(anchored.printing, Some(10), "round(20 * 50/100) = 10 -- and exactly the true 3-leaf answer for this fixture");
+    assert_eq!(anchored.leaves.len(), 3, "the joint's own two explained leaves (green, cmc<=3) plus the one contributing residual (usd<=0.55)");
+    assert!(anchored.card.is_none() && anchored.artwork.is_none(), "printing-space only, like every other estimate-class candidate in this arm");
+
+    // (1) No `mark_covered`: both independence candidates must survive this mechanism's presence.
+    let independence: Vec<_> = and_trace.considered.iter().filter(|g| g.mechanism == "Independence").collect();
+    assert_eq!(independence.len(), 2, "ColorId x Price and Cmc x Price must both still fire -- the anchored candidate must not cover their leaves");
+    assert!(independence.iter().any(|g| g.printing == Some(20)), "round(40 * 50 / 100) == 20 for ColorId x Price");
+    assert!(independence.iter().any(|g| g.printing == Some(25)), "round(50 * 50 / 100) == 25 for Cmc x Price");
+
+    // (2) Wins the fold on merit: strictly smaller than every other candidate in the arm.
+    let others: Vec<usize> = and_trace
+        .considered
+        .iter()
+        .filter(|g| g.mechanism != "ColorCmcAnchoredIndependence")
+        .filter_map(|g| g.printing)
+        .collect();
+    assert!(!others.is_empty(), "the arm must have produced other candidates to compare against");
+    assert!(others.iter().all(|&p| p > 10), "the anchored candidate must be the strict minimum, so it needs no mark_covered to win: {others:?}");
+    assert_eq!(est.result.printing, 10, "the anchored candidate wins the arm's final min-fold");
+
+    let domain = est.exact_domain.expect("ColorCmcTable's own EXACT hit still populates exact_domain");
+    assert_eq!(
+        (domain.printing, domain.card, domain.artwork),
+        (20, Some(20), Some(20)),
+        "exact_domain must stay the table's own EXACT joint (20) in every space -- an Estimate-class candidate must never touch it"
+    );
+}
+
+/// The same shape one field over: `id:>=G` resolves through `color_cmc_table_for(ColorIdentity)`, the
+/// OTHER of the two tables `ColorCmcIndexes` holds. This fixture keeps `colors == color_identity`, so
+/// the numbers match the `colors` test exactly -- what is under test is that the identity table is
+/// reached at all (the real motivating query is `id:b`-shaped, not `c:b`-shaped).
+#[test]
+fn color_cmc_anchored_independence_fires_on_the_identity_table_too() {
+    let (data, green) = color_cmc_anchored_fixture();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let id_green = FilterExpr::ColorCmp { field: ColorField::ColorIdentity, op: CmpOp::Ge, mask: green };
+    let cmc_le3 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Le, rhs: NumExpr::Const(3.0) };
+    let f = FilterExpr::And(vec![id_green, cmc_le3, usd_cmp(CmpOp::Le, 0.55)]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+    let and_trace = *est.and_trace.expect("want_trace");
+
+    let anchored = and_trace
+        .considered
+        .iter()
+        .find(|g| g.mechanism == "ColorCmcAnchoredIndependence")
+        .expect("the anchored candidate must fire for an identity leaf, not just a colors leaf");
+    assert_eq!(anchored.printing, Some(10), "round(20 * 50/100) = 10, same as the colors table (colors == identity in this fixture)");
+    assert_eq!(est.result.printing, 10);
+}
+
+/// A TWO-SIDED price range must use the ONE FUSED interval count, never the product of the two
+/// one-sided marginals -- the detail Round 56 measured as worth 1.2x versus 2.6x accuracy, so it gets a
+/// specific expected number rather than a loose bound.
+///
+/// `usd>=0.25 usd<=0.55` is two literal `NumericCmp` children that `fuse_and_range_children` merges
+/// into ONE `AndSource::FusedRange` over `price_usd`. Its real fused count is the printings priced
+/// 30/40/50 cents: `i % 10` in 2..=4, i.e. 30 of 100. So the anchored value is
+/// `round(20 * 30/100) = 6`, which is also the exact true answer (cards 0..=19 with `i % 10` in 2..=4).
+///
+/// The naive alternative -- treating the two bounds as separate marginals and multiplying both rates in
+/// -- would give `20 * (80/100) * (50/100) = 8` instead (the one-sided counts are asserted below so
+/// this contrast is checked against the fixture, not just asserted in prose). 6 != 8 != anything else
+/// in the arm, so this test genuinely distinguishes the two.
+#[test]
+fn color_cmc_anchored_independence_uses_the_fused_two_sided_price_rate() {
+    let (data, green) = color_cmc_anchored_fixture();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let green_leaf = FilterExpr::ColorCmp { field: ColorField::Colors, op: CmpOp::Ge, mask: green };
+    let cmc_le3 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Le, rhs: NumExpr::Const(3.0) };
+    let usd_ge = usd_cmp(CmpOp::Ge, 0.25);
+    let usd_le = usd_cmp(CmpOp::Le, 0.55);
+
+    // Fixture assumptions for the contrast above: the two one-sided marginals, and the fused interval.
+    let lo_solo = super::compose_printing_estimate(&usd_ge, &archived.indexes, &archived.offsets, n_printings, false);
+    assert_eq!(lo_solo.result.printing, 80, "fixture assumption: usd>=0.25 is the 30..=100 cent prices, 8 of 10 buckets");
+    let hi_solo = super::compose_printing_estimate(&usd_le, &archived.indexes, &archived.offsets, n_printings, false);
+    assert_eq!(hi_solo.result.printing, 50, "fixture assumption: usd<=0.55 is the 10..=50 cent prices, 5 of 10 buckets");
+    let fused_only = FilterExpr::And(vec![usd_ge.clone(), usd_le.clone()]);
+    let fused_est = super::compose_printing_estimate(&fused_only, &archived.indexes, &archived.offsets, n_printings, false);
+    assert_eq!(fused_est.result.printing, 30, "fixture assumption: the FUSED [0.25, 0.55] interval is the 30/40/50 cent prices");
+
+    let f = FilterExpr::And(vec![green_leaf, cmc_le3, usd_ge, usd_le]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+    let and_trace = *est.and_trace.expect("want_trace");
+
+    let table_hit = and_trace.considered.iter().find(|g| g.mechanism == "ColorCmcTable").expect("ColorCmcTable must still fire");
+    assert_eq!(table_hit.printing, Some(20), "the exact (green, cmc<=3) joint is unchanged by the price shape");
+
+    let anchored = and_trace
+        .considered
+        .iter()
+        .find(|g| g.mechanism == "ColorCmcAnchoredIndependence")
+        .expect("a two-sided price range fuses into ONE Price source, so the anchored candidate must still fire (not decline as a 2-price residual)");
+    assert_eq!(
+        anchored.printing,
+        Some(6),
+        "round(20 * 30/100) = 6 from the FUSED interval -- NOT round(20 * 0.8 * 0.5) = 8 from a product of the two one-sided marginals"
+    );
+    assert_eq!(anchored.leaves.len(), 4, "the joint's own two leaves plus BOTH literal price children the fused source resolves to");
+    assert_eq!(est.result.printing, 6, "the fused-rate anchored candidate wins the arm's final min-fold");
+}
+
+/// Round 56 inherits Round 50's own price-triple-correlation guard verbatim (it is now literally the
+/// same hoisted helper): when TWO residual sources both classify as `IndepClass::Price` -- here
+/// `usd<=0.55` and `eur<=2.00`, different printing-range indices so `fuse_and_range_children` never
+/// merges them -- the anchored candidate must decline entirely rather than pick one or multiply both
+/// rates in. `ColorCmcTable`'s own exact bound is unaffected and still stands.
+#[test]
+fn color_cmc_anchored_independence_declines_with_two_price_residuals() {
+    let (data, green) = color_cmc_anchored_fixture();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let green_leaf = FilterExpr::ColorCmp { field: ColorField::Colors, op: CmpOp::Ge, mask: green };
+    let cmc_le3 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Le, rhs: NumExpr::Const(3.0) };
+    let cheap_usd = usd_cmp(CmpOp::Le, 0.55);
+    let cheap_eur = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::PriceEur), op: CmpOp::Le, rhs: NumExpr::Const(2.0) };
+
+    let f = FilterExpr::And(vec![green_leaf, cmc_le3, cheap_usd, cheap_eur]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+    let and_trace = *est.and_trace.expect("want_trace");
+
+    let table_hit = and_trace.considered.iter().find(|g| g.mechanism == "ColorCmcTable").expect("ColorCmcTable must still fire");
+    assert_eq!(table_hit.printing, Some(20), "the table's own bound is unaffected by the price-triple guard");
+    assert!(
+        !and_trace.considered.iter().any(|g| g.mechanism == "ColorCmcAnchoredIndependence"),
+        "two residual Price-classified sources present (usd<=0.55, eur<=2.00) -- the anchored candidate must decline entirely, not pick one"
+    );
+}
+
+/// No `Price`-classified residual at all: both the bare 2-leaf shape (nothing residual whatsoever) and
+/// a 3-leaf shape whose residual classifies into a DIFFERENT `IndepClass` (`power>=0` -> `Pow`) must
+/// leave the anchored candidate unfired -- no crash, no contribution -- with `ColorCmcTable`'s own
+/// exact 20 standing as the arm's answer.
+#[test]
+fn color_cmc_anchored_independence_declines_without_a_price_residual() {
+    let (data, green) = color_cmc_anchored_fixture();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let green_leaf = || FilterExpr::ColorCmp { field: ColorField::Colors, op: CmpOp::Ge, mask: green };
+    let cmc_le3 = || FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Le, rhs: NumExpr::Const(3.0) };
+    let power_ge0 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Power), op: CmpOp::Ge, rhs: NumExpr::Const(0.0) };
+
+    let power_solo = super::compose_printing_estimate(&power_ge0, &archived.indexes, &archived.offsets, n_printings, false);
+    assert_eq!(power_solo.result.printing, 100, "fixture assumption: every card has power 1 -- the broadest possible leaf");
+
+    for (label, f) in [
+        ("no residual at all", FilterExpr::And(vec![green_leaf(), cmc_le3()])),
+        ("one non-Price residual", FilterExpr::And(vec![green_leaf(), cmc_le3(), power_ge0])),
+    ] {
+        let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+        let and_trace = *est.and_trace.expect("want_trace");
+        let table_hit = and_trace.considered.iter().find(|g| g.mechanism == "ColorCmcTable").expect("ColorCmcTable must fire");
+        assert_eq!(table_hit.printing, Some(20), "{label}: the exact joint");
+        assert!(
+            !and_trace.considered.iter().any(|g| g.mechanism == "ColorCmcAnchoredIndependence"),
+            "{label}: no Price-classified residual, so the anchored candidate must not fire"
+        );
+        assert_eq!(est.result.printing, 20, "{label}: the table's own exact bound (20) stands as the arm's answer");
+    }
 }
 
 // ─── Round 38: color/identity/cmc x price independence tightening ──────────────
