@@ -210,6 +210,80 @@ total regret by 0.0 ms).
 | 55 | `(subtype, subtype)` exact top-N table (`SubtypePairTable`), the first mechanism in this arm to pair a subtype against ANOTHER subtype rather than against `set:X`/`c:X`/`id:X`. Two departures from `SetSubtypeTable`'s own shape, each validated against the real corpus before scoping: top-N membership is the UNION of the tie-inclusive top-256 in each of the three spaces independently (not card-count-ranked alone), and `rest_max` is a real per-space TRIPLE consumed natively rather than one card-space scalar scaled by a global reprint ratio. Query time: a residual exact-hit scan over every unordered pair of subtype leaves (`Candidate::Exact`), plus a single-pair-only capped-independence fallback (`Candidate::Estimate`, printing-space-native) | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 55,833 shared rows (fresh seed 7, independently re-run by me): 219 plan-choice flips (0.4%; 0.5% of `root=and`), 100% confined to `same_family:type+type_realistic` (116/750, 15.5%) and `same_family:type+type_disjoint` (103/750, 13.7%); every other shape and both `root=leaf`/`root=or` show zero flips. Mechanism coverage for both `same_family:type` shapes 0% → 100%. Ratio diagnostic: mean abs-log-ratio 0.191 → 0.183 (B−A −0.008, 95% CI [−0.009, −0.007]) — "B is MORE accurate". Zero-true-count hit rate 74.0% → 79.5% | see "Round 55" narrative below — the design (union cutoff, triple `rest_max`, keep `min(indep, rest_max)`, N=256) was settled against real corpus data BEFORE scoping, including a direct check that N is NOT sized by the `StreamedSelect`/`GatheredScan` transition. The implementing agent hit a real regression the existing suite caught and fixed it by MOVING the estimate-class fallback later in the arm — an ordering constraint worth reading, not a detail |
 | 56 | Anchored independence for `ColorCmcTable`, the second anchor mechanism after Round 50's: that table's own EXACT `(color\|identity, cmc)` joint times a single residual `IndepClass::Price` leaf's own solo rate, folded as `Candidate::Estimate`. Round 50's inline closures hoisted into one shared `anchored_price_residual`/`anchored_leaves_for` both anchor sites call. NO fudge factor (swept and rejected), and deliberately NO `mark_covered`, inheriting `ColorCmcTable`'s own measured reason | kept | n/a (not this doc's own metric) | The routing-relevant metric this round exists for — `root=and` rows straddling the 1,024 `STREAM_MIN_MATCHES` boundary with >=200 absolute AND >=10% relative error, independently re-run by me at seed 7 over 39,411 shared and-rows: **1,016 -> 880 (-13.4%)**, over-side 845 -> 704 (-141), under-side 171 -> 176 (+5). 141 fixed, only 5 newly routing-relevant (all moderate under-shoots, pred 845-915 against truths 1,090-1,239). 146 plan flips, **every one in the intended direction** (145 `StreamedSelect -> GatheredScan`, 1 `PrintingCompose -> StreamedSelect`, zero the other way). Entirely confined to `star:identity+cmc+usd` (95 -> 21) and `star:color+cmc+usd` (78 -> 16); every other shape zero delta. Monotonicity confirmed empirically: 1,229 predictions changed, **0 increased** | see "Round 56" narrative below — validated BEFORE scoping (median 1.97x -> 1.01x on a 70-query random sample of the full shape population, deliberately not the straddling tail), including a factor sweep that **rejected** the fudge factor on real data. A pre-existing test's expected number legitimately changed; a zero-prediction case was checked directly against the empty-conjunction short-circuit risk |
 | 57 | `LegalityDateTotals`: an EXACT per-`(format, status)` prefix sum over the `released_at` value axis (924 distinct dates), answering `f:X` × any date range in printing space by one subtraction. Keyed by the existing `legality_totals_key`; pruned by a 1,024-printing selectivity floor (`PairTotals`' own principle) AND by a second rule the plan didn't anticipate — drop any key covering the whole date index, which removed 9 phantom keys | kept | n/a (not this doc's own metric) | Routing-relevant straddles (>1,024 boundary, >=200 abs, >=10% rel), agent's sweep at seed 20260903 over 47,118 `root=and` rows: printing 463 → 452 (**−11**, all over-side), card 309 → 306 (−3), artwork 305 → 297 (−8); ALL 1,077 → 1,055. **Every one of the −22 is in `unsafe:legality+released`** (50 → 28); no other shape moved a single straddle. Target shape ratio, printing: median 1.02x → **1.00x**, p90 3.64x → **1.00x**, max 16.81x → **1.00x**. Coverage 0/900 → 813/900. 46 plan flips (0.1%), all in the target shape, and among those rows the count sitting on the wrong side of 1,024 went **31 → 8** | see "Round 57" narrative below — the investigation retracted its own premise twice before landing, an unplanned 9-phantom-key finding, and one honest cost: 173 card/artwork ratio regressions whose mechanism I verified and whose fix is the next round |
+| 58 | Splits every space into two independent channels — `SpaceMeasure { guaranteed, estimate }` — so a PROVEN bound and a BEST GUESS stop competing for one `.min()` slot. `Candidate::Exact` feeds `guaranteed`, `Candidate::Estimate` feeds `estimate`; consumers needing soundness read `guaranteed`, consumers needing accuracy read `estimate.min(guaranteed)`. `exact_domain` retained as its own `ExactDomain` type (a stronger cross-space same-set claim, not a synonym). **Phase 2 (the planned `COMPOSE_CARD_ESTIMATE_BIAS` skip) was measured to FAIL and deliberately NOT taken** | phase 1 kept, phase 2 rejected | n/a (not this doc's own metric) | **Byte-identical, verified at three independent seeds**: the agent at 64,581 (seed 20260958) and 64,563 (20260903) rows, and me at 54,336 shared rows (seed 4242) — zero differences on `predicted_matches`, `picked_plan`, `and_mechanism`, and additionally `count_source`/`true_total`/`n_plans_ran` in my run. Row sets matched exactly. So every straddle count and plan choice is unchanged by construction. `cargo test` 290 debug / 287 release (+6 tests). Timing: a flat **+25 to +110 ns** per `compose_printing_estimate` call (~1% on queries with real work, +8.9% bare leaves, +13.7% `Or`), measured interleaved A/B/A/B rather than by canary | see "Round 58" narrative below — the phasing caught a real `Or`-arm fold bug that would have been invisible in a blended round, and phase 2's rejection corrected a false premise **in my own plan** |
+
+### Round 58
+
+Two channels per space, and a rejected behavioural change. The structural half shipped; the half it was
+designed to enable turned out to rest on a premise of mine that measurement contradicted.
+
+**Why the split.** `SpaceEstimate` carried one number per space, so a proven bound and a best guess had
+to compete for the same `.min()` slot, and `.min()` picks the smaller regardless of which is
+trustworthy. Five prior rounds each worked around that one conflation: R40 needed a class-priority rule
+purely to stop the two competing by magnitude; R52 bolted `est.result.card` on as an extra `.min()`
+after replacing it outright caused a 170x regression; R55 found an undershooting estimate permanently
+sinks `result` with no later exact candidate able to raise it, forcing a positional ordering constraint;
+R56 had to omit `mark_covered` so an anchored estimate and an exact bound could coexist; R57 left 29
+rows where the mechanism computes the exactly-correct value and still loses the fold. All five are "a
+sound number and a good number, one slot."
+
+**The phasing earned its keep, concretely.** Phase 1's first survey found 3 differing rows on one query
+(`(pow=8 t:minotaur) or (id:b set:gtc)`, printing 61 → 249). Cause: `min` distributes over a per-channel
+fold, `+` does not. `min(g₁,e₁) + min(g₂,e₂)` can take `g` from one side and `e` from the other, which
+`min(g₁+g₂, e₁+e₂)` cannot reproduce — so an `Or`'s union number silently ROSE whenever its children's
+tightest answers came from different channels. Fixed by summing `guaranteed`s in one channel and
+`best()`s in the other, giving `best(a.add(b)) == a.best() + b.best()` exactly. In a blended round this
+would have been attributed to the behavioural half and chased in the wrong place.
+
+**Phase 2 was rejected on its own acceptance criterion, and the reason is a correction to this doc's own
+reasoning.** The plan asserted that `COMPOSE_CARD_ESTIMATE_BIAS = 1.78` corrects for `k` being
+*inexact*, so an exact `k` should skip it. That is wrong. The constant corrects the printing→card
+**clustering** the occupancy model's independence assumption ignores — which is independent of whether
+`k` is exact. Skipping it asserts the answer set's reprint depth is 1.0. Bucketing the moved card rows
+by the answer set's true depth (`true_printings / true_cards`, both measured) is monotone:
+
+| depth | n | better | worse |
+|---|---|---|---|
+| 1.0-1.2 | 9 | **9** | 0 |
+| 1.2-2 | 50 | 6 | 44 |
+| 2-5 | 203 | 11 | **192** |
+| 5-10 | 8 | 0 | 8 |
+| >=10 | 5 | 0 | **5** |
+
+`date:2019-11-07 f:gladiator` — the query the whole round was motivated on — has depth **1.000**, because
+one release date is one set so every printing is a distinct card. **It was the single most favourable row
+in the population, and I generalized the round from it.** At the other end `f:alchemy year<2011` is depth
+17.5 (2,432 printings over 139 cards): trunk's 1,337 was already 9.6x over and the skip makes it 2,341,
+16.8x over. Net on R57's 173 regressed rows: 22 recovered against **163 newly regressed**, target-shape
+card median abs-log-ratio 0.133 → 0.473, total absolute error 393,406 → 1,333,602. A narrowed variant
+(fire only on a single-date window) also failed — 7 recovered for 7 newly regressed, absolute error
+slightly worse — because one date is not one printing per card: `date:2024-03-08 f:vintage` is ~1,050
+legal printings over 334 cards (depth 3.1), since showcase/extended-art/borderless variants share a
+release date. Preserved unmerged on `r58-phase2-measured-bad` (`e1d4fba7`, and `e5f75f45` for the
+narrowed variant) with the measurement, so the negative result is recoverable rather than folklore.
+
+The lead that replaces it, unvalidated: a **card-space independence product**
+(`date_cards × legal_cards / n_cards`, using `RangeCardCounts`' exact distinct-CARD count for the
+window). Hand-checked at both depth extremes it points the right way where occupancy structurally
+cannot — `f:alchemy year<2011` needs ~139 from 11,250 window-cards and `date:2019-11-07 f:gladiator`
+needs ~840 from ~927, a legal-card-fraction factor of ~0.012 vs ~0.9 that independence supplies and
+occupancy cannot. But R57 rejected independence for this pair in PRINTING space on 250x per-format
+density skew, so card space needs its own validated round. Separately, artwork mode's 62 regressions were
+never reachable by this fix at all: `artwork_estimate`'s `capacity_cards` uses the UNCALIBRATED
+`balls_into_bins`, so there is no divisor there to skip.
+
+**A sharper note for `COMPOSE_CARD_ESTIMATE_BIAS`'s own doc than the one this round planned to leave**:
+an exact `k` still needs that divisor. What it corrects is clustering, not `k`'s accuracy, and the two
+are independent.
+
+**The honesty gap this round created and did not close.** `SpaceMeasure::known(v)` sets BOTH channels to
+`v`, and two leaf arms (`FilterExpr::Legality`, the `is_broadcast_leaf_shape`/devotion arm) report
+`card_count * n_printings / n_cards` — an average-case approximation measured to UNDERSHOOT by 5-13%. So
+`guaranteed` currently holds values BELOW truth in the channel documented as a proven upper bound. It is
+there only because phase 1 is byte-identical by construction, and it is documented as a known gap on
+`SpaceMeasure` itself. Closing it is the next round, and it must come before the cross-space clamp:
+clamping `guaranteed.artwork` down to a `guaranteed.printing` that is itself an undershooting
+approximation would propagate the undershoot into artwork space.
 
 ### Round 57
 

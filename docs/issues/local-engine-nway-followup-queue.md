@@ -1,6 +1,6 @@
 # N-Way Estimator Follow-Up Queue
 
-Tracks what's left from the `And`-arm cardinality-estimation arc (Rounds 33-57), in the order we
+Tracks what's left from the `And`-arm cardinality-estimation arc (Rounds 33-58), in the order we
 intend to tackle it. This doc is the queue, not the depth — the round-by-round numbers live in
 [local-engine-gathered-scan-card-printing-varying-depth.md](local-engine-gathered-scan-card-printing-varying-depth.md),
 and the architecture/design rationale lives in
@@ -10,25 +10,28 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
 
 ## Active queue (in order)
 
-1. **Calibrated balls-into-bins occupancy: derive card/artwork from an EXACT printing count.** The
-   agreed next round. Round 57 made `P` exact for `legality x released` and, in doing so, EXPOSED the
-   `* n_cards / n_printings` global-ratio idiom's under-bias instead of accidentally masking it: 173
-   card/artwork rows regressed on ratio (zero in printing space), e.g. `date:2019-11-07 f:gladiator`
-   [card] 927 -> 468 against a true 840, where the printing answer is now exactly 840. Occupancy
-   (`n(1 - (1 - 1/n)^P)` with a fitted effective-bin multiplier) gives **813-829 (0.97-0.99x)** on that
-   same query and is insensitive to the constant across k=0.40-1.00. Measured over 400 sampled date
-   ranges: cards mean |log| **0.188** (median 1.089x, p90 1.498x), artworks **0.119** (median 1.063x,
-   p90 1.294x) — against the naive scale's 0.764 and its systematic **0.474x median undershoot**, the
-   dangerous direction.
-   - **Not legality-specific, and that is the point.** It converts any exact printing count into
-     card/artwork estimates, so it targets every consumer of that idiom — which makes it the
-     higher-leverage half of item #2 below.
-   - **Two blockers to settle in the plan.** `Candidate::Estimate` carries only `printing`, so
-     delivering estimated card/artwork values needs a structural decision. And the calibration sampled
-     date ranges uniformly over date INDICES, which is not the real query-shape mix (`year:Y` interior
-     ranges are common), so `k` must be refit against a realistic width distribution or it is tuned to
-     the wrong population — the population-parity trap
-     `.claude/rules/benchmark-methodology-review.md` warns about.
+1. **Make `guaranteed` honest: audit every source that claims a proven upper bound.** Round 58 created
+   the two-channel `SpaceMeasure { guaranteed, estimate }` but, being byte-identical by construction,
+   left the channel assignments as-is — so `guaranteed` currently both OVER-claims and UNDER-claims.
+   The rule to enforce: a source may claim `guaranteed` only if its number is a real count of a real
+   set. An independence product never qualifies; a table lookup does.
+   - **Over-claiming (fix first).** `SpaceMeasure::known(v)` sets BOTH channels, and two leaf arms
+     (`FilterExpr::Legality`, the `is_broadcast_leaf_shape`/devotion arm) report
+     `card_count * n_printings / n_cards`, an average-case approximation measured to UNDERSHOOT by
+     5-13%. So `guaranteed` holds values BELOW truth today. Reclassing them estimate-only is also
+     exactly the fix for Round 57's 29 exactly-right-but-outvoted rows.
+   - **Under-claiming.** `LegalityDateTotals` (Round 57) is EXACT in printing space but folds
+     `Candidate::Estimate`, because `Candidate::Exact` demanded a full three-space triple it did not
+     have. Round 58 made "exact in one space, no claim in the others" expressible, so it can now claim
+     `guaranteed.printing` properly.
+   - **Audit the rest against the rule** rather than trusting the existing `is_estimate_class_mechanism`
+     split: confirm every `Candidate::Exact` user really counts a real set, and that every estimate-class
+     mechanism (`Independence`, `SetCollectorRange`, `SubtypePairEstimate`, both anchored-independence
+     arms, `SubtypeSubtypeEstimate`) really is a guess. Anchored independence is exact-joint x
+     estimated-rate, so it is a guess despite its exact anchor.
+   - **Must precede the cross-space clamp below**: clamping `guaranteed.artwork` to a
+     `guaranteed.printing` that is itself an undershooting approximation would propagate the undershoot
+     into artwork space.
 2. **Backport the `rest_max` triple + space-native independence to `SetSubtypeTable` /
    `ColorSubtypeTable`.** Round 55 shipped both ideas for the new `(subtype, subtype)` table but
    deliberately left these three untouched, so they still rank their top-256 by CARD count alone and
@@ -136,6 +139,28 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
   (18 above-floor `not_legal` keys, plus 9 phantom keys from unassigned format slots reading `not_legal`
   for every printing). Remember it before adding any other `legality x X` table.
 
+- **Card-space independence for `legality x released`** — the replacement for Round 58's rejected
+  occupancy idea, still unvalidated. `date_cards x legal_cards / n_cards`, using `RangeCardCounts`'
+  exact distinct-CARD count for the window. Hand-checked at both reprint-depth extremes it points the
+  right way where occupancy structurally cannot (`f:alchemy year<2011` needs ~139 of 11,250
+  window-cards; `date:2019-11-07 f:gladiator` needs ~840 of ~927 — a legal-card fraction of ~0.012 vs
+  ~0.9 that independence supplies and occupancy cannot). But Round 57 rejected independence for this
+  pair in PRINTING space on 250x per-format density skew, so card space needs its own validated round.
+  Artwork's 62 regressed rows are a SEPARATE estimator: `artwork_estimate`'s `capacity_cards` uses the
+  uncalibrated `balls_into_bins`, so there is no divisor there to skip.
+- **Do not re-propose skipping `COMPOSE_CARD_ESTIMATE_BIAS` for an exact `k`.** Measured and rejected in
+  Round 58 (22 rows recovered against 163 newly regressed; a narrowed single-date variant was 7-for-7
+  with worse absolute error). The constant corrects printing->card CLUSTERING, not `k`'s accuracy, and
+  the two are independent — skipping it asserts the answer set's reprint depth is 1.0, which is false
+  for all but the narrowest windows. See the ledger's Round 58 section for the depth table.
+- **Deduplicate `exact_domain_{cards,artworks}` against `guaranteed.{card,artwork}`** — Round 58 found
+  they are provably the same computation (both min-over-`Exact`-candidates, nothing else touches
+  either), while `exact_domain_printing` genuinely differs (`guaranteed.printing` is seeded from the
+  leaf fold). Safe today; left visible because a future divergence would be silent.
+- **`ExactDomain.artwork` carries a new `#[allow(dead_code)]`** (Round 58). Its two consumers read only
+  `.card`/`.printing`; sharing `SpaceEstimate` had been masking that. Drop the field or find its
+  consumer.
+
 ## Standing principles for anything built here
 
 - **Exact/bound-class candidates need no placement or reservation logic at all** — `.min()`-folding
@@ -210,6 +235,11 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
   p90 3.64x -> 1.00x, max 16.81x -> 1.00x) at +148.8 KB. Retracted the design doc's own "legality is
   date-DEFINED" justification for the registry exclusion, and surfaced the card/artwork under-bias that
   is now item #1.
+- Round 58 (phase 1 only): `SpaceMeasure { guaranteed, estimate }` per space, so a proven bound and a
+  best guess stop competing for one `.min()` slot. Byte-identical at three independent seeds. Phase 2
+  (the `COMPOSE_CARD_ESTIMATE_BIAS` skip) was measured to fail and deliberately not taken — preserved
+  unmerged on `r58-phase2-measured-bad` (`e1d4fba7`, `e5f75f45`). Makes the five workarounds listed in
+  the ledger's Round 58 section retirable, and item #1 above is the first of them.
 - Harness fix (no round number, a Python-only fix outside the engine): `client/query_sampler.py`'s
   `_count_row` folded oracle/flavor words via `Counter.update(set(...))` — bare-set iteration is
   hash-seed-randomized per process, so tied-frequency co-occurring words could swap `most_common()`'s
