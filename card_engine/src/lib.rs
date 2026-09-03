@@ -9198,14 +9198,20 @@ fn compose_printing_bits(
 /// stronger claim, and the reason it is retained as its own field rather than treated as a synonym for
 /// `guaranteed`.
 ///
-/// **Known gap, pre-existing and deliberately out of Round 58's scope.** Two leaf arms
-/// (`FilterExpr::Legality` and the `is_broadcast_leaf_shape`/devotion arm) report a PRINTING figure
-/// that is a card count scaled by the corpus reprint ratio (`card_count * n_printings / n_cards`), an
-/// average-case approximation that measurably UNDERSHOOTS (5-13% on the `Legality` leaf). Those seed
-/// `guaranteed` today, because Round 58 is byte-identical by construction. Reclassing them
-/// estimate-only is exactly the fix for Round 57's 29 exactly-right-but-outvoted rows, and it is a
-/// behavioural change that needs its own validated round -- see
-/// `docs/issues/local-engine-nway-followup-queue.md`.
+/// **The admission rule (Round 59), and it is not per-site judgment either.** A source may write
+/// `guaranteed` only if its number is a REAL COUNT OF A REAL SET -- a table lookup, a popcount, a
+/// prefix-sum subtraction, a precomputed `SpaceTotals`, or a bucketed lookup that provably counts every
+/// matching row (`PriceJointTable`: each printing lives in exactly one cell and a cell is counted
+/// whenever it overlaps the query rectangle at all, so a match can never be missed). An independence
+/// PRODUCT never qualifies, and neither does a card count multiplied by the corpus reprint ratio
+/// (`card_count * n_printings / n_cards`): that is an average-case approximation, measured to
+/// UNDERSHOOT by 5-13% on the `Legality` leaf, and Round 58 let it seed `guaranteed` only because that
+/// round was byte-identical by construction. Round 59 routes all THREE such leaf arms
+/// (`FilterExpr::Legality`, the `is_broadcast_leaf_shape`/devotion arm, and the bare
+/// cmc/power/toughness arm's `bare_numeric_field_count` branch) through
+/// `estimate_only`/`SpaceEstimate::spaces_approx_printing` instead, so `guaranteed` no longer holds
+/// values BELOW truth. `min(a bound, a guess)` is NOT a bound, which is why `SubtypePairEstimate`'s
+/// `min(indep, rest_max)` stays estimate-only despite `rest_max` alone being a bound.
 #[derive(Clone, Copy)]
 struct SpaceMeasure {
     /// Tightest PROVEN upper bound on the true count, or `None` for "no mechanism proved one".
@@ -9228,6 +9234,18 @@ impl SpaceMeasure {
     /// `known`, for a space this leaf/join may or may not have an answer for.
     fn known_opt(v: Option<usize>) -> Self {
         Self { guaranteed: v, estimate: v }
+    }
+
+    /// A number that is only ever a GUESS: it fills `estimate` and leaves `guaranteed` absent
+    /// (= "no mechanism proved one", which is what `None` already means).
+    ///
+    /// Deliberately spelled out at the call site rather than reached by passing `None` somewhere,
+    /// because the whole bug class this exists to close is `known()` being the path of least
+    /// resistance: `known` reads like "here is the number" when what it actually asserts is "this
+    /// number is a proven upper bound on the truth". Use this whenever that second half is false --
+    /// see this type's own admission rule above.
+    fn estimate_only(v: usize) -> Self {
+        Self { guaranteed: None, estimate: Some(v) }
     }
 
     /// The ACCURACY read: `estimate.min(guaranteed)`, with either side absent simply skipped. `None`
@@ -9313,11 +9331,29 @@ impl SpaceEstimate {
         Self { printing: SpaceMeasure::known(printing), card: SpaceMeasure::known_opt(card), artwork: SpaceMeasure::known_opt(artwork) }
     }
 
+    /// `spaces`, for a leaf whose PRINTING figure is only an approximation while its card/artwork
+    /// counts are real -- the exact shape of the three `card_count * n_printings / n_cards` leaf arms
+    /// (`FilterExpr::Legality`, `is_broadcast_leaf_shape`/devotion, and bare cmc/power/toughness),
+    /// whose card count is exact and whose printing number is the corpus reprint ratio applied to it.
+    /// `printing` therefore fills the
+    /// estimate channel ONLY; card/artwork fill both, as `spaces` does. See `SpaceMeasure`'s admission
+    /// rule for why the asymmetry is the point rather than an oversight.
+    fn spaces_approx_printing(printing: usize, card: Option<usize>, artwork: Option<usize>) -> Self {
+        Self {
+            printing: SpaceMeasure::estimate_only(printing),
+            card: SpaceMeasure::known_opt(card),
+            artwork: SpaceMeasure::known_opt(artwork),
+        }
+    }
+
     /// The printing-space ACCURACY read. Infallible by construction: every constructor above sets
-    /// `printing` in both channels, `min`/`add` preserve that, and the `And` arm's own accumulator is
-    /// seeded from the per-leaf fold -- so nothing can leave printing empty in both channels.
+    /// `printing`'s `estimate` channel (`spaces_approx_printing` sets ONLY that one, which `best()`
+    /// reads just as happily as a bound), `min` takes whichever side has an answer, and `add` fills
+    /// `estimate` from both children's `best()` -- which is `Some` by induction. Note `add` CAN leave
+    /// `guaranteed` absent (it needs both sides proven), so `printing.guaranteed.is_some()` is not an
+    /// invariant and must never be assumed; `printing.best().is_some()` is.
     fn printing(self) -> usize {
-        self.printing.best().expect("printing is set in both channels at every SpaceEstimate construction site")
+        self.printing.best().expect("printing is set in at least one channel at every SpaceEstimate construction site")
     }
 
     /// `And`'s fold: printing always narrows (min); card/artwork narrow too whenever EITHER side has
@@ -9438,6 +9474,15 @@ impl ComposeEstimate {
     /// every call site that has one is expected to pass it, not re-derive it via `result`'s own scale.
     fn leaf_spaces(k: usize, broadcast: usize, scatter: usize, card: Option<usize>, artwork: Option<usize>) -> Self {
         let space = SpaceEstimate::spaces(k, card, artwork);
+        Self { result: space, candidate: space, broadcast, scatter, collection_broadcast: 0, exact_domain: None, and_trace: None }
+    }
+
+    /// `leaf_spaces`, for the three leaf arms whose printing figure is a card count scaled by the corpus
+    /// reprint ratio rather than a real count -- see `SpaceEstimate::spaces_approx_printing`. Named
+    /// apart from `leaf_spaces` (rather than taking a flag) so a reader of either call site can see,
+    /// without leaving the line, that `k` here is a GUESS and not a bound.
+    fn leaf_spaces_approx_printing(k: usize, broadcast: usize, scatter: usize, card: Option<usize>, artwork: Option<usize>) -> Self {
+        let space = SpaceEstimate::spaces_approx_printing(k, card, artwork);
         Self { result: space, candidate: space, broadcast, scatter, collection_broadcast: 0, exact_domain: None, and_trace: None }
     }
 
@@ -9731,11 +9776,29 @@ fn mark_covered(v: &[FilterExpr], leaves: &[&FilterExpr], covered: &mut CoveredS
 /// candidate of this kind is expected to satisfy `cards <= artworks <= printings` (every printing
 /// belongs to exactly one card and has exactly one artwork; different cards never share an artwork),
 /// which `fold_candidate` below checks with a `debug_assert!`. `Estimate` is for a mechanism that only
-/// ever produced a printing-space bound/estimate (`SetCollectorRange`'s density, the independence
-/// registry's product, ...) and structurally has no card/artwork triple to fold in at all.
+/// ever produced a printing-space GUESS (`SetCollectorRange`'s density, the independence registry's
+/// product, ...) and structurally has no card/artwork triple to fold in at all.
+///
+/// Round 59 adds a third variant for the case between them: a mechanism whose printing number is a
+/// real count of a real set but which has no card/artwork counts to go with it, so it can claim
+/// `guaranteed.printing` while claiming nothing at all in the other two spaces and never touching
+/// `exact_domain_*` (a same-set triple it does not have -- see `ExactDomain`'s doc for why that is the
+/// stronger claim). `LegalityDateTotals` (an exact prefix-sum subtraction on the `released_at` axis)
+/// and `PriceJointTable` (a bucketed lookup that counts a cell whenever it overlaps the query
+/// rectangle at all, so a matching printing's own cell can never be missed -- structurally `>=` the
+/// truth) are its two users.
+///
+/// **Why a variant and not a `bound: bool` parameter next to `Estimate`.** The enum's whole job is to
+/// name what KIND of answer a mechanism produced and let `fold_candidate` derive the fold from that --
+/// that is what let Round 46 delete ten hand-copied folds. A parallel parameter puts the kind back
+/// into an argument every call site has to get right, and admits combinations that are not answers at
+/// all (`Exact` with `bound: false`). A variant makes those unrepresentable and makes
+/// `fold_candidate`'s `match` force a future mechanism's author to choose deliberately, which is the
+/// property this whole round is about.
 enum Candidate {
     Exact { printings: usize, cards: usize, artworks: usize },
     Estimate { printing: usize },
+    PrintingBound { printing: usize },
 }
 
 /// Folds one mechanism's `Candidate` into the outermost `And` arm's running accumulators --
@@ -9745,9 +9808,10 @@ enum Candidate {
 /// into the `debug_assert!` messages below so a failure names which mechanism produced the bad
 /// candidate) and has no effect on `result`/`exact_domain_*`.
 ///
-/// **Round 58: the two variants fold into two different CHANNELS, never one contested slot.** `Exact`
+/// **Round 58: the variants fold into two different CHANNELS, never one contested slot.** `Exact`
 /// lowers `result`'s `guaranteed` in all three spaces; `Estimate` lowers `result.printing`'s
-/// `estimate` and nothing else. That is the structural replacement for "both write `result` and
+/// `estimate` and nothing else; Round 59's `PrintingBound` lowers both channels of
+/// `result.printing` and neither of the other two spaces. That is the structural replacement for "both write `result` and
 /// `.min()` picks whichever is smaller regardless of which is trustworthy" -- the conflation Rounds
 /// 40/52/55/56/57 each worked around separately (see `SpaceMeasure`'s own doc). It is exactly
 /// behaviour-preserving on the ACCURACY read (`SpaceMeasure::best()` is `min` over both channels, so
@@ -9803,6 +9867,14 @@ fn fold_candidate(
             *exact_domain_artworks = Some(exact_domain_artworks.map_or(artworks, |d| d.min(artworks)));
         }
         Candidate::Estimate { printing } => {
+            result.printing.lower_estimate(printing);
+        }
+        // Round 59: a real count in printing space with no card/artwork counts beside it. Both
+        // channels, because a real count is simultaneously a proven bound AND the best available
+        // guess -- the same reason `SpaceMeasure::known` fills both. `exact_domain_*` stays untouched
+        // (no same-set triple), which is why this cannot just be `Exact` with two invented numbers.
+        Candidate::PrintingBound { printing } => {
+            result.printing.lower_guaranteed(printing);
             result.printing.lower_estimate(printing);
         }
     }
@@ -10262,11 +10334,32 @@ fn and_trace_for(filter: &FilterExpr, indexes: &Archived<CardIndexes>, offsets: 
 /// Round 40: whether `mechanism` (an `AndTraceGroup::mechanism`/`AndTraceNode::Op::mechanism` string)
 /// is an ESTIMATE-class candidate -- a central estimate that can land on either side of the truth
 /// (Round 38's own calibration: roughly half of 610 real rows undershot, half overshot) -- rather than
-/// an EXACT value or a mathematically guaranteed upper bound. Used both by the And arm's own `covered`
-/// bookkeeping (an estimate-class hit marks its leaves covered defensively, so two different inexact
-/// estimates can never stack on the same leaves) and by `and_trace_build_tree`'s winner selection (an
-/// estimate-class candidate may only win attribution when no exact/bound candidate ties the global
-/// min). `"Independence"` is Round 38/40's own formula; `"SetCollectorRange"` is Round 33's density
+/// an EXACT value or a mathematically guaranteed upper bound.
+///
+/// **The name is a half-truth as of Round 59, and this is the precise statement of what it means.**
+/// `"LegalityDateTotals"` is a member and, since Round 59, contributes a genuine bound
+/// (`Candidate::PrintingBound`) with an exactly-correct number. So this predicate does NOT answer "can
+/// this mechanism undershoot" and does not answer "does this mechanism write `guaranteed`". It
+/// classifies a mechanism by its WEAKEST claim -- specifically, by whether it can offer a same-set
+/// (printing, card, artwork) triple, which is what `Candidate::Exact`/`exact_domain_*` require and what
+/// trace attribution wants to prefer. A printing-only answer is second-class HERE regardless of how
+/// exact its one number is.
+///
+/// Deliberately not renamed, and the membership list is deliberately unchanged from Round 58. Every
+/// accurate rename ("can undershoot", "writes no bound") would imply moving `"LegalityDateTotals"` out
+/// of the list, and the list's one live consumer is trace attribution -- so that would be a change to
+/// `explain`'s output, i.e. Round 40's class-priority rule, which Round 59 explicitly does not retire.
+/// One recorded inconsistency, left as-is for the same reason: `"PriceJointTable"` is ALSO printing-only
+/// yet has never been a member, so it already out-ranks three-space mechanisms for attribution. Round 59
+/// makes that accidentally correct (it is a real bound now), but it is not derived from this predicate.
+///
+/// **Correction to the pre-Round-59 doc:** this function has exactly ONE call site,
+/// `and_trace_build_tree`'s winner selection (an estimate-class candidate may only win attribution when
+/// no exact/bound candidate ties the global min). The `covered` bookkeeping it used to credit is real
+/// but is written out by hand at each estimate-class call site (see `SetCollectorRange`'s and
+/// `PriceJointTable`'s own `mark_covered` calls), never routed through here.
+///
+/// `"Independence"` is Round 38/40's own formula; `"SetCollectorRange"` is Round 33's density
 /// estimate (can undershoot on a non-contiguous set, e.g. Secret Lair Drop); `"SubtypePairEstimate"` is
 /// Round 34's capped independence-product MISS branch (the HIT branch, `"SubtypePairIndexes"`, is a
 /// genuine table lookup and stays in the exact/bound class). `"SubtypeArithAnchoredIndependence"`
@@ -10278,12 +10371,13 @@ fn and_trace_for(filter: &FilterExpr, indexes: &Archived<CardIndexes>, offsets: 
 /// solo rate -- and stays ESTIMATE-class for the identical reason.
 /// `"LegalityDateTotals"` (Round 57) is the one entry here whose NUMBER is exact: at per-date
 /// granularity its `(format, status)` x `released_at` prefix sum has nothing to pro-rate. It is classed
-/// by its FOLD CHANNEL rather than its precision, because that is the property this predicate actually
-/// governs -- it folds `Candidate::Estimate` (only printings are stored; card/artwork counts do not
-/// subtract on the `released_at` axis, see `LegalityDateTotals`'s own doc) and therefore never
-/// participates in `exact_domain_*`. Classing it exact/bound here would let a printing-only candidate
-/// out-rank, for trace attribution, a mechanism that answered all three spaces. Nothing is lost: the
-/// second-pass pick only needs a tie against the global min, and an exact value cannot undershoot it.
+/// by what it can offer in ALL THREE spaces rather than by its precision -- only printings are stored,
+/// card/artwork counts do not subtract on the `released_at` axis (see `LegalityDateTotals`'s own doc),
+/// so it never participates in `exact_domain_*`. Classing it exact/bound here would let a printing-only
+/// candidate out-rank, for trace attribution, a mechanism that answered all three spaces. Nothing is
+/// lost: the second-pass pick only needs a tie against the global min, and an exact value cannot
+/// undershoot it. Round 59 promoted its FOLD to `Candidate::PrintingBound` without moving it out of
+/// this list -- see the "half-truth" paragraph at the top for why those two facts coexist.
 /// `"SubtypeSubtypeEstimate"` (Round 55) is the direct one-bucket analog of `"SubtypePairEstimate"` --
 /// `SubtypePairTable`'s own capped independence-product MISS branch (the HIT branch,
 /// `"SubtypeSubtypeExact"`, is a genuine table lookup and stays in the exact/bound class, same split as
@@ -10460,7 +10554,7 @@ fn compose_printing_estimate(
             // only admissible through the breadth-guarded `narrow_floor` fold at the very end -- see
             // the retired `domain_hint`'s own post-mortem further down); `printing` is seeded from
             // `pair_bounded_min` over the per-leaf fold, in BOTH channels, exactly the number this arm
-            // started from before this round.
+            // started from before Round 58.
             //
             // Round 40: `covered.flags[i]` becomes `true` the moment leaf `v[i]` participates in a
             // GENUINE exact/bound joint tightening somewhere in this arm (2+ leaves actually
@@ -10660,8 +10754,23 @@ fn compose_printing_estimate(
             // and `SubtypePairIndexes`/`SubtypeArithBox`'s own "start narrow" discipline: the WHOLE `And`
             // must be exactly these two sources (`and_sources.len() == 2`), not a residual-scan
             // generalization (a natural future round, out of scope here -- see the followup queue).
-            // Folded as `Candidate::Estimate`, never `Exact`: the bucketed lookup is a real
-            // approximation, so it must never feed `exact_domain_*`.
+            //
+            // Round 59: folded as `Candidate::PrintingBound`, so it claims `guaranteed.printing` as
+            // well as `estimate` -- and still never feeds `exact_domain_*`, which needs a same-set
+            // (printing, card, artwork) triple this table has no card or artwork column for.
+            //
+            // The bound is STRUCTURAL, not a measurement. `joint_estimate` counts a cell whenever the
+            // cell overlaps the query rectangle at all ("any overlap counts fully", no boundary
+            // interpolation -- see `PriceJointTable`'s own doc and the followup queue's own entry on
+            // interpolation as a possible refinement). Every printing lives in exactly ONE cell, and a
+            // matching printing's own cell necessarily overlaps the rectangle its own prices sit
+            // inside, so no matching printing can ever be missed -- the result is `>=` the true count,
+            // always. The over-count is the non-matching remainder of the partially-overlapping cells
+            // on the rectangle's boundary. Corroborated (not established) by Round 59's own audit:
+            // 0 of 1,237 `unique=printing` survey rows predicted below `true_total`.
+            //
+            // It keeps `estimate` too: it is the best available guess for this shape as well as a
+            // bound, so this ADDS a channel rather than moving one.
             if let [a, b] = and_sources.as_slice() {
                 let (a, b) = (*a, *b);
                 let pair = resolve_price_joint_pair(a, b, indexes);
@@ -10675,7 +10784,7 @@ fn compose_printing_estimate(
                         &mut exact_domain_printing,
                         &mut exact_domain_artworks,
                         "PriceJointTable",
-                        Candidate::Estimate { printing },
+                        Candidate::PrintingBound { printing },
                     );
                     estimate_hit = Some(printing);
                     // Round 40's own convention: mark this Estimate-class candidate's own leaves
@@ -11809,15 +11918,17 @@ fn compose_printing_estimate(
             // `And` regardless of what else already touched either leaf.
             //
             // Written as its own loop rather than through `scan_two_bucket_exact` for ONE reason: that
-            // helper folds `Candidate::Exact`, and this mechanism must fold `Candidate::Estimate`. The
-            // value is genuinely exact -- at per-date granularity there is nothing to pro-rate -- but
-            // `Candidate::Exact` requires a consistent (printings, cards, artworks) TRIPLE and
-            // debug-asserts `cards <= artworks <= printings`, and this table has only printings (see
-            // its own doc for why card/artwork counts cannot be had by subtraction on this axis).
-            // Folding an exact value through `Estimate` is sound and is what `PriceJointTable`/
-            // `SetCollectorRange` already do: it narrows `result` via `.min()` and never touches
-            // `exact_domain_*`, so no card/artwork consumer can ever read a number this table does not
-            // have.
+            // helper folds `Candidate::Exact`, and this mechanism cannot. The value is genuinely exact
+            // -- at per-date granularity there is nothing to pro-rate -- but `Candidate::Exact`
+            // requires a consistent (printings, cards, artworks) TRIPLE and debug-asserts
+            // `cards <= artworks <= printings`, and this table has only printings (see its own doc for
+            // why card/artwork counts cannot be had by subtraction on this axis).
+            //
+            // Round 59: it folds `Candidate::PrintingBound`, so its exact printing count now claims
+            // `guaranteed.printing` -- the under-claim Round 57 could not express, because at the time
+            // the only way to say "printing-only" was `Candidate::Estimate`, which routes to the guess
+            // channel. `exact_domain_*` is still untouched, for the same reason as before: no
+            // card/artwork consumer may ever read a number this table does not have.
             //
             // Deliberately does NOT call `mark_covered`, inheriting the `ColorCmcTable` call site's own
             // decision for the same reason: this is a genuine sub-conjunction bound whose leaves the
@@ -11863,7 +11974,7 @@ fn compose_printing_estimate(
                             &mut exact_domain_printing,
                             &mut exact_domain_artworks,
                             "LegalityDateTotals",
-                            Candidate::Estimate { printing },
+                            Candidate::PrintingBound { printing },
                         );
                     }
                     // Traces on a MISS too (like `ColorCmcTable`, unlike `SubtypePairIndexes`): a miss
@@ -12321,7 +12432,19 @@ fn compose_printing_estimate(
             // `legal` is already the exact CARD count this leaf matches -- reused directly rather than
             // re-deriving it a second way through `exact_result_total`. Artwork has no equivalent
             // cheap-popcount source here, so it comes from the `ValueTotals` lookup instead.
-            ComposeEstimate::leaf_spaces(scale(legal), scale(legal.min(illegal)), 0, Some(legal), exact_result_total(filter, indexes, Mode::Artwork))
+            //
+            // Round 59: `scale(legal)` fills the ESTIMATE channel only. `legal * n_printings / n_cards`
+            // spreads this format's legal cards at the CORPUS-WIDE average reprint depth, which is not
+            // this format's own -- measured to undershoot the true printing count by 5-13%, so it is a
+            // guess that lands on either side of the truth, never a proven upper bound. Card and
+            // artwork are untouched (both are real counts) and still fill both channels.
+            ComposeEstimate::leaf_spaces_approx_printing(
+                scale(legal),
+                scale(legal.min(illegal)),
+                0,
+                Some(legal),
+                exact_result_total(filter, indexes, Mode::Artwork),
+            )
         }
         // Color family: exact via `ValueTotals`'s per-combo table — no `eval_planes`, no bitmap.
         // `.result`/`.broadcast` both ride the printing count: the REAL build (`compose_printing_bits`)
@@ -12348,20 +12471,31 @@ fn compose_printing_estimate(
         // Round 51: the fallback now carries its own exact printing/artwork numbers straight from
         // `arith_tuple_totals`'s `totals` rather than scaling/`None` -- a free improvement on this
         // low-frequency defensive path, since the data already exists. The primary
-        // `bare_numeric_field_count` path is unchanged: it only ever had a card count, so it keeps
-        // scaling into printing space and reporting no artwork, exactly as before.
+        // `bare_numeric_field_count` path still scales its card count into printing space and reports
+        // no artwork, exactly as before.
+        //
+        // Round 59: the two branches now differ in CHANNEL, not just in value. The primary
+        // (`bare_numeric_field_count`) branch is the same `card_count * n_printings / n_cards`
+        // reprint-ratio approximation the legality and devotion arms use -- an average-case guess that
+        // can land below the true printing count, so it fills `estimate` only. The defensive
+        // `arith_tuple_totals` fallback is a real precomputed triple and keeps both channels. This arm
+        // is NOT named in the round's own plan (whose leaf audit found the legality and devotion arms):
+        // it is the same idiom, found by applying `SpaceMeasure`'s admission rule to every leaf arm
+        // rather than to the two the plan listed, and it is the highest-traffic instance of the three.
         FilterExpr::NumericCmp { lhs: NumExpr::Field(f), .. } | FilterExpr::NumericCmp { rhs: NumExpr::Field(f), .. }
             if matches!(f, NumField::Cmc | NumField::Power | NumField::Toughness) =>
         {
             let n_cards = offsets.len() - 1;
-            let (printing, card_count, artwork) = match bare_numeric_field_count(filter, indexes) {
-                Some(cc) => ((cc * n_printings).checked_div(n_cards).unwrap_or(0), cc, None),
+            match bare_numeric_field_count(filter, indexes) {
+                Some(cc) => {
+                    let scaled = (cc * n_printings).checked_div(n_cards).unwrap_or(0);
+                    ComposeEstimate::leaf_spaces_approx_printing(scaled, scaled, 0, Some(cc), None)
+                }
                 None => {
                     let (printings, cards, artworks) = arith_tuple_totals(&[filter], indexes).expect("gated by is_printing_composable");
-                    (printings, cards, Some(artworks))
+                    ComposeEstimate::leaf_spaces(printings, printings, 0, Some(cards), Some(artworks))
                 }
-            };
-            ComposeEstimate::leaf_spaces(printing, printing, 0, Some(card_count), artwork)
+            }
         }
         // Devotion: the one card-invariant broadcast leaf left with no cheaper exact source than a
         // real (cheap — O(n_cards/64)) `eval_planes` pass. No divergent-card fuzziness here (unlike
@@ -12375,7 +12509,11 @@ fn compose_printing_estimate(
             let scaled = (card_count * n_printings).checked_div(n_cards).unwrap_or(0);
             // No artwork source here either -- devotion is synthesized from mana cost, not a raw
             // corpus dimension `ValueTotals` has an artwork column for.
-            ComposeEstimate::leaf_spaces(scaled, scaled, 0, Some(card_count), None)
+            //
+            // Round 59: `scaled` fills the ESTIMATE channel only, for the identical reason the legality
+            // arm above does -- the card popcount is exact, the reprint-ratio scaling into printing
+            // space is an average-case approximation and not a bound.
+            ComposeEstimate::leaf_spaces_approx_printing(scaled, scaled, 0, Some(card_count), None)
         }
         // Range (bare or negated — `-usd<50` etc., see `bare_range_bounds`'s doc): `k` in-range
         // printings from the index partition points (O(log n), no scatter here); matches ≈ k, and k

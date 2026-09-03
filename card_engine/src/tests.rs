@@ -17770,9 +17770,11 @@ fn legality_date_totals_and_arm_is_exact_for_every_date_leaf_shape() {
     }
 }
 
-/// The exact printing count is folded as `Candidate::Estimate`, never `Candidate::Exact`, so
-/// `exact_domain_*` must stay untouched: this table has no card or artwork number, and a consumer
-/// reading `exact_domain.card` would otherwise get one it never computed.
+/// The exact printing count is folded as `Candidate::PrintingBound` (Round 59; `Candidate::Estimate`
+/// before that), never `Candidate::Exact`, so `exact_domain_*` must stay untouched: this table has no
+/// card or artwork number, and a consumer reading `exact_domain.card` would otherwise get one it never
+/// computed. `legality_date_totals_claims_a_printing_bound` covers the channel half of that fold; this
+/// test covers the `exact_domain_*` half plus the trace classification.
 #[test]
 fn legality_date_totals_never_populates_exact_domain() {
     let data = legality_date_fixture();
@@ -17784,7 +17786,11 @@ fn legality_date_totals_never_populates_exact_domain() {
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
     assert_eq!(est.result.printing(), 600, "the exact joint wins the fold");
     assert!(est.exact_domain.is_none(), "a printing-only candidate must never claim an exact (printing, card, artwork) domain");
-    assert!(super::is_estimate_class_mechanism("LegalityDateTotals"), "classed by its fold channel -- see that fn's own doc");
+    assert!(
+        super::is_estimate_class_mechanism("LegalityDateTotals"),
+        "still second-class for TRACE ATTRIBUTION after Round 59 promoted its fold -- that predicate classifies a \
+         mechanism by what it can offer in all three spaces, not by whether it writes `guaranteed`; see its own doc"
+    );
 }
 
 /// A below-floor key declines CLEANLY: the mechanism is attempted and traced as a miss, and `result`
@@ -19406,7 +19412,11 @@ fn price_joint_standalone_and_arm_fold_fires_and_tightens_vs_min_fold_baseline()
         "must win the arm's final min-fold -- tighter than the plain min-fold baseline (min(60, 50) = 50) \
          that was the only number available before this round for this exact 2-leaf shape"
     );
-    assert!(est.exact_domain.is_none(), "PriceJointTable is Estimate-class, never Exact -- exact_domain must stay untouched by it");
+    assert!(
+        est.exact_domain.is_none(),
+        "PriceJointTable is printing-only -- Round 59 promoted it to Candidate::PrintingBound, but never to Exact, \
+         so exact_domain must stay untouched by it"
+    );
 
     // Fixed after this round's own review: the `by_class` registry's own Price-multi arm used to ALSO
     // attempt this exact shape (both usd and eur classify as `IndepClass::Price`, `multi.len() == 2`),
@@ -19499,7 +19509,11 @@ fn price_joint_usd_tix_standalone_and_arm_fold_fires_and_tightens_vs_min_fold_ba
         est.result.printing(), 10,
         "must win the arm's final min-fold -- strictly tighter than the plain min-fold baseline (min(60, 50) = 50)"
     );
-    assert!(est.exact_domain.is_none(), "PriceJointTable is Estimate-class, never Exact -- exact_domain must stay untouched by it");
+    assert!(
+        est.exact_domain.is_none(),
+        "PriceJointTable is printing-only -- Round 59 promoted it to Candidate::PrintingBound, but never to Exact, \
+         so exact_domain must stay untouched by it"
+    );
 
     // The `and_sources.len() > 2` guard (see that arm's own doc) checks "anything left to pair
     // against" -- generalized, not usd/eur-specific -- so a bare 2-leaf usd+tix query must not ALSO
@@ -19575,7 +19589,11 @@ fn price_joint_eur_tix_standalone_and_arm_fold_fires_and_tightens_vs_min_fold_ba
         est.result.printing(), 30,
         "must win the arm's final min-fold -- strictly tighter than the plain min-fold baseline (min(50, 50) = 50)"
     );
-    assert!(est.exact_domain.is_none(), "PriceJointTable is Estimate-class, never Exact -- exact_domain must stay untouched by it");
+    assert!(
+        est.exact_domain.is_none(),
+        "PriceJointTable is printing-only -- Round 59 promoted it to Candidate::PrintingBound, but never to Exact, \
+         so exact_domain must stay untouched by it"
+    );
 
     assert!(
         !and_trace.considered.iter().any(|g| g.mechanism == "Independence"),
@@ -19692,6 +19710,285 @@ fn price_joint_three_way_usd_eur_tix_still_declines() {
         est.result.printing(),
         50, // min(usd=60, eur=50, tix=50) -- the plain per-leaf min-fold, unchanged from before this round
         "must stay at the plain per-leaf min-fold"
+    );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Round 59: `guaranteed` may only hold a REAL COUNT OF A REAL SET.
+//
+// Round 58 built the two channels but, being byte-identical by construction, left every channel
+// assignment alone -- so `guaranteed` both over-claimed (three leaf arms wrote a reprint-ratio
+// approximation into it) and under-claimed (`LegalityDateTotals`' exact prefix-sum subtraction and
+// `PriceJointTable`'s structurally-`>=` bucket lookup were both confined to the guess channel).
+// These tests pin the corrected assignments, in both directions, and pin the one mechanism that was
+// investigated and deliberately NOT promoted.
+// ---------------------------------------------------------------------------------------------
+
+/// How many printings each LEGAL card carries in `reprint_skewed_store` -- deliberately far above the
+/// store's own average, which is what makes the leaf's corpus-wide reprint ratio undershoot.
+const R59_LEGAL_CARD_PRINTINGS: usize = 5;
+/// Cards legal in format A (shift 0), each with `R59_LEGAL_CARD_PRINTINGS` printings and `cmc = 1`.
+const R59_LEGAL_CARDS: usize = 20;
+/// Cards legal in no format, one printing each, `cmc = 5`.
+const R59_ILLEGAL_CARDS: usize = 80;
+
+/// A store whose matching cards are reprinted far more than the corpus average, so the two
+/// `card_count * n_printings / n_cards` leaf arms it exercises land measurably BELOW the truth --
+/// the soundness bug this round closes, reproduced rather than described.
+///
+/// 20 legal cards x 5 printings (100 printings) + 80 illegal cards x 1 printing (80), so
+/// `n_cards = 100` and `n_printings = 180`. Both `f:A` and `cmc<=1` match exactly the 20 legal cards,
+/// whose real printing count is 100 -- while the leaf arms report `20 * 180 / 100 = 36`. A 0.36x
+/// undershoot is far past the corpus's own 5-13%, on purpose: a channel test wants the direction
+/// unmistakable, and the direction is the whole point (a number below the truth in the channel
+/// documented as a proven upper bound).
+fn reprint_skewed_store() -> CardData {
+    let mut vocab = VocabInterner::new();
+    let n_cards = R59_LEGAL_CARDS + R59_ILLEGAL_CARDS;
+    let mut cards: Vec<OracleCard> = (0..n_cards).map(|i| stub_card(i as u128 + 1, TYPE_CREATURE, &[], &mut vocab)).collect();
+    for (i, c) in cards.iter_mut().enumerate() {
+        let legal = i < R59_LEGAL_CARDS;
+        c.card_legalities = if legal { super::LEGALITY_LEGAL } else { 0 };
+        c.cmc = Some(if legal { 1 } else { 5 });
+    }
+    let counts: Vec<usize> = (0..n_cards).map(|i| if i < R59_LEGAL_CARDS { R59_LEGAL_CARD_PRINTINGS } else { 1 }).collect();
+    let mut data = store_of(cards, &counts, vocab);
+    // The legality EXISTENCE planes are built from the PRINTING word, and `store_of` built them from
+    // placeholder printings whose word was still 0 -- so mirror the card word onto every printing and
+    // rebuild, exactly as `legality_date_fixture` does for the same reason.
+    let p2c = build_printing_to_card(&data.offsets);
+    let card_words: Vec<u64> = data.cards.iter().map(|c| c.card_legalities).collect();
+    for (p, &cid) in data.printings.iter_mut().zip(&p2c) {
+        p.card_legalities = card_words[cid as usize];
+    }
+    let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
+    data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
+    data.indexes.cmc = build_numeric_index(&data.cards, |c| c.cmc.map(i16::from));
+    data.indexes.value_totals = build_all_value_totals(&data.cards, &data.printings, &p2c, &data.strings, &data.coll_vocab, max_ag);
+    data
+}
+
+/// The store above really is skewed the way its doc claims, and `ValueTotals` really does hold the
+/// exact printing count the leaf arm declines to use. Checked separately so a failure in the channel
+/// tests below can never be a fixture problem misread as a channel problem.
+#[test]
+fn reprint_skewed_store_has_the_claimed_skew() {
+    let data = reprint_skewed_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    assert_eq!(archived.cards.len(), 100);
+    assert_eq!(archived.printings.len(), 180, "20 x 5 + 80 x 1");
+    let f = FilterExpr::Legality { shift: Some(0), expected: super::LEGALITY_LEGAL };
+    assert_eq!(super::exact_result_total(&f, &archived.indexes, Mode::Card), Some(20), "20 legal cards");
+    assert_eq!(
+        super::exact_result_total(&f, &archived.indexes, Mode::Printing),
+        Some(100),
+        "the TRUE printing count -- what the leaf's reprint-ratio scaling is an approximation of"
+    );
+}
+
+/// **The soundness bug, closed.** The `Legality` leaf's printing figure is a card count multiplied by
+/// the corpus-wide reprint ratio, and on this store it lands at 36 against a true 100 -- so it must
+/// fill the GUESS channel and leave `guaranteed` absent. Its card count (an exact `_EXISTS` plane
+/// popcount) and its artwork count (a `ValueTotals` lookup) are real counts and still fill both.
+///
+/// The accuracy read is deliberately asserted to be UNCHANGED: `best()` is `min` over both channels,
+/// so demoting a channel cannot move the number any consumer reads. That is the point -- this round
+/// buys soundness in `guaranteed`, not accuracy in `best()`.
+#[test]
+fn legality_leaf_printing_is_a_guess_and_claims_no_bound() {
+    let data = reprint_skewed_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let f = FilterExpr::Legality { shift: Some(0), expected: super::LEGALITY_LEGAL };
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, false);
+    assert_eq!(est.result.printing.estimate, Some(36), "20 legal cards * 180 printings / 100 cards");
+    assert!(
+        est.result.printing.guaranteed.is_none(),
+        "36 is BELOW the true 100 -- an average-case approximation must never claim to be a proven upper bound"
+    );
+    assert_eq!(est.result.printing(), 36, "the accuracy read is unchanged: best() is min over both channels");
+    assert_eq!(est.result.card.guaranteed, Some(20), "the card count IS a real count -- an exact _EXISTS popcount");
+    assert_eq!(est.result.card.estimate, Some(20), "and a real count fills both channels");
+    // 100, not 20: `store_of` gives every printing a distinct illustration, so the 20 legal cards own
+    // 100 distinct artworks. Worth asserting rather than skipping, because it is a live instance of
+    // the cross-space inconsistency `SpaceMeasure`'s doc records as still open -- `artwork` (100) is
+    // above `printing` (36) here, and clamping the two is deliberately a LATER round. It is also why
+    // that clamp had to wait for this one: clamping artwork down to a printing figure of 36 would
+    // have propagated this leaf's undershoot into artwork space.
+    assert_eq!(est.result.artwork.guaranteed, Some(100), "the artwork count is a real ValueTotals lookup too");
+    // `candidate` carries the same demotion -- it is built from the same `SpaceEstimate`, and the
+    // materializing alternatives' domain is no more proven than the result estimate is.
+    assert!(est.candidate.printing.guaranteed.is_none());
+}
+
+/// The same demotion on the bare cmc/power/toughness arm's `bare_numeric_field_count` branch -- the
+/// third instance of the identical `card_count * n_printings / n_cards` idiom, and the one NOT named
+/// in this round's plan (found by applying the admission rule to every leaf arm rather than to the two
+/// the plan listed). `cmc<=1` matches the same 20 heavily-reprinted cards, so it undershoots by the
+/// same 36-against-100.
+#[test]
+fn bare_arith_leaf_printing_is_a_guess_and_claims_no_bound() {
+    let data = reprint_skewed_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let f = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Le, rhs: NumExpr::Const(1.0) };
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, false);
+    assert_eq!(est.result.printing.estimate, Some(36), "20 cards with cmc <= 1, * 180 / 100");
+    assert!(est.result.printing.guaranteed.is_none(), "the real printing count is 100 -- 36 is not a bound on it");
+    assert_eq!(est.result.printing(), 36, "accuracy read unchanged");
+    assert_eq!(est.result.card.guaranteed, Some(20), "the card count comes straight from the sorted cmc index: exact");
+}
+
+/// The devotion arm (`is_broadcast_leaf_shape`'s last live user -- `ColorCmp` and the arith fields are
+/// matched by their own earlier arms). Its card popcount is an exact `eval_planes` pass; only the
+/// scaling into printing space is the approximation, so only `printing` is demoted.
+///
+/// This fixture has one printing per card, which makes the scaled number COINCIDE with the truth --
+/// deliberately so: the channel assignment must be a property of the DERIVATION, not of whether a
+/// particular store happens to make the approximation exact. A test that only passed on a skewed
+/// store would let the arm silently re-claim `guaranteed` for flat stores.
+#[test]
+fn devotion_leaf_printing_is_a_guess_even_where_the_scaling_happens_to_be_exact() {
+    let data = devotion_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+    assert_eq!(n_printings, archived.cards.len(), "one printing per card: the scaling is a no-op here");
+
+    let f = FilterExpr::Devotion { op: CmpOp::Ge, pips: packed_pips(&[("U", 1)]) };
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, false);
+    let k = est.result.printing();
+    assert!(k > 0, "the fixture has U-devotion cards, so this leaf must match something");
+    assert_eq!(est.result.printing.estimate, Some(k));
+    assert!(
+        est.result.printing.guaranteed.is_none(),
+        "a reprint-ratio scaling is a guess by DERIVATION -- not a bound that happens to be right on a flat store"
+    );
+    assert_eq!(est.result.card.guaranteed, Some(k), "the card popcount is exact");
+}
+
+/// `fold_candidate`'s new `PrintingBound` variant, at unit level: it lowers BOTH channels of printing
+/// (a real count is simultaneously a proven bound and the best guess), claims NOTHING in card or
+/// artwork space, and never populates `exact_domain_*` -- which is exactly why it cannot be spelled
+/// `Candidate::Exact` with two invented numbers.
+#[test]
+fn fold_candidate_printing_bound_claims_printing_only_and_never_exact_domain() {
+    let mut result = SpaceEstimate::printing_only(1_000);
+    let (mut cards, mut printing, mut artworks) = (None, None, None);
+    fold_candidate(&mut result, &mut cards, &mut printing, &mut artworks, "PrintingOnly", Candidate::PrintingBound {
+        printing: 640,
+    });
+    assert_eq!(result.printing.guaranteed, Some(640), "a real count of a real set IS a proven upper bound");
+    assert_eq!(result.printing.estimate, Some(640), "and is also the best available guess, so it fills both");
+    assert_eq!((result.card.guaranteed, result.card.estimate), (None, None), "no card claim, in either channel");
+    assert_eq!((result.artwork.guaranteed, result.artwork.estimate), (None, None), "no artwork claim either");
+    assert!(
+        cards.is_none() && printing.is_none() && artworks.is_none(),
+        "exact_domain_* needs a SAME-SET triple; a printing-only bound must never populate any of them"
+    );
+
+    // And the direction that matters most: an undershooting guess arriving afterwards cannot pull the
+    // bound down, while the accuracy read still reports the guess. Same property Round 58 established
+    // for `Exact`, now for the printing-only variant.
+    fold_candidate(&mut result, &mut cards, &mut printing, &mut artworks, "Undershooter", Candidate::Estimate { printing: 400 });
+    assert_eq!(result.printing.guaranteed, Some(640), "the guess cannot lower a proven bound");
+    assert_eq!(result.printing(), 400, "but the accuracy read is still min over both channels");
+}
+
+/// **Promotion 1**: `LegalityDateTotals`' exact `(format, status)` x `released_at` prefix-sum
+/// subtraction now claims `guaranteed.printing`. Round 57 could not say this: the only printing-only
+/// variant available was `Candidate::Estimate`, which routes to the guess channel.
+///
+/// `exact_domain` must still be `None` -- this table has one column, so there is no same-set triple.
+#[test]
+fn legality_date_totals_claims_a_printing_bound() {
+    let data = legality_date_fixture();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let f = FilterExpr::And(vec![legal_in_a(), FilterExpr::YearCmp { op: CmpOp::Le, year: 2000 }]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, false);
+    assert_eq!(est.result.printing.guaranteed, Some(600), "the exact prefix-sum subtraction is a proven bound, not a guess");
+    assert_eq!(est.result.printing.estimate, Some(600), "and the best guess as well -- an exact value is both");
+    assert_eq!(est.result.printing(), 600, "unchanged accuracy read");
+    assert!(est.exact_domain.is_none(), "still no same-set (printing, card, artwork) triple -- this table has one column");
+}
+
+/// **Promotion 2**: `PriceJointTable` claims `guaranteed.printing` IN ADDITION to `estimate`. The
+/// bound is structural, not empirical: every printing lives in exactly one cell, and `joint_estimate`
+/// counts a cell whenever it overlaps the query rectangle at all, so a matching printing's own cell
+/// always overlaps and can never be missed -- hence the result is always `>=` the truth.
+///
+/// The fixture makes the lookup exactly right (30, the true joint), so this test pins the CHANNEL, not
+/// the looseness. `exact_domain` must stay `None`: the bound is printing-only.
+#[test]
+fn price_joint_table_claims_a_printing_bound() {
+    let data = price_joint_fixture_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let f = FilterExpr::And(vec![usd_cmp(CmpOp::Lt, 5.0), eur_cmp(CmpOp::Lt, 5.0)]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, false);
+    assert_eq!(est.result.printing.guaranteed, Some(30), "any-overlap-counts-fully can never miss a match, so it bounds above");
+    assert_eq!(est.result.printing.estimate, Some(30), "it remains the best guess too -- this ADDS a channel, it does not move one");
+    assert_eq!(est.result.printing(), 30, "unchanged accuracy read");
+    assert!(est.exact_domain.is_none(), "printing-only: no card or artwork column, so no same-set triple");
+}
+
+/// **`SetCollectorRange` stays estimate-only, pinned so the deferred promotion cannot creep in
+/// unmeasured.** It was investigated in this round and deliberately excluded: the evidence for the
+/// sound sub-population is empirical (227 observed rows under a two-part predicate) where the two
+/// promotions above each rest on a structural argument, and the obvious averaged predicate
+/// (`total_printings / range == 1.0`) is a trap -- a gap and a duplicate collector number cancel, so
+/// density and max-printings-per-collector-number must be checked SEPARATELY. The promotion, if it
+/// happens, needs its own validated round.
+///
+/// Asserted on the non-contiguous `gap` set, where the density model gives 2 against a true 5: a
+/// number below the truth, which is exactly what `guaranteed` must never hold.
+#[test]
+fn set_collector_range_stays_estimate_only() {
+    let mut vocab = VocabInterner::new();
+    let cards = vec![stub_card(1, TYPE_CREATURE, &[], &mut vocab), stub_card(2, TYPE_CREATURE, &[], &mut vocab)];
+    // pids 0..100 = big (cn 1..=100, contiguous), 100..120 = gap (5 low + 15 scattered).
+    let mut data = store_of(cards, &[100, 20], vocab);
+    let gap_cns: [u32; 20] = [1, 2, 3, 4, 5, 200, 250, 300, 350, 400, 450, 500, 550, 600, 650, 700, 750, 800, 900, 999];
+    for (i, p) in data.printings.iter_mut().enumerate() {
+        let (code, cn) = if i < 100 { ("big", (i + 1) as u32) } else { ("gap", gap_cns[i - 100]) };
+        p.card_set_code = InlineStr::from_str(code);
+        p.collector_number_int = Some(cn as u16);
+    }
+    data.indexes.set_codes = {
+        let mut idx: TagIndex = HashMap::new();
+        for (i, p) in data.printings.iter().enumerate() {
+            idx.entry(p.card_set_code.as_str().to_string()).or_default().push(i as u32);
+        }
+        idx
+    };
+    data.indexes.set_collector_ranges =
+        super::build_set_collector_ranges(&data.printings, |p| p.card_set_code.as_str(), |p| p.collector_number_int.map(u32::from));
+    data.indexes.collector_number =
+        build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.collector_number_int.map(u32::from));
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let set_gap = FilterExpr::TextExact { field: super::TextField::SetCode, op: CmpOp::Eq, value: "gap".to_string() };
+    let cn_le = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::CollectorNumberInt), op: CmpOp::Le, rhs: NumExpr::Const(100.0) };
+    let est = super::compose_printing_estimate(&FilterExpr::And(vec![set_gap, cn_le]), &archived.indexes, &archived.offsets, n_printings, false);
+    assert_eq!(est.result.printing.estimate, Some(2), "the density model's own number: round(20/999 * 100)");
+    assert_eq!(est.result.printing(), 2, "and it wins the accuracy read, as before");
+    let bound = est.result.printing.guaranteed.expect("the domain and the leaves' own real counts still bound this above");
+    assert!(
+        bound >= 5,
+        "SetCollectorRange must contribute NOTHING to guaranteed: the true count is 5 and its estimate is 2, \
+         so a bound of {bound} < 5 would mean the density figure leaked into the proven channel"
     );
 }
 
