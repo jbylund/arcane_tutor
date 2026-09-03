@@ -6722,6 +6722,9 @@ fn bench_checked_vs_unchecked_access() {
         // Real builder, not `::default()`, so the Round 34 tightening is exercised (not silently
         // no-op'd) by whatever fuzz/property tests build a store through this helper.
         subtype_pairs:  super::build_subtype_pair_tables(&cards, &printings, &printing_to_card, &vocab.strings, usize::from(artwork_groups.iter().copied().max().unwrap_or(0))),
+        // Round 55: same reasoning as `subtype_pairs` immediately above: the real builder, so this
+        // mechanism is exercised too, not silently no-op'd.
+        subtype_subtype: super::build_subtype_pair2_table(&cards, &printings, &printing_to_card, &vocab.strings, usize::from(artwork_groups.iter().copied().max().unwrap_or(0))),
         // Same reasoning as `subtype_pairs` immediately above: the real builder, so Round 36's
         // tightening is exercised too, not silently no-op'd.
         subtype_arith:  super::build_subtype_arith_tables(&cards, &printings, &printing_to_card, &vocab.strings, usize::from(artwork_groups.iter().copied().max().unwrap_or(0))),
@@ -9053,6 +9056,275 @@ fn subtype_pair_estimate_fallback_still_declines_when_dim_leaf_already_covered()
 
     let domain = est.exact_domain.expect("PlanePopcount alone is exact");
     assert_eq!(domain.card, Some(2), "must equal PlanePopcount's own count, unaffected by the (correctly declined) estimate fallback");
+}
+
+// ─── Round 55: `(subtype, subtype)` top-N table ───────────────────────────────
+// docs/issues/local-engine-nway-followup-queue.md, active queue item #1. A NEW, separate mechanism
+// alongside `SubtypePairIndexes`/`SubtypePairEstimate` above (which only ever pair a subtype against
+// `set:X`/`c:X`/`id:X`, never against ANOTHER subtype) -- these tests do not touch, and must not
+// change the behavior of, any test above this marker.
+
+/// Round 55: `build_subtype_pair2_table` -- exact `SpaceTotals` per unordered `(subtype_a, subtype_b)`
+/// pair from a card's own `card_subtypes`, keyed `subtype_a < subtype_b`. Small hand-built population
+/// with a known exact answer, cross-checked against a brute-force scan (mirrors Round 53's own
+/// `price_joint_lookup_matches_brute_force_for_several_op_combinations`). Card2 has THREE subtypes
+/// (Elf/Warrior/Wizard), confirming the cross emits all 3 unordered pairs from one card, not just
+/// adjacent ones; card0's two printings (a reprint) confirm PRINTING counts sum per-printing while
+/// CARD counts stay deduped -- the same distinction `build_subtype_pair_tables`'s own test already
+/// makes for (set, subtype) pairs.
+#[test]
+fn build_subtype_pair2_table_matches_brute_force() {
+    let mut vocab = VocabInterner::new();
+    let cards = vec![
+        stub_card(1, TYPE_CREATURE, &["Elf", "Warrior"], &mut vocab),
+        stub_card(2, TYPE_CREATURE, &["Elf"], &mut vocab),
+        stub_card(3, TYPE_CREATURE, &["Elf", "Warrior", "Wizard"], &mut vocab),
+        stub_card(4, TYPE_CREATURE, &[], &mut vocab),
+    ];
+    // card0: 2 printings (a reprint); card1/card2/card3: 1 each. No shared illustrations, so every
+    // SpaceTotals cell here has printings == artworks.
+    let printing_counts = [2usize, 1, 1, 1];
+    let data = store_of(cards, &printing_counts, vocab);
+    let ptc = build_printing_to_card(&data.offsets);
+    let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
+    let t = super::build_subtype_pair2_table(&data.cards, &data.printings, &ptc, &data.coll_vocab, max_ag);
+
+    let cell = |a: &str, b: &str| t.top.get(a).and_then(|m| m.get(b)).copied();
+
+    // (Elf, Warrior): card0 (2 printings) + card2 (1 printing) -> cards=2, printings=3, artworks=3.
+    assert_eq!(cell("Elf", "Warrior"), Some(SpaceTotals { printings: 3, cards: 2, artworks: 3 }), "Elf+Warrior: card0 (2 printings) and card2 (1 printing)");
+    // (Elf, Wizard): only card2 has both.
+    assert_eq!(cell("Elf", "Wizard"), Some(SpaceTotals { printings: 1, cards: 1, artworks: 1 }), "Elf+Wizard: only card2 has both");
+    // (Warrior, Wizard): only card2 has both.
+    assert_eq!(cell("Warrior", "Wizard"), Some(SpaceTotals { printings: 1, cards: 1, artworks: 1 }), "Warrior+Wizard: only card2 has both");
+    // 3 distinct pairs, far below the 256 cutoff -- nothing excluded.
+    assert_eq!(t.rest_max, SpaceTotals::default(), "3 distinct pairs, far below the 256 cutoff -- nothing excluded");
+
+    // Brute-force cross-check over every card, not just the three hand-picked pairs above.
+    let mut brute: HashMap<(String, String), SpaceTotals> = HashMap::new();
+    for (ci, card) in data.cards.iter().enumerate() {
+        let mut names: Vec<String> = card.card_subtypes.iter().map(|id| data.coll_vocab[usize::from(*id)].clone()).collect();
+        names.sort_unstable();
+        names.dedup();
+        for i in 0..names.len() {
+            for j in (i + 1)..names.len() {
+                let e = brute.entry((names[i].clone(), names[j].clone())).or_default();
+                e.cards += 1;
+                e.printings += printing_counts[ci] as u32;
+                e.artworks += printing_counts[ci] as u32;
+            }
+        }
+    }
+    for ((a, b), totals) in &brute {
+        assert_eq!(cell(a, b), Some(*totals), "brute-force mismatch for ({a}, {b})");
+    }
+    let table_pair_count: usize = t.top.values().map(|m| m.len()).sum();
+    assert_eq!(table_pair_count, brute.len(), "table must have exactly the same number of pairs as the brute-force scan");
+}
+
+/// Round 55: `top_n_union_and_rest_max` -- a population deliberately constructed so card/printing/
+/// artwork rankings disagree: `printing_heavy` and `artwork_heavy` each have only 1 card, so a
+/// card-only top-2 fills its 2 slots with `top_a`/`top_b` before either is ever considered -- exactly
+/// the real `Island` x `Swamp` shape this round's own doc found (card=10, printing=107, outside the
+/// top-64-by-card cutoff but deep inside top-64-by-printing). The union of all three per-space top-2s
+/// must still include them, and `rest_max` must be computed over the ACTUAL excluded set (`excluded`
+/// alone), not derived from the three per-space boundary values individually.
+#[test]
+fn top_n_union_and_rest_max_includes_pairs_a_card_only_ranking_would_miss() {
+    let mut pairs: HashMap<&'static str, SpaceTotals> = HashMap::new();
+    pairs.insert("top_a", SpaceTotals { cards: 10, printings: 5, artworks: 5 });
+    pairs.insert("top_b", SpaceTotals { cards: 9, printings: 4, artworks: 4 });
+    pairs.insert("printing_heavy", SpaceTotals { cards: 1, printings: 8, artworks: 1 });
+    pairs.insert("artwork_heavy", SpaceTotals { cards: 1, printings: 1, artworks: 7 });
+    pairs.insert("excluded", SpaceTotals { cards: 2, printings: 2, artworks: 2 });
+
+    let (items, rest_max) = super::top_n_union_and_rest_max(pairs, 2);
+
+    let mut keys: Vec<&'static str> = items.iter().map(|(k, _)| *k).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec!["artwork_heavy", "printing_heavy", "top_a", "top_b"],
+        "the union of the 3 per-space top-2s must include printing_heavy/artwork_heavy, which a card-only top-2 ({{top_a, top_b}}) would miss entirely"
+    );
+    assert_eq!(
+        rest_max,
+        SpaceTotals { cards: 2, printings: 2, artworks: 2 },
+        "rest_max must be `excluded`'s own real triple -- the only pair actually excluded from the union"
+    );
+}
+
+/// Round 55: the (subtype, subtype) exact-hit scan (`subtype_pair2_exact`) fires for a bare
+/// `t:cleric t:spirit`-shaped `And` -- the motivating gap this round closes (on the real corpus,
+/// `t:cleric t:spirit` fell to a plain per-leaf min-fold of 628 against a true joint of 19, 33x over;
+/// nothing before this round answered a bare (subtype, subtype) pair at all). Also confirms it is a
+/// RESIDUAL scan over `all_sub_positions`, not gated to an exact 2-leaf `And`, by re-running with an
+/// extra unrelated leaf (`kw:Flying`) present -- the same generalization `SubtypePairIndexes` itself
+/// got in Round 42.
+#[test]
+fn subtype_subtype_exact_hit_fires_bare_and_with_residual_leaf() {
+    let mut vocab = VocabInterner::new();
+    let flying = vocab.intern("Flying".to_string()).unwrap();
+    let mut cards = vec![
+        stub_card(1, TYPE_CREATURE, &["Cleric", "Spirit"], &mut vocab),
+        stub_card(2, TYPE_CREATURE, &["Cleric"], &mut vocab),
+        stub_card(3, TYPE_CREATURE, &["Spirit"], &mut vocab),
+    ];
+    cards[0].card_keywords.push(flying);
+    let mut data = store_of(cards, &[1, 1, 1], vocab);
+    data.indexes.subtypes = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
+    data.indexes.keywords = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_keywords);
+    let ptc = build_printing_to_card(&data.offsets);
+    let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
+    data.indexes.value_totals = build_all_value_totals(&data.cards, &data.printings, &ptc, &data.strings, &data.coll_vocab, max_ag);
+    // Hand-set exact table entry, deliberately smaller than the real per-leaf counts (t:cleric=2,
+    // t:spirit=2, plain min-fold=2) -- (Cleric, Spirit) -> 1, so a hit is unambiguous.
+    data.indexes.subtype_subtype.top.entry("Cleric".to_string()).or_default().insert("Spirit".to_string(), SpaceTotals { printings: 1, cards: 1, artworks: 1 });
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let cleric = FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Cleric".to_string(), value_id: None };
+    let spirit = FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Spirit".to_string(), value_id: None };
+
+    let bare = FilterExpr::And(vec![cleric.clone(), spirit.clone()]);
+    let est_bare = super::compose_printing_estimate(&bare, &archived.indexes, &archived.offsets, n_printings, true);
+    assert_eq!(est_bare.result.printing, 1, "t:cleric t:spirit: the exact table hit must win over the plain min-fold (2)");
+    let domain = est_bare.exact_domain.expect("a table hit is exact -- exact_domain must be populated");
+    assert_eq!((domain.printing, domain.card, domain.artwork), (1, Some(1), Some(1)));
+    let trace_bare = *est_bare.and_trace.expect("want_trace: true must populate and_trace");
+    let hit_bare = trace_bare.considered.iter().find(|g| g.mechanism == "SubtypeSubtypeExact").expect("SubtypeSubtypeExact must have been attempted");
+    assert!(hit_bare.hit);
+    assert_eq!(hit_bare.card, Some(1));
+
+    let with_residual = FilterExpr::And(vec![
+        cleric,
+        spirit,
+        FilterExpr::CollectionCmp { field: CollField::Keywords, op: CmpOp::Ge, value: "Flying".to_string(), value_id: None },
+    ]);
+    let est_residual = super::compose_printing_estimate(&with_residual, &archived.indexes, &archived.offsets, n_printings, true);
+    assert_eq!(
+        est_residual.result.printing, 1,
+        "the exact hit must still fire with a third, unrelated leaf present -- a residual scan, not gated to exactly 2 leaves"
+    );
+    let trace_residual = *est_residual.and_trace.expect("want_trace: true must populate and_trace");
+    assert!(
+        trace_residual.considered.iter().any(|g| g.mechanism == "SubtypeSubtypeExact" && g.hit),
+        "must still be attempted despite the third leaf"
+    );
+}
+
+/// Round 55: the capped-independence fallback fires when exactly 2 (subtype, subtype) leaves remain
+/// uncovered (no table hit for the pair), computing `indep = solo_a.printings * solo_b.printings /
+/// n_printings` NATIVELY in printing space (unlike `SubtypePairEstimate`'s card-space-then-scaled
+/// formula) -- see `SubtypePairTable`'s own doc for why. 4 cards, 1 printing each: card0/card1 both
+/// have [Cleric, Spirit], card2/card3 have neither. n_cards=4, n_printings=4, solo_cleric=2,
+/// solo_spirit=2. Uncapped: `indep = 2*2/4 = 1`. `rest_max` generous (100) so it does not bind here --
+/// see the dedicated cap-binding test below for that branch.
+#[test]
+fn subtype_subtype_estimate_fires_with_exactly_two_uncovered_leaves() {
+    let mut vocab = VocabInterner::new();
+    let cards = vec![
+        stub_card(1, TYPE_CREATURE, &["Cleric", "Spirit"], &mut vocab),
+        stub_card(2, TYPE_CREATURE, &["Cleric", "Spirit"], &mut vocab),
+        stub_card(3, TYPE_CREATURE, &[], &mut vocab),
+        stub_card(4, TYPE_CREATURE, &[], &mut vocab),
+    ];
+    let mut data = store_of(cards, &[1, 1, 1, 1], vocab);
+    data.indexes.subtypes = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
+    let ptc = build_printing_to_card(&data.offsets);
+    let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
+    data.indexes.value_totals = build_all_value_totals(&data.cards, &data.printings, &ptc, &data.strings, &data.coll_vocab, max_ag);
+    // Deliberately no `subtype_subtype.top` entry -- (Cleric, Spirit) must miss the exact table.
+    data.indexes.subtype_subtype.rest_max = SpaceTotals { printings: 100, cards: 100, artworks: 100 };
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let f = FilterExpr::And(vec![
+        FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Cleric".to_string(), value_id: None },
+        FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Spirit".to_string(), value_id: None },
+    ]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+    assert_eq!(est.result.printing, 1, "t:cleric t:spirit: capped independence fallback must fire and match the printing-space-native formula (2*2/4=1)");
+    assert!(est.exact_domain.is_none(), "the fallback is an ESTIMATE, not exact -- it must not populate exact_domain");
+
+    let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    let hit = and_trace.considered.iter().find(|g| g.mechanism == "SubtypeSubtypeEstimate").expect("the fallback must have been attempted");
+    assert!(hit.hit);
+    assert_eq!(hit.printing, Some(1));
+    assert!(hit.printing.unwrap() <= 100, "the estimate must never exceed rest_max.printings");
+}
+
+/// Round 55: `rest_max` actually binds the fallback, not just exists unused -- the direct analog of
+/// `subtype_pair_and_arm_rest_max_caps_fallback` for this mechanism. Same population as the test
+/// above (uncapped indep = 1), but `rest_max.printings = 0` (deliberately adversarial, not realistic)
+/// forces `card_est = min(1, 0) = 0`. Getting 0 (not 1) proves the cap binds.
+#[test]
+fn subtype_subtype_estimate_rest_max_caps_fallback() {
+    let mut vocab = VocabInterner::new();
+    let cards = vec![
+        stub_card(1, TYPE_CREATURE, &["Cleric", "Spirit"], &mut vocab),
+        stub_card(2, TYPE_CREATURE, &["Cleric", "Spirit"], &mut vocab),
+        stub_card(3, TYPE_CREATURE, &[], &mut vocab),
+        stub_card(4, TYPE_CREATURE, &[], &mut vocab),
+    ];
+    let mut data = store_of(cards, &[1, 1, 1, 1], vocab);
+    data.indexes.subtypes = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
+    let ptc = build_printing_to_card(&data.offsets);
+    let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
+    data.indexes.value_totals = build_all_value_totals(&data.cards, &data.printings, &ptc, &data.strings, &data.coll_vocab, max_ag);
+    data.indexes.subtype_subtype.rest_max = SpaceTotals::default(); // printings: 0
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let f = FilterExpr::And(vec![
+        FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Cleric".to_string(), value_id: None },
+        FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Spirit".to_string(), value_id: None },
+    ]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, false).result.printing;
+    assert_eq!(est, 0, "t:cleric t:spirit: rest_max.printings=0 must cap the fallback to 0, not the uncapped 1");
+}
+
+/// Round 55: the fallback must decline entirely with 3 uncovered subtype leaves and no table hit for
+/// any of the 3 pairings -- the one-bucket analog of `SubtypePairEstimate`'s own "2+ uncovered
+/// leaves, no table hit for any combination" decline (fires only at exactly 2, not 1, not 3+).
+#[test]
+fn subtype_subtype_estimate_declines_with_three_uncovered_leaves() {
+    let mut vocab = VocabInterner::new();
+    let cards = vec![
+        stub_card(1, TYPE_CREATURE, &["Cleric"], &mut vocab),
+        stub_card(2, TYPE_CREATURE, &["Spirit"], &mut vocab),
+        stub_card(3, TYPE_CREATURE, &["Human"], &mut vocab),
+    ];
+    let mut data = store_of(cards, &[1, 1, 1], vocab);
+    data.indexes.subtypes = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
+    let ptc = build_printing_to_card(&data.offsets);
+    let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
+    data.indexes.value_totals = build_all_value_totals(&data.cards, &data.printings, &ptc, &data.strings, &data.coll_vocab, max_ag);
+    // Deliberately no `subtype_subtype.top` entries -- all 3 pairings miss.
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let f = FilterExpr::And(vec![
+        FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Cleric".to_string(), value_id: None },
+        FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Spirit".to_string(), value_id: None },
+        FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value: "Human".to_string(), value_id: None },
+    ]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+
+    let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    assert!(!and_trace.considered.iter().any(|g| g.mechanism == "SubtypeSubtypeExact" && g.hit), "no table entry exists for any of the 3 pairings");
+    assert!(
+        !and_trace.considered.iter().any(|g| g.mechanism == "SubtypeSubtypeEstimate"),
+        "3 uncovered subtype leaves with no table hit for any pairing must decline the estimate fallback entirely, not guess one"
+    );
 }
 
 /// Card-space collection containment fields (`type:`/`kw:`/`otag:`) and their printing-space siblings

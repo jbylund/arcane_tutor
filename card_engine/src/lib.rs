@@ -1860,6 +1860,37 @@ struct SubtypePairIndexes {
     identity: ColorSubtypeTable,
 }
 
+/// Round 55: `(subtype, subtype)` top-N table -- closes `same_family:type+type_realistic`'s 0%
+/// mechanism coverage (`t:cleric t:spirit` fell to a plain per-leaf min-fold, 628 vs true 19, 33x over
+/// -- `SubtypePairIndexes` above only ever pairs a subtype against `set:X`/`c:X`/`id:X`, never against
+/// ANOTHER subtype). A NEW, separate mechanism alongside `SubtypePairIndexes` -- does not touch
+/// `top_n_and_rest_max`/`SetSubtypeTable`/`ColorSubtypeTable` at all; those keep their exact current
+/// (card-space-then-scaled-by-a-global-ratio) behavior. The backport of this round's own triple-
+/// `rest_max`/union-of-3-spaces cutoff to those three is a separate, later round
+/// (`docs/issues/local-engine-nway-followup-queue.md`, active queue item #2).
+///
+/// `top` is keyed with `subtype_a < subtype_b` lexicographically -- the PAIR's own canonical order, not
+/// two syntactically different leaf shapes the way `SubtypePairIndexes`' dim/subtype pairing needs (a
+/// `set:X` leaf can never be mistaken for a `t:Y` leaf, so THAT lookup tries both `(dim, sub)` and
+/// `(sub, dim)`): here both sides are the SAME leaf shape (`subtype_pair_leaf`), so sorting once at
+/// build time AND once at query time means a lookup never has to try both orders.
+///
+/// `rest_max` is a real `SpaceTotals` TRIPLE, not one card-space scalar scaled by a global reprint
+/// ratio (`SetSubtypeTable`'s existing pattern) -- see `top_n_union_and_rest_max`'s own doc for why:
+/// validated directly against the real corpus, printing-space-native independence+cap beats
+/// card-space-then-x3.083-ratio at every percentile on the same N=256 excluded population (median
+/// 0.42x vs 0.64x, max 21x vs 24.67x).
+#[derive(Archive, Serialize, Deserialize, Default)]
+struct SubtypePairTable {
+    /// Top (union of per-space top-256) `(subtype_a, subtype_b)` exact `SpaceTotals`, `subtype_a <
+    /// subtype_b`. Nested (not `HashMap<(String, String), _>`) for the same `Borrow<str>`-two-`.get()`s
+    /// reason `SetSubtypeTable::top` already is.
+    top: HashMap<String, HashMap<String, SpaceTotals>>,
+    /// The max real count among every pair EXCLUDED from `top`, PER SPACE independently -- see
+    /// `top_n_union_and_rest_max`'s own doc.
+    rest_max: SpaceTotals,
+}
+
 /// Top-N by CARD count, EXTENDED to keep every pair tied with the boundary (the n-th largest) count,
 /// plus `rest_max` = the largest CARD count strictly excluded from the returned set. Shared by all
 /// three `build_subtype_pair_tables` dimension tables (`set`/`colors`/`identity`).
@@ -1901,6 +1932,102 @@ fn top_n_and_rest_max<K: Eq + std::hash::Hash>(pairs: HashMap<K, SpaceTotals>, n
     let rest_max = items.get(cutoff).map_or(0, |(_, t)| t.cards);
     items.truncate(cutoff);
     (items, rest_max)
+}
+
+/// Round 55's shared cutoff helper for `build_subtype_pair2_table` -- generalizes `top_n_and_rest_max`
+/// (above) from "rank by `.cards` alone" to "union of the tie-inclusive top-N boundary in EACH of the
+/// three spaces independently." Does NOT touch `top_n_and_rest_max` itself, which keeps ranking by
+/// `.cards` alone for `SetSubtypeTable`/`ColorSubtypeTable` -- see `SubtypePairTable`'s own doc (above)
+/// for why the two are deliberately kept separate.
+///
+/// Validated directly against the real corpus before this round was scoped: at N=256, `Island` x
+/// `Swamp` (card=10, printing=107) sits outside the top-64-by-CARD cutoff but deep inside the
+/// top-64-by-PRINTING one -- a card-only ranking silently drops something big in a dimension its sort
+/// key never looks at, the same "include every tie" philosophy `top_n_and_rest_max` already applies to
+/// one axis (Round 47), here extended from one axis to three. On the real corpus this adds 37
+/// printing-only + 21 artwork-only pairs on top of 258 card-ranked ones (258 -> 302, +17%).
+///
+/// `rest_max` is computed as one pass over the pairs NOT in the union (not derived from the three
+/// per-space boundaries individually) -- union membership is not any single space's own top-N, so only
+/// a real pass over the actual excluded set gives the true per-space max over it.
+fn top_n_union_and_rest_max<K: Eq + std::hash::Hash>(pairs: HashMap<K, SpaceTotals>, n: usize) -> (Vec<(K, SpaceTotals)>, SpaceTotals) {
+    let items: Vec<(K, SpaceTotals)> = pairs.into_iter().collect();
+
+    // Tie-inclusive top-N index set for ONE space -- the same boundary rule `top_n_and_rest_max` above
+    // already uses ("include every tie"), generalized to an arbitrary field instead of hardcoding
+    // `.cards`.
+    fn top_n_indices(values: &[u32], n: usize) -> HashSet<usize> {
+        let mut order: Vec<usize> = (0..values.len()).collect();
+        order.sort_unstable_by_key(|&i| std::cmp::Reverse(values[i]));
+        let Some(&boundary_idx) = order.get(n.saturating_sub(1)) else {
+            // Fewer than `n` items total: everything qualifies, nothing is excluded.
+            return (0..values.len()).collect();
+        };
+        let boundary = values[boundary_idx];
+        // `order` is already sorted descending, so every index whose value is >= boundary is a
+        // contiguous prefix -- `take_while` is correct here, not just convenient.
+        order.into_iter().take_while(|&i| values[i] >= boundary).collect()
+    }
+
+    let printings: Vec<u32> = items.iter().map(|(_, t)| t.printings).collect();
+    let cards: Vec<u32> = items.iter().map(|(_, t)| t.cards).collect();
+    let artworks: Vec<u32> = items.iter().map(|(_, t)| t.artworks).collect();
+    let mut union: HashSet<usize> = top_n_indices(&printings, n);
+    union.extend(top_n_indices(&cards, n));
+    union.extend(top_n_indices(&artworks, n));
+
+    let mut rest_max = SpaceTotals::default();
+    for (i, (_, t)) in items.iter().enumerate() {
+        if !union.contains(&i) {
+            rest_max.printings = rest_max.printings.max(t.printings);
+            rest_max.cards = rest_max.cards.max(t.cards);
+            rest_max.artworks = rest_max.artworks.max(t.artworks);
+        }
+    }
+
+    let top: Vec<(K, SpaceTotals)> = items.into_iter().enumerate().filter(|(i, _)| union.contains(i)).map(|(_, kv)| kv).collect();
+    (top, rest_max)
+}
+
+/// Round 55: builds `SubtypePairTable` -- the direct analog of `set_subtype_totals` inside
+/// `build_subtype_pair_tables` below, crossing a card's own subtypes with EACH OTHER instead of with an
+/// external dimension. One `build_value_totals` pass whose `keys_of` closure dedups + sorts each card's
+/// own subtype names once, then emits every unordered pair `(names[i], names[j])` for `i < j` -- so
+/// `top`'s own key order (`subtype_a < subtype_b`) falls out of the SAME sort, no separate
+/// canonicalization step needed at lookup time.
+fn build_subtype_pair2_table(
+    cards: &[OracleCard],
+    printings: &[Printing],
+    printing_to_card: &[u32],
+    coll_vocab: &[String],
+    max_artwork_groups: usize,
+) -> SubtypePairTable {
+    // Same N=256 cutoff as `build_subtype_pair_tables`'s own `TOP_N` -- validated separately for this
+    // table (docs/issues/local-engine-nway-followup-queue.md, active queue item #1): the excluded
+    // population's `rest_max` is already far below where a wrong estimate could flip a routing
+    // decision at this N, and N is not sized by the `StreamedSelect`/`GatheredScan` transition either
+    // (only 2 of 2,221 distinct pairs clear `PAIR_MIN_PRINTINGS` in any space).
+    const TOP_N: usize = 256;
+
+    let pair_totals: HashMap<(String, String), SpaceTotals> = build_value_totals(cards, printings, printing_to_card, max_artwork_groups, |card, _p| {
+        let mut names: Vec<&str> = card.card_subtypes.iter().map(|id| coll_vocab[usize::from(*id)].as_str()).collect();
+        names.sort_unstable();
+        names.dedup();
+        let mut out = Vec::new();
+        for i in 0..names.len() {
+            for j in (i + 1)..names.len() {
+                out.push((names[i].to_string(), names[j].to_string()));
+            }
+        }
+        out
+    });
+
+    let (top_items, rest_max) = top_n_union_and_rest_max(pair_totals, TOP_N);
+    let mut top: HashMap<String, HashMap<String, SpaceTotals>> = HashMap::new();
+    for ((a, b), totals) in top_items {
+        top.entry(a).or_default().insert(b, totals);
+    }
+    SubtypePairTable { top, rest_max }
 }
 
 /// Builds the three Round 34 tables (`SubtypePairIndexes`) -- see `SetSubtypeTable`/`ColorSubtypeTable`'s
@@ -2059,6 +2186,16 @@ fn subtype_pair_exact<'i>(a: &FilterExpr, b: &FilterExpr, indexes: &'i Archived<
         }
     }
     try_pair(a, b, indexes).or_else(|| try_pair(b, a, indexes))
+}
+
+/// Round 55: the EXACT `SpaceTotals` for one unordered pair of subtype strings, when the pair (sorted
+/// into `top`'s own canonical `a < b` order -- see `SubtypePairTable`'s own doc for why this table
+/// never needs to try both orders the way `subtype_pair_exact` above does) is one of the
+/// top-256-union-of-3-spaces pairs `build_subtype_pair2_table` kept. `None` on a miss -- the caller's
+/// own capped-independence fallback applies.
+fn subtype_pair2_exact<'i>(a: &str, b: &str, indexes: &'i Archived<CardIndexes>) -> Option<&'i Archived<SpaceTotals>> {
+    let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+    indexes.subtype_subtype.top.get(lo)?.get(hi)
 }
 
 // ─── Round 44: (colors|identity) x cmc exact joint ────────────────────────────
@@ -5135,6 +5272,10 @@ struct CardIndexes {
     /// Round 34: `set:X`/`c:X`/`id:X` x subtype co-occurrence, for `compose_printing_estimate`'s
     /// `And` arm and `exact_result_total`. See `SubtypePairIndexes`'s own doc.
     subtype_pairs:  SubtypePairIndexes,
+    /// Round 55: `(subtype, subtype)` co-occurrence, for `compose_printing_estimate`'s `And` arm. A
+    /// NEW, separate mechanism alongside `subtype_pairs` above (which only ever pairs a subtype
+    /// against `set:X`/`c:X`/`id:X`, never against another subtype). See `SubtypePairTable`'s own doc.
+    subtype_subtype: SubtypePairTable,
     /// Round 36: the top `SUBTYPE_ARITH_TOP_N` subtypes' own dense (cmc, power, toughness) prefix-sum
     /// cube, for `compose_printing_estimate`'s `And` arm. See `SubtypeArithIndexes`'s own doc.
     subtype_arith:  SubtypeArithIndexes,
@@ -9684,12 +9825,19 @@ fn and_trace_for(filter: &FilterExpr, indexes: &Archived<CardIndexes>, offsets: 
 /// genuine table lookup and stays in the exact/bound class). `"SubtypeArithAnchoredIndependence"`
 /// (Round 50) is `SubtypeArithBox`'s own exact joint multiplied by a single residual `Price` leaf's own
 /// solo rate -- the product of an exact count and an inexact rate is itself inexact, so this stays
-/// ESTIMATE-class even though it's anchored on an exact box hit (see that call site's own doc). Every
-/// other mechanism string in this arm (`"PairTotals"`, `"arith_tuple_totals"`, `"PlanePopcount"`,
-/// `"PairRangeSum"`, `"ArithIdProbe"`, `"SubtypePairIndexes"`, `"SubtypeArithBox"`,
-/// `"leaves_are_disjoint"`) is exact/bound.
+/// ESTIMATE-class even though it's anchored on an exact box hit (see that call site's own doc).
+/// `"SubtypeSubtypeEstimate"` (Round 55) is the direct one-bucket analog of `"SubtypePairEstimate"` --
+/// `SubtypePairTable`'s own capped independence-product MISS branch (the HIT branch,
+/// `"SubtypeSubtypeExact"`, is a genuine table lookup and stays in the exact/bound class, same split as
+/// `SubtypePairIndexes`/`SubtypePairEstimate`). Every other mechanism string in this arm
+/// (`"PairTotals"`, `"arith_tuple_totals"`, `"PlanePopcount"`, `"PairRangeSum"`, `"ArithIdProbe"`,
+/// `"SubtypePairIndexes"`, `"SubtypeArithBox"`, `"SubtypeSubtypeExact"`, `"leaves_are_disjoint"`) is
+/// exact/bound.
 fn is_estimate_class_mechanism(mechanism: &str) -> bool {
-    matches!(mechanism, "Independence" | "SetCollectorRange" | "SubtypePairEstimate" | "SubtypeArithAnchoredIndependence")
+    matches!(
+        mechanism,
+        "Independence" | "SetCollectorRange" | "SubtypePairEstimate" | "SubtypeArithAnchoredIndependence" | "SubtypeSubtypeEstimate"
+    )
 }
 
 /// No winning group at all means nothing tightened this `And` beyond the per-leaf fold: `root =
@@ -10598,6 +10746,58 @@ fn compose_printing_estimate(
                     });
                 }
             }
+            // Round 55: `(subtype, subtype)` co-occurrence -- a NEW, separate mechanism alongside the
+            // `SubtypePairIndexes`/`SubtypePairEstimate` pair just above (which only ever pairs a
+            // subtype against `set:X`/`c:X`/`id:X`, never against ANOTHER subtype). Closes
+            // `same_family:type+type_realistic`'s 0% mechanism coverage: `t:cleric t:spirit` fell to a
+            // plain per-leaf min-fold (628, true 19, 33x over) with nothing else in this arm able to
+            // answer a bare (subtype, subtype) pair at all. Reuses `all_sub_positions` (computed just
+            // above for the dim/subtype scan) directly -- same predicate, same list, no new scan needed
+            // to find the candidate leaves. Just the EXACT-hit scan lives here; the ESTIMATE-class
+            // capped-independence fallback is deliberately placed LATER in this arm (after
+            // `SubtypeArithBox`/`SubtypeArithAnchoredIndependence`, right before "Round 44 tightening")
+            // -- see that block's own doc for the real regression (caught by the existing test suite)
+            // that placing it here instead would have reintroduced.
+            //
+            // Exact-hit scan, mirroring the dim/subtype exact-hit scan's own philosophy (unconditional
+            // on `covered`, `.min()`-folds `Candidate::Exact` on every hit, `mark_covered` on hit
+            // leaves -- a genuine table hit is a valid upper bound on the whole `And` regardless of
+            // what else already covers either leaf, and regardless of ITS OWN position in this arm,
+            // unlike an ESTIMATE that can undershoot). This needs a small dedicated loop rather than
+            // `scan_two_bucket_exact`: that helper is built for two DISTINCT buckets (bucket A crossed
+            // with bucket B), and handing it `all_sub_positions` for BOTH sides would double-iterate
+            // every unordered pair (once as (i, j), once as (j, i)) and double-trace it, not just waste
+            // cycles -- so this scans `for i in 0..len { for j in (i+1)..len { ... } }` instead, one
+            // `subtype_pair2_exact` lookup per unordered pair.
+            for i in 0..all_sub_positions.len() {
+                for j in (i + 1)..all_sub_positions.len() {
+                    let (pi, pj) = (all_sub_positions[i], all_sub_positions[j]);
+                    let a = subtype_pair_leaf(&v[pi]).expect("all_sub_positions only holds subtype_pair_leaf leaves");
+                    let b = subtype_pair_leaf(&v[pj]).expect("all_sub_positions only holds subtype_pair_leaf leaves");
+                    if let Some(totals) = subtype_pair2_exact(a, b, indexes) {
+                        fold_candidate(
+                            &mut result,
+                            &mut exact_domain_cards,
+                            &mut exact_domain_printing,
+                            &mut exact_domain_artworks,
+                            "SubtypeSubtypeExact",
+                            Candidate::Exact { printings: totals.get(Mode::Printing), cards: totals.get(Mode::Card), artworks: totals.get(Mode::Artwork) },
+                        );
+                        let pair: [&FilterExpr; 2] = [&v[pi], &v[pj]];
+                        mark_covered(v, &pair, &mut covered);
+                        if let Some(t) = and_trace.as_mut() {
+                            t.considered.push(AndTraceGroup {
+                                leaves: vec![format!("{:?}", &v[pi]), format!("{:?}", &v[pj])],
+                                mechanism: "SubtypeSubtypeExact",
+                                hit: true,
+                                printing: Some(totals.get(Mode::Printing)),
+                                card: Some(totals.get(Mode::Card)),
+                                artwork: Some(totals.get(Mode::Artwork)),
+                            });
+                        }
+                    }
+                }
+            }
             // Round 36 tightening: a bare `t:X` subtype leaf And'd with 1+ cmc/power/toughness bound
             // children (nothing else in the `And`) gets an exact triple from `indexes.subtype_arith`
             // (a dense per-subtype 3-D (cmc, power, toughness) prefix-sum cube over the top
@@ -10805,6 +11005,83 @@ fn compose_printing_estimate(
                             });
                         }
                     }
+                }
+            }
+            // Round 55: the (subtype, subtype) capped-independence fallback, mirroring
+            // `SubtypePairEstimate`'s own structure (single-pair-only, ESTIMATE-class, respects
+            // `covered` recomputed fresh). Deliberately placed HERE -- after `SubtypeArithBox`/
+            // `SubtypeArithAnchoredIndependence` above, not immediately after the exact-hit scan next
+            // to `all_sub_positions` -- rather than at the exact-hit scan's own call site: a real
+            // regression, caught by the existing suite (`subtype_arith_box_multiple_subtype_leaves_
+            // fold_via_min`/`subtype_arith_anchored_independence_multi_subtype_leaves_use_their_own_
+            // box_hit`), showed why. `fold_candidate`'s min-fold is commutative in principle, but an
+            // ESTIMATE candidate that UNDERSHOOTS (this fallback's own documented risk -- see
+            // `is_estimate_class_mechanism`'s doc) permanently pulls `result` below the truth the
+            // moment it folds, and no later EXACT/bound candidate can ever raise `result` back up
+            // (`fold_candidate`'s `Exact` arm only ever tightens via `.min()` too). `t:elf t:human
+            // cmc>=5` has TWO bare subtype leaves and no dim leaf, so it never reaches
+            // `SubtypePairEstimate` (which requires one) -- but it is exactly `all_sub_positions`'
+            // own "exactly 2 uncovered" shape for THIS mechanism, and it is ALSO
+            // `SubtypeArithBox`'s own "multiple subtype leaves against the same arith bound" shape.
+            // Running this fallback before `SubtypeArithBox` got a chance let an uncapped/undershot
+            // independence guess for (Elf, Human) win the arm's min-fold outright, even though each
+            // leaf's own EXACT box hit (Elf=2, Human=3) was available and tighter-but-larger. Placing
+            // this block after `SubtypeArithBox`/`SubtypeArithAnchoredIndependence` means their own
+            // `mark_covered` calls (both mechanisms cover on hit) are reflected in `covered` BEFORE
+            // this fallback's fresh scan runs: a subtype leaf `SubtypeArithBox` already explained is
+            // no longer "remaining," so this fallback correctly declines rather than potentially
+            // undershooting a leaf a real exact mechanism already bounded. The exact-hit scan above
+            // (`subtype_pair2_exact`) has NO such risk and stays at the plan's original position next
+            // to `all_sub_positions`: an EXACT hit is a genuine upper bound on the whole `And`
+            // regardless of order, so it can never corrupt `result` the way an estimate can.
+            //
+            // Fires only when EXACTLY 2 positions in `all_sub_positions` remain uncovered (not 1, not
+            // 3+) -- the one-bucket analog of `SubtypePairEstimate`'s own "exactly 1 dim + 1 subtype"
+            // gate, for the identical undershoot-compounding reason (2+ uncovered pairs with no table
+            // hit for any combination declines entirely rather than computing one estimate per
+            // combination and taking their min).
+            //
+            // Unlike `SubtypePairEstimate`, which computes a CARD-space independence product and
+            // scales it into printing space by `* n_printings / n_cards`, this works NATIVELY in
+            // printing space: `indep = solo_a.printings * solo_b.printings / n_printings`, reading each
+            // leaf's own EXACT printing-space marginal directly from the already-existing
+            // `indexes.value_totals.subtypes` (no new per-subtype total needed). Validated directly
+            // against the real corpus before this round was scoped: printing-space-native
+            // independence+cap beats card-space-then-scaled-by-a-global-reprint-ratio
+            // (`SetSubtypeTable`'s own pattern) at every percentile on the same N=256 excluded
+            // population (median 0.42x vs 0.64x, max 21x vs 24.67x) -- the ratio-scaling step assumes a
+            // uniform reprint rate across all subtype pairs, which is false.
+            let remaining_sub_positions: Vec<usize> = all_sub_positions.iter().copied().filter(|&i| !covered.flags[i]).collect();
+            if let [pi, pj] = remaining_sub_positions[..] {
+                let a = subtype_pair_leaf(&v[pi]).expect("remaining_sub_positions only holds subtype_pair_leaf leaves");
+                let b = subtype_pair_leaf(&v[pj]).expect("remaining_sub_positions only holds subtype_pair_leaf leaves");
+                let solo_a = indexes.value_totals.subtypes.get(a).map_or(0, |t| t.get(Mode::Printing));
+                let solo_b = indexes.value_totals.subtypes.get(b).map_or(0, |t| t.get(Mode::Printing));
+                let indep = solo_a.checked_mul(solo_b).and_then(|p| p.checked_div(n_printings)).unwrap_or(0);
+                let rest_max_printing = indexes.subtype_subtype.rest_max.get(Mode::Printing);
+                let printing_est = indep.min(rest_max_printing);
+                fold_candidate(
+                    &mut result,
+                    &mut exact_domain_cards,
+                    &mut exact_domain_printing,
+                    &mut exact_domain_artworks,
+                    "SubtypeSubtypeEstimate",
+                    Candidate::Estimate { printing: printing_est },
+                );
+                // ESTIMATE-class (a capped independence product, not a bound -- this mechanism's own
+                // doc above), marked defensively so the independence registry scan below never stacks
+                // a second inexact estimate on the same two leaves (Round 40's own convention).
+                let pair: [&FilterExpr; 2] = [&v[pi], &v[pj]];
+                mark_covered(v, &pair, &mut covered);
+                if let Some(t) = and_trace.as_mut() {
+                    t.considered.push(AndTraceGroup {
+                        leaves: vec![format!("{:?}", &v[pi]), format!("{:?}", &v[pj])],
+                        mechanism: "SubtypeSubtypeEstimate",
+                        hit: true,
+                        printing: Some(printing_est),
+                        card: None,
+                        artwork: None,
+                    });
                 }
             }
             // Round 44 tightening: a `color:X`/`id:X` leaf And'd with 1+ literal cmc bound children
@@ -17553,7 +17830,11 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 // `price_joint_usd_eur` (a straight rename, same contents), `price_joint_usd_tix`, `price_joint_eur_tix`
 // (both new) -- generalizing the same `PriceJointTable` shape past its original usd/eur-only scope.
 // Same blind spot again: entirely inside `CardIndexes`.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026090301;
+//
+// 2026090302 — Round 55: new `CardIndexes` field `subtype_subtype` (`SubtypePairTable`, the
+// (subtype, subtype) top-256-union-of-3-spaces table). Same blind spot again: entirely inside
+// `CardIndexes`.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026090302;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
@@ -18206,6 +18487,15 @@ impl QueryEngine {
             &coll_vocab,
             usize::from(artwork_group_counts.iter().copied().max().unwrap_or(0)),
         );
+        // Round 55: same reasoning as `subtype_pairs` immediately above -- reads `printing_to_card`,
+        // which the struct literal below moves.
+        let subtype_subtype = build_subtype_pair2_table(
+            &cards,
+            &printings,
+            &printing_to_card,
+            &coll_vocab,
+            usize::from(artwork_group_counts.iter().copied().max().unwrap_or(0)),
+        );
         let subtype_arith = build_subtype_arith_tables(
             &cards,
             &printings,
@@ -18319,6 +18609,7 @@ impl QueryEngine {
             value_totals,
             pair_totals,
             subtype_pairs,
+            subtype_subtype,
             subtype_arith,
             color_cmc,
             price_joint_usd_eur,
