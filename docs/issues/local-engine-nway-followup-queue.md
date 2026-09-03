@@ -71,6 +71,23 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
   not assumed to exist, not investigated. Also worth re-applying the Round 54 lesson generally: a low
   Pearson r does NOT rule out a real, non-linear, exploitable relationship — a direct joint-histogram
   simulation is the right way to check, not correlation alone.
+- **Router picks `PrintingCompose` over the cheaper `GatheredScan` when the predicted total is exactly
+  0.** Found while dispatch-pricing (`costbench.plan_self_ns`, the same definition
+  `bench_regret_matrix.py` uses) Round 55's own 79 distinct plan-choice flips: `StreamedSelect ->
+  GatheredScan` (22.8% of flips) and `PrintingCompose -> StreamedSelect` (2.5%) are clear, large wins
+  (median +12.08µs and +10.81µs respectively, both directly dispatch-priced in the same
+  `explain_analyze` call). But the single LARGEST bucket, `GatheredScan -> PrintingCompose` (45.6% of
+  flips, 36/36 disjoint-subtype-pair queries with `true_total=0`), is a small, consistent REGRESSION:
+  median −0.92µs (0.63µs -> 1.58µs), with `GatheredScan` measured as the actual best plan in all 36
+  sampled rows. Round 55 made the estimate for these EXACT (a genuine table hit returns
+  `SpaceTotals{0,0,0}` for a real disjoint pair, was ~66-184 before) — so this is a router
+  mis-ranking exposed by a now-correct estimate, not an estimator bug. Low urgency: the absolute
+  magnitude (sub-2µs either way) sits at/near `costbench.py`'s own declared noise floor
+  (`NOISE_FLOOR_US = 1.0`), though the 100%-consistent direction across 36 independent queries says
+  it's real, not noise. (The remaining 29.1% of flips, `PrintingCompose -> GatheredScan`, could not be
+  directly dispatch-priced — `PrintingCompose` no longer runs at all under the corrected estimate, so
+  `explain_analyze` never forces a trial for it — but indirect evidence, `GatheredScan` beating
+  `StreamedSelect` 3-6x in every one of those rows, points toward a win there too, not measured.)
 
 ## Standing principles for anything built here
 
