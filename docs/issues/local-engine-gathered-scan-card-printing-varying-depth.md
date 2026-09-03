@@ -209,6 +209,85 @@ total regret by 0.0 ms).
 | 54 | Generalizes `PriceJointTable` (Round 53) past its `usd`×`eur`-only hardcoding to all three currency pairs: `price_joint_usd_eur`/`_usd_tix`/`_eur_tix`, built by the same closure-parameterized `build_price_joint_table`, dispatched via one shared `price_joint_table_for`/`resolve_price_joint_pair` helper replacing two hand-rolled `match` arms. `PRICE_JOINT_BUCKETS` (64) reused unchanged for all three — re-checked directly against the real corpus, not assumed | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 66,378 shared rows (fresh seed): 227 plan-choice flips (0.3%), 100% confined to `unsafe:usd+tix` (108/900, 12.0%) and `unsafe:eur+tix` (119/900, 13.2%); `unsafe:usd+eur` and every other shape show zero flips; `root=leaf`/`root=or` both 0.0%. Ratio diagnostic: mean abs-log-ratio −0.022 (95% CI excludes 0) — "B is MORE accurate" | see "Round 54" narrative below — surfaced by a fresh full-corpus survey run specifically to check what emerged once Round 53 stopped dominating it; validated the same way (Pearson r + a real joint-histogram simulation) BEFORE scoping, closing a real gap the design doc's own historical calibration work had found beneficial but never actually shipped. Independently re-verified: `usd`×`tix`/`eur`×`tix` land at 1.00-1.92x (was 42-87x); one real discrepancy between my own preliminary Python simulation and the shipped Rust result was investigated and resolved as a bug in MY OWN script, not the implementation — see that section for the full account |
 | 55 | `(subtype, subtype)` exact top-N table (`SubtypePairTable`), the first mechanism in this arm to pair a subtype against ANOTHER subtype rather than against `set:X`/`c:X`/`id:X`. Two departures from `SetSubtypeTable`'s own shape, each validated against the real corpus before scoping: top-N membership is the UNION of the tie-inclusive top-256 in each of the three spaces independently (not card-count-ranked alone), and `rest_max` is a real per-space TRIPLE consumed natively rather than one card-space scalar scaled by a global reprint ratio. Query time: a residual exact-hit scan over every unordered pair of subtype leaves (`Candidate::Exact`), plus a single-pair-only capped-independence fallback (`Candidate::Estimate`, printing-space-native) | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 55,833 shared rows (fresh seed 7, independently re-run by me): 219 plan-choice flips (0.4%; 0.5% of `root=and`), 100% confined to `same_family:type+type_realistic` (116/750, 15.5%) and `same_family:type+type_disjoint` (103/750, 13.7%); every other shape and both `root=leaf`/`root=or` show zero flips. Mechanism coverage for both `same_family:type` shapes 0% → 100%. Ratio diagnostic: mean abs-log-ratio 0.191 → 0.183 (B−A −0.008, 95% CI [−0.009, −0.007]) — "B is MORE accurate". Zero-true-count hit rate 74.0% → 79.5% | see "Round 55" narrative below — the design (union cutoff, triple `rest_max`, keep `min(indep, rest_max)`, N=256) was settled against real corpus data BEFORE scoping, including a direct check that N is NOT sized by the `StreamedSelect`/`GatheredScan` transition. The implementing agent hit a real regression the existing suite caught and fixed it by MOVING the estimate-class fallback later in the arm — an ordering constraint worth reading, not a detail |
 | 56 | Anchored independence for `ColorCmcTable`, the second anchor mechanism after Round 50's: that table's own EXACT `(color\|identity, cmc)` joint times a single residual `IndepClass::Price` leaf's own solo rate, folded as `Candidate::Estimate`. Round 50's inline closures hoisted into one shared `anchored_price_residual`/`anchored_leaves_for` both anchor sites call. NO fudge factor (swept and rejected), and deliberately NO `mark_covered`, inheriting `ColorCmcTable`'s own measured reason | kept | n/a (not this doc's own metric) | The routing-relevant metric this round exists for — `root=and` rows straddling the 1,024 `STREAM_MIN_MATCHES` boundary with >=200 absolute AND >=10% relative error, independently re-run by me at seed 7 over 39,411 shared and-rows: **1,016 -> 880 (-13.4%)**, over-side 845 -> 704 (-141), under-side 171 -> 176 (+5). 141 fixed, only 5 newly routing-relevant (all moderate under-shoots, pred 845-915 against truths 1,090-1,239). 146 plan flips, **every one in the intended direction** (145 `StreamedSelect -> GatheredScan`, 1 `PrintingCompose -> StreamedSelect`, zero the other way). Entirely confined to `star:identity+cmc+usd` (95 -> 21) and `star:color+cmc+usd` (78 -> 16); every other shape zero delta. Monotonicity confirmed empirically: 1,229 predictions changed, **0 increased** | see "Round 56" narrative below — validated BEFORE scoping (median 1.97x -> 1.01x on a 70-query random sample of the full shape population, deliberately not the straddling tail), including a factor sweep that **rejected** the fudge factor on real data. A pre-existing test's expected number legitimately changed; a zero-prediction case was checked directly against the empty-conjunction short-circuit risk |
+| 57 | `LegalityDateTotals`: an EXACT per-`(format, status)` prefix sum over the `released_at` value axis (924 distinct dates), answering `f:X` × any date range in printing space by one subtraction. Keyed by the existing `legality_totals_key`; pruned by a 1,024-printing selectivity floor (`PairTotals`' own principle) AND by a second rule the plan didn't anticipate — drop any key covering the whole date index, which removed 9 phantom keys | kept | n/a (not this doc's own metric) | Routing-relevant straddles (>1,024 boundary, >=200 abs, >=10% rel), agent's sweep at seed 20260903 over 47,118 `root=and` rows: printing 463 → 452 (**−11**, all over-side), card 309 → 306 (−3), artwork 305 → 297 (−8); ALL 1,077 → 1,055. **Every one of the −22 is in `unsafe:legality+released`** (50 → 28); no other shape moved a single straddle. Target shape ratio, printing: median 1.02x → **1.00x**, p90 3.64x → **1.00x**, max 16.81x → **1.00x**. Coverage 0/900 → 813/900. 46 plan flips (0.1%), all in the target shape, and among those rows the count sitting on the wrong side of 1,024 went **31 → 8** | see "Round 57" narrative below — the investigation retracted its own premise twice before landing, an unplanned 9-phantom-key finding, and one honest cost: 173 card/artwork ratio regressions whose mechanism I verified and whose fix is the next round |
+
+### Round 57
+
+Target: `unsafe:legality+released` — the highest median absolute error of any shape (2,464) at 0%
+mechanism coverage, where the engine's prediction was simply the smaller marginal.
+
+**The investigation retracted its own premise twice, which is the most reusable part of this round.**
+
+1. The design doc justified excluding `legality × released` from the independence registry because
+   "format legality is *defined* by a release-date cutoff." **Measured false in printing space**:
+   legality is card-level, `released_at` is printing-level, and reprints scatter a format's legal cards
+   across the whole axis — every format except `oldschool` has legal printings back to 1993-08-05. The
+   cutoff governs SET legality, not the printing population an estimate sees.
+2. So independence looked like the fix, and it is a large win — 460 measured (format, date-predicate)
+   pairs, wrong-side-of-1,024 rows 17.2% → 7.6%. But **"unsafe" turned out to be a per-format
+   property**: skew spreads run 1.0x for `legacy`/`commander`/`vintage`/`oathbreaker`/`duel` (min-fold
+   already returns 1.002-1.010x there — the blanket exclusion was discarding formats where the fix is
+   free) to 250x for `oldschool`, which supplies essentially the entire tail in both directions.
+3. Then the error turned out to be **an identity, not a correlation**: independence substitutes a
+   format's global legal density for its local density, so its error is exactly
+   `global_density / window_density`. `premodern`'s 3.69 skew in its own era predicts a 1/3.69 = 0.27x
+   undershoot — precisely the 0.26-0.27x measured. That reframed the fix from "calibrate an estimator"
+   to "store the temporal structure."
+4. Which settled granularity empirically, and the knees are mid-year exactly as feared: Modern's is
+   **2003-07-28** (8th Edition, 16.8% → 100.0%), Pioneer's **2012-10-05**. Worse, `standard` has no knee
+   at all — it alternates date-to-date (2024: 15.8%, 61.0%, 17.3%, 8.6%, 4.7%, 61.4%, …) because main
+   sets interleave with supplemental products. Per-year leaves a 2.7x max; per-quarter zeroes the
+   routing metric; **per-date is exact**, because release dates are the atoms of the axis so every range
+   aligns to bucket boundaries with nothing to pro-rate. Run-length compression was tested and rejected
+   (~40% at best: for 17 of 23 formats the high-frequency alternation IS the signal — `vintage`
+   compresses to 3 runs, `standard` needs 580 of 924).
+
+Also measured and rejected along the way: a **fudge factor** does not apply here (that was Round 56's
+finding, reconfirmed in spirit), and **card/artwork exactness** was left out because printing counts are
+additive (one date per printing) while card counts are not — a card with printings on both sides of a
+cut lands in both halves, the same constraint `RangeCardCounts` documents when it declines `year:Y`.
+That asymmetry is why this round is printing-space only.
+
+**An unplanned finding worth keeping: 9 phantom keys.** The archive grew 185,784 bytes rather than the
+predicted ~148 KB. Cause: like `ValueTotals::legality`, the build walks all 32 format *slots*, and an
+unassigned slot reads `not_legal` for every printing — so 9 slots cleared the 1,024 floor at 97,812
+printings each, costing 33 KB for keys no query can name (`shift` comes from `format_shift(name)`). The
+fix is general rather than slot-specific: drop any key covering the entire date index, since its
+`prefix[j] - prefix[i]` just reproduces the date leaf's own count and can never be tighter. Verified
+behaviour-neutral across 64,563 rows. Final size **+148.8 KB (+0.205%)**, matching the prediction once
+the phantoms are gone. Related: a query can only ever ask for `legal`/`banned`/`restricted`
+(`filter.rs`'s own match), so `not_legal` keys are unreachable by construction — worth remembering
+before adding any other `legality × X` table.
+
+**The one real cost, verified rather than accepted on report: 173 card/artwork ratio regressions**, all
+on the target shape, all card (111) or artwork (62), **zero in printing space**. Traced it directly:
+`date:2019-11-07 f:gladiator` goes 1,675 → **840 = exactly true** in printing, but card goes 927 → 468
+against a true 840. The true card count IS 840 (one date is one set, so every printing is a distinct
+card); the downstream derivation takes the now-exact P and scales it by the global card/printing ratio.
+Before, it scaled the WRONG printing estimate and landed closer **by accident**. So this round exposed a
+pre-existing bias rather than introducing one — the same `* n_cards / n_printings` under-bias measured
+at median 0.474x. Confirmed the next round fixes it: calibrated occupancy on the same exact P gives
+**813-829 against true 840 (0.97-0.99x)**, and is insensitive to the calibration constant across
+k=0.40-1.00. Net routing effect is still an improvement in all three spaces, so nothing routes worse.
+
+**Independent re-verification** (my own wheels, `__file__` asserted; before = `costcell/trunk`
+`fcb9a708`): all four motivating queries exact — `f:gladiator year<=2003` 14,928 → **2,673**,
+`f:standard date<=1999-06-07` 9,404 → **652**, `f:premodern year:2024` 11,117 → **1,165**,
+`f:oldschool year>=2005` 2,962 → **44**, every one 1.00x against truth and tracing a
+`LegalityDateTotals` hit. `cargo test` 284 debug / 281 release; `clippy --all-targets -- -D warnings`
+clean in debug (the release-only `ARITH_TUPLE_BLOWUP_CARDS` error is Round 51's, confirmed pre-existing
+again). Timing: a flat **+83 ns** wherever the mechanism fires (8-11% on the cheapest 2-3-leaf date
+queries, ~1% on anything with real work), with both no-legality and no-date canaries unchanged within
+noise — the guard works.
+
+Two things this round could not fix and did not pretend to. Of the 300 printing rows on the target
+shape, 29 get the exactly-correct value but **lose the min-fold anyway**, because the pre-existing
+`Legality` leaf's own `legal_cards * n_printings / n_cards` estimate is 5-13% SMALLER than the truth and
+`min()` only lowers — the same undershooting idiom the occupancy round targets. And `banned:`/
+`restricted:` queries are untouched: those keys sit below the floor (7,066 rows across all formats,
+`banned:modern` is 403), and separately `client/query_sampler.py` only ever generates `f:`, so **no
+survey in this arc has ever exercised them** — the pruning argument there rests on population size, not
+on measured routing impact.
 
 ### Round 56
 

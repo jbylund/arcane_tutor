@@ -218,6 +218,31 @@ per-printing ground truth, so an exact per-(set, format) table (which fraction o
 are legal in a format — the same shape as Round 34's `SubtypePairIndexes`) should answer this
 precisely. Flagged as a follow-on round, not attempted.
 
+> **Round 57 correction — the "same variable observed twice" reasoning above is WRONG for the date
+> axis, and the conclusion it supported was right by luck.** Measured: legality is CARD-level while
+> `released_at` is PRINTING-level, so reprints scatter a format's legal cards across the entire axis.
+> Every format except `oldschool` has legal printings back to **1993-08-05**, including modern, pioneer,
+> standard and premodern. The cutoff governs SET legality, not the printing population an estimate
+> sees — so this is an ordinary correlation-with-exceptions after all, not a variable observed twice.
+>
+> What actually breaks independence here is per-format **temporal density**, and the relationship is an
+> identity rather than a correlation: independence substitutes a format's global legal density for its
+> local density, so its error is exactly `global_density / window_density`. `premodern`'s 3.69 skew in
+> its own era predicts a 1/3.69 = 0.27x undershoot, which is precisely what was measured. Skew spreads
+> run from **1.0x** (`legacy`/`commander`/`vintage`/`oathbreaker`/`duel` — independence is essentially
+> exact there, and min-fold already returns 1.002-1.010x) to **250x** (`oldschool`), so "unsafe" was a
+> per-FORMAT property that the blanket per-PAIR exclusion papered over: it discarded the formats where
+> the fix is free in order to avoid two where it is bad. Over 460 measured (format, date-predicate)
+> pairs independence would have cut wrong-side-of-1,024 rows from 17.2% to 7.6%.
+>
+> The exclusion's *conclusion* nonetheless stands, for the reason given in the second half above rather
+> than the first: an exact answer does exist and is now shipped. Round 57's `LegalityDateTotals` answers
+> `(format, status) × released_at` **exactly** in printing space for every range shape, at +148.8 KB, so
+> there is nothing left for independence to approximate on that axis. **`legality × set` is still open**
+> — it was never separately measured, and the per-(set, format) table this paragraph proposes remains
+> unbuilt. Do not carry the "same variable observed twice" argument over to it without measuring;
+> reprints break that reasoning for sets the same way they break it for dates.
+
 **"No true independence" is the norm in this domain, not the exception, and that's fine.** Every pair
 has *some* real exception if you look hard enough — even `legality×price`, the cleanest-looking safe
 pair, has Alpha (Reserved-List overrepresented, commands an "original printing" premium independent of

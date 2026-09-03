@@ -1,6 +1,6 @@
 # N-Way Estimator Follow-Up Queue
 
-Tracks what's left from the `And`-arm cardinality-estimation arc (Rounds 33-56), in the order we
+Tracks what's left from the `And`-arm cardinality-estimation arc (Rounds 33-57), in the order we
 intend to tackle it. This doc is the queue, not the depth — the round-by-round numbers live in
 [local-engine-gathered-scan-card-printing-varying-depth.md](local-engine-gathered-scan-card-printing-varying-depth.md),
 and the architecture/design rationale lives in
@@ -10,7 +10,26 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
 
 ## Active queue (in order)
 
-1. **Backport the `rest_max` triple + space-native independence to `SetSubtypeTable` /
+1. **Calibrated balls-into-bins occupancy: derive card/artwork from an EXACT printing count.** The
+   agreed next round. Round 57 made `P` exact for `legality x released` and, in doing so, EXPOSED the
+   `* n_cards / n_printings` global-ratio idiom's under-bias instead of accidentally masking it: 173
+   card/artwork rows regressed on ratio (zero in printing space), e.g. `date:2019-11-07 f:gladiator`
+   [card] 927 -> 468 against a true 840, where the printing answer is now exactly 840. Occupancy
+   (`n(1 - (1 - 1/n)^P)` with a fitted effective-bin multiplier) gives **813-829 (0.97-0.99x)** on that
+   same query and is insensitive to the constant across k=0.40-1.00. Measured over 400 sampled date
+   ranges: cards mean |log| **0.188** (median 1.089x, p90 1.498x), artworks **0.119** (median 1.063x,
+   p90 1.294x) — against the naive scale's 0.764 and its systematic **0.474x median undershoot**, the
+   dangerous direction.
+   - **Not legality-specific, and that is the point.** It converts any exact printing count into
+     card/artwork estimates, so it targets every consumer of that idiom — which makes it the
+     higher-leverage half of item #2 below.
+   - **Two blockers to settle in the plan.** `Candidate::Estimate` carries only `printing`, so
+     delivering estimated card/artwork values needs a structural decision. And the calibration sampled
+     date ranges uniformly over date INDICES, which is not the real query-shape mix (`year:Y` interior
+     ranges are common), so `k` must be refit against a realistic width distribution or it is tuned to
+     the wrong population — the population-parity trap
+     `.claude/rules/benchmark-methodology-review.md` warns about.
+2. **Backport the `rest_max` triple + space-native independence to `SetSubtypeTable` /
    `ColorSubtypeTable`.** Round 55 shipped both ideas for the new `(subtype, subtype)` table but
    deliberately left these three untouched, so they still rank their top-256 by CARD count alone and
    still scale one card-space `rest_max` into printing space by a global reprint ratio. Round 55's own
@@ -22,7 +41,7 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
    ordering constraint Round 55 surfaced (the fourth standing principle below):
    `SubtypePairEstimate` is already positioned after its own exact scan, but re-check rather than
    assume.
-2. **Generalize "anchored independence" further.** Rounds 50 and 56 shipped two anchors
+3. **Generalize "anchored independence" further.** Rounds 50 and 56 shipped two anchors
    (`SubtypeArithBox`, `ColorCmcTable`), both with a single residual `IndepClass::Price` leaf, sharing
    one `anchored_price_residual` helper. Three directions remain, each its own future round (validate
    independently, don't bundle):
@@ -40,12 +59,12 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
      entirely when no `Price`-classified source exists anywhere, worth ~21% of `and_estimate_ns` on
      `(color, cmc)`-with-no-price queries) was deliberately NOT applied to Round 50's own site, which
      measured unregressed as-is. The same guard would help it too.
-3. **Measure the residual-size distribution for real 5+-leaf queries.** Still unmeasured since before
+4. **Measure the residual-size distribution for real 5+-leaf queries.** Still unmeasured since before
    this session started. This is the actual answer to "is the general bounded partition search worth
    building at all" — if real residuals rarely exceed 2-3 leaves, the "notice one bad case, build one
    validated mechanism" pattern (8 real gaps closed this way so far: Rounds 34, 40, 42, 44, 45, 48, 51,
    52) may just *be* the right architecture, not a placeholder for a general one.
-4. **Decide on / scope the actual general bounded partition search**, informed by #3's findings and
+5. **Decide on / scope the actual general bounded partition search**, informed by #4's findings and
    built on Round 49's own subset-tracking primitive (`CoveredState`'s `subsets: Vec<u64>`, already
    shipped). Not attempted until the above are in.
 
@@ -97,6 +116,25 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
   directly dispatch-priced — `PrintingCompose` no longer runs at all under the corrected estimate, so
   `explain_analyze` never forces a trial for it — but indirect evidence, `GatheredScan` beating
   `StreamedSelect` 3-6x in every one of those rows, points toward a win there too, not measured.)
+
+- **The `Legality` leaf's own solo printing estimate undershoots by 5-13%**, and `min()` only lowers,
+  so an exactly-correct joint can lose the fold to it. Measured on Round 57's target shape: of 300
+  printing rows, 29 get the exact value from `LegalityDateTotals` and still lose, because the leaf's
+  `legal_cards * n_printings / n_cards` is smaller than the truth. All are 35k-53k, far above the 1,024
+  boundary, so routing is unaffected today — but it is the same idiom item #1 targets, and fixing that
+  would also unblock these.
+- **The query sampler never generates `banned:`/`restricted:`.** `client/query_sampler.py` hardcodes
+  the legality family to the `f:` operator (line ~246) and builds its vocabulary only from formats whose
+  status is `legal` (line ~591), so **no survey in this arc has ever exercised those queries** — despite
+  the engine handling them correctly (`banned:modern` returns exactly 403, matching the corpus) and the
+  corpus holding 7,066 such rows. Any pruning argument about banned/restricted (including Round 57's
+  selectivity floor) therefore rests on population size, not on measured routing impact. Worth teaching
+  the sampler before more legality estimator work.
+- **`not_legal` legality keys are unreachable by construction.** `filter.rs`'s binding maps only
+  `f`/`format`/`legal` -> `LEGALITY_LEGAL`, `banned` -> `LEGALITY_BANNED`, `restricted` ->
+  `LEGALITY_RESTRICTED`; negation is a `Not` wrapper, not a `not_legal` status. Round 57 hit this twice
+  (18 above-floor `not_legal` keys, plus 9 phantom keys from unassigned format slots reading `not_legal`
+  for every printing). Remember it before adding any other `legality x X` table.
 
 ## Standing principles for anything built here
 
@@ -167,6 +205,11 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
   -141 / under-side +5, all 146 plan flips in the intended direction, monotone (0 of 1,229 changed
   predictions increased). Fudge factor swept and REJECTED on real data — see the ledger's Round 56
   section before proposing one again.
+- Round 57: `LegalityDateTotals`, an exact per-`(format, status)` prefix sum over the `released_at`
+  axis — closes `unsafe:legality+released` (0/900 -> 813/900 coverage; printing median 1.02x -> 1.00x,
+  p90 3.64x -> 1.00x, max 16.81x -> 1.00x) at +148.8 KB. Retracted the design doc's own "legality is
+  date-DEFINED" justification for the registry exclusion, and surfaced the card/artwork under-bias that
+  is now item #1.
 - Harness fix (no round number, a Python-only fix outside the engine): `client/query_sampler.py`'s
   `_count_row` folded oracle/flavor words via `Counter.update(set(...))` — bare-set iteration is
   hash-seed-randomized per process, so tied-frequency co-occurring words could swap `most_common()`'s
