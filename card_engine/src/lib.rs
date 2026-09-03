@@ -9166,33 +9166,170 @@ fn compose_printing_bits(
     }
 }
 
+/// ONE space's two independent answers (Round 58). They never compete for one slot: `guaranteed` is
+/// only ever lowered by a mechanism that computed a real count, `estimate` only by one that guessed.
+///
+/// **Consumer contract -- read this before adding a call site, it is not per-site judgment:**
+///
+/// - A consumer needing SOUNDNESS (`scan_units`, "is this the exact answer", Round 58's own
+///   `COMPOSE_CARD_ESTIMATE_BIAS` skip) reads `guaranteed` and treats `None` as **unknown**, never as
+///   zero and never as "the estimate will do".
+/// - A consumer needing ACCURACY (routing cardinality) reads `estimate.min(guaranteed)`, i.e. `best()`.
+///   Clamping a guess to a proven ceiling is always correct. The reverse -- letting a guess lower a
+///   proven bound below truth -- is the bug Round 55 found, and is now structurally impossible.
+///
+/// `guaranteed` is a PER-SPACE *bound*, not a claim about which SET it counts: Round 42's principle is
+/// what makes it sound for any subset (any true sub-conjunction's count bounds the whole `And` above,
+/// so `.min()`-folding any number of these in any order is always safe).
+///
+/// **It carries NO cross-space consistency guarantee, and `guaranteed.card <= guaranteed.artwork <=
+/// guaranteed.printing` is NOT true.** Each space's bound can come from a different mechanism, so
+/// nothing relates them. `cards <= artworks <= printings` exists only as `fold_candidate`'s
+/// `debug_assert!`s on ONE `Candidate::Exact`'s own INPUTS -- it is never enforced on the folded
+/// output, and the assembled `SpaceEstimate` never clamps card/artwork against printing. Round 46
+/// censused the consequence directly: **10,269 root-level violations across 3,421 distinct queries,
+/// every one `artworks > printings`, never `cards > artworks`**, all traceable to Round 41's
+/// unclamped `narrow_floor` (a child's loose SOLO artwork count surviving while a joint mechanism
+/// tightens printing hard). Recorded as a known, still-open issue in
+/// `docs/issues/local-engine-nway-compose-independence-search.md`. Round 58 deliberately does not add
+/// that clamp: it would move ~32% of `root=and` rows, which is its own validated round.
+///
+/// For "one set's count, the same set in all three spaces", see `ExactDomain` -- a different and
+/// stronger claim, and the reason it is retained as its own field rather than treated as a synonym for
+/// `guaranteed`.
+///
+/// **Known gap, pre-existing and deliberately out of Round 58's scope.** Two leaf arms
+/// (`FilterExpr::Legality` and the `is_broadcast_leaf_shape`/devotion arm) report a PRINTING figure
+/// that is a card count scaled by the corpus reprint ratio (`card_count * n_printings / n_cards`), an
+/// average-case approximation that measurably UNDERSHOOTS (5-13% on the `Legality` leaf). Those seed
+/// `guaranteed` today, because Round 58 is byte-identical by construction. Reclassing them
+/// estimate-only is exactly the fix for Round 57's 29 exactly-right-but-outvoted rows, and it is a
+/// behavioural change that needs its own validated round -- see
+/// `docs/issues/local-engine-nway-followup-queue.md`.
+#[derive(Clone, Copy)]
+struct SpaceMeasure {
+    /// Tightest PROVEN upper bound on the true count, or `None` for "no mechanism proved one".
+    guaranteed: Option<usize>,
+    /// Best available GUESS. May undershoot. Never constrains `guaranteed`.
+    estimate: Option<usize>,
+}
+
+impl SpaceMeasure {
+    /// No answer in either channel.
+    const UNKNOWN: Self = Self { guaranteed: None, estimate: None };
+
+    /// A real count in hand: simultaneously a proven bound and the best guess, so it fills BOTH
+    /// channels. This is what every leaf/table/popcount answer is -- the two channels only diverge
+    /// once a mechanism that merely *guessed* folds in via `lower_estimate`.
+    fn known(v: usize) -> Self {
+        Self { guaranteed: Some(v), estimate: Some(v) }
+    }
+
+    /// `known`, for a space this leaf/join may or may not have an answer for.
+    fn known_opt(v: Option<usize>) -> Self {
+        Self { guaranteed: v, estimate: v }
+    }
+
+    /// The ACCURACY read: `estimate.min(guaranteed)`, with either side absent simply skipped. `None`
+    /// only when neither channel has anything.
+    fn best(self) -> Option<usize> {
+        [self.guaranteed, self.estimate].into_iter().flatten().min()
+    }
+
+    /// Fold in a mechanism that computed a real count. Cannot touch `estimate`.
+    fn lower_guaranteed(&mut self, v: usize) {
+        self.guaranteed = Some(self.guaranteed.map_or(v, |g| g.min(v)));
+    }
+
+    /// Fold in a mechanism that guessed. Cannot touch `guaranteed` -- the whole point of the split.
+    fn lower_estimate(&mut self, v: usize) {
+        self.estimate = Some(self.estimate.map_or(v, |e| e.min(v)));
+    }
+
+    /// Per-channel `min`, each channel folded only against its own counterpart.
+    fn min(self, other: Self) -> Self {
+        Self {
+            guaranteed: [self.guaranteed, other.guaranteed].into_iter().flatten().min(),
+            estimate: [self.estimate, other.estimate].into_iter().flatten().min(),
+        }
+    }
+
+    /// `Or`'s sum, needing BOTH sides known per channel -- `Some(0) + None` must not silently drop
+    /// the unknown side's real contribution and under-report a union.
+    ///
+    /// **Deliberately asymmetric, and this is load-bearing.** `guaranteed` sums the two `guaranteed`s
+    /// (a sum of proven bounds is a proven bound on the union), but `estimate` sums the two `best()`s,
+    /// NOT the two `estimate`s -- the best guess for a union is the sum of each side's best guess,
+    /// whichever channel that came from. Summing the `estimate` channels alone is wrong and was caught
+    /// empirically by Round 58's own phase-1 byte-identity survey (`(pow=8 t:minotaur) or (id:b
+    /// set:gtc)`: 61 -> 249): `min` distributes over a per-channel fold, but `+` does not.
+    /// `min(g1, e1) + min(g2, e2)` can pick `g` on one side and `e` on the other, which
+    /// `min(g1 + g2, e1 + e2)` cannot reproduce -- so the union's number silently rose whenever the
+    /// two children's tightest answers came from DIFFERENT channels. Summing `best()` keeps
+    /// `best(a.add(b)) == a.best() + b.best()` exactly, since `best() <= guaranteed` makes the
+    /// estimate channel the smaller sum by construction.
+    fn add(self, other: Self) -> Self {
+        Self {
+            guaranteed: self.guaranteed.zip(other.guaranteed).map(|(a, b)| a + b),
+            estimate: self.best().zip(other.best()).map(|(a, b)| a + b),
+        }
+    }
+
+    /// Apply the same transform to both channels (a clamp, a scale) -- for a rewrite that is a
+    /// property of the SPACE, not of how trustworthy either channel is.
+    fn map(self, f: impl Fn(usize) -> usize) -> Self {
+        Self { guaranteed: self.guaranteed.map(&f), estimate: self.estimate.map(&f) }
+    }
+}
+
 /// One count, in all three spaces at once -- `printing` is always known (every leaf/join here builds
-/// or bounds a printing-space set, one way or another), `card`/`artwork` are `Some` exactly when this
+/// or bounds a printing-space set, one way or another), `card`/`artwork` are known exactly when this
 /// same leaf/join has one for free. Replaces a design where `card`/`artwork` were bolted on next to a
 /// bare `result: usize`/`candidate: usize` (each already implicitly printing-space, but nothing in the
 /// TYPE said so): that shape made it possible -- and it happened, twice, checked against real data
 /// before being caught -- to fold or consume the wrong field's value where a printing-space number was
 /// expected, or vice versa. A `SpaceEstimate` can't be misread that way: the field name IS the space.
+///
+/// Round 58: each space is a `SpaceMeasure` (a proven bound AND a best guess) rather than one number
+/// the two had to compete for. See `SpaceMeasure`'s own doc for the consumer contract.
+///
+/// Deliberately NOT `Default`: a default-constructed one would have `printing` empty in both channels,
+/// which `printing()` documents as impossible and would panic on. Every construction goes through
+/// `printing_only`/`spaces` (or the `And` arm's own explicit seed), all of which set it.
 #[derive(Clone, Copy)]
 struct SpaceEstimate {
-    printing: usize,
-    card: Option<usize>,
-    artwork: Option<usize>,
+    printing: SpaceMeasure,
+    card: SpaceMeasure,
+    artwork: SpaceMeasure,
 }
 
 impl SpaceEstimate {
     fn printing_only(printing: usize) -> Self {
-        Self { printing, card: None, artwork: None }
+        Self { printing: SpaceMeasure::known(printing), card: SpaceMeasure::UNKNOWN, artwork: SpaceMeasure::UNKNOWN }
+    }
+
+    /// A real count in printing space, plus whichever of card/artwork the caller has in hand.
+    fn spaces(printing: usize, card: Option<usize>, artwork: Option<usize>) -> Self {
+        Self { printing: SpaceMeasure::known(printing), card: SpaceMeasure::known_opt(card), artwork: SpaceMeasure::known_opt(artwork) }
+    }
+
+    /// The printing-space ACCURACY read. Infallible by construction: every constructor above sets
+    /// `printing` in both channels, `min`/`add` preserve that, and the `And` arm's own accumulator is
+    /// seeded from the per-leaf fold -- so nothing can leave printing empty in both channels.
+    fn printing(self) -> usize {
+        self.printing.best().expect("printing is set in both channels at every SpaceEstimate construction site")
     }
 
     /// `And`'s fold: printing always narrows (min); card/artwork narrow too whenever EITHER side has
     /// an answer for that space -- a one-sided answer is still a valid tightening (the other side is
     /// unconstrained information, not a competing value), so this is not the same as requiring both.
+    /// Per CHANNEL as well as per space (`SpaceMeasure::min`): a guess on one side never lowers the
+    /// other side's proven bound.
     fn min(self, other: Self) -> Self {
         Self {
             printing: self.printing.min(other.printing),
-            card: [self.card, other.card].into_iter().flatten().min(),
-            artwork: [self.artwork, other.artwork].into_iter().flatten().min(),
+            card: self.card.min(other.card),
+            artwork: self.artwork.min(other.artwork),
         }
     }
 
@@ -9202,11 +9339,35 @@ impl SpaceEstimate {
     /// the union.
     fn add(self, other: Self) -> Self {
         Self {
-            printing: self.printing + other.printing,
-            card: self.card.zip(other.card).map(|(a, b)| a + b),
-            artwork: self.artwork.zip(other.artwork).map(|(a, b)| a + b),
+            printing: self.printing.add(other.printing),
+            card: self.card.add(other.card),
+            artwork: self.artwork.add(other.artwork),
         }
     }
+}
+
+/// ONE set's count in all three spaces at once -- the `And` arm's `best_other`/arith-tuple-merge
+/// intersection, captured before any further `pair_bounded_min` tightening.
+///
+/// Deliberately NOT a `SpaceEstimate`, and deliberately not folded into `SpaceMeasure::guaranteed`:
+/// this is a different and STRONGER claim. `guaranteed` is a per-space bound with no cross-space set
+/// identity (its printing number can come from one mechanism and its card number from another, each
+/// individually sound). Every field here is guaranteed to be the SAME set's count in each space, which
+/// is what `acquire_plan_features` needs for `scan_units` -- the printing SPAN of the CANDIDATE cards,
+/// not the tightest number found in each space independently. Conflating the two would quietly break
+/// those printing-SPAN semantics.
+#[derive(Clone, Copy)]
+struct ExactDomain {
+    printing: usize,
+    card: Option<usize>,
+    // No production consumer reads the artwork span yet -- `exact_domain`'s two live consumers are
+    // `exact_domain_won` (`.card`) and `scan_all` (`.printing`). That was already true before Round 58
+    // and was merely masked by this struct sharing `SpaceEstimate`'s type, whose `.artwork` IS read via
+    // `result`. Kept (rather than dropped) because it is the third space of a genuine same-set triple
+    // that `fold_candidate` already accumulates and the suite already asserts on, and dropping it would
+    // silently narrow what a later artwork-space consumer can ask this for.
+    #[allow(dead_code)]
+    artwork: Option<usize>,
 }
 
 /// Cheap cost-model estimate for a composable filter: `(matches, broadcast_printings, scatter_printings)`
@@ -9251,7 +9412,9 @@ struct ComposeEstimate {
     /// its card/artwork counts do), every field here is guaranteed to be the SAME set's count in each
     /// space. `acquire_plan_features` uses this for `scan_units` -- the printing SPAN of the CANDIDATE
     /// cards, which needs a printing/card pair known to match, not `result`'s tightest-found number.
-    exact_domain: Option<SpaceEstimate>,
+    /// Round 58: its own type (`ExactDomain`) rather than a `SpaceEstimate`, so the stronger claim
+    /// cannot be mistaken for `SpaceMeasure::guaranteed`'s per-space bound -- see `ExactDomain`'s doc.
+    exact_domain: Option<ExactDomain>,
     /// Round 37a: structured provenance for the OUTERMOST `And` node's own evaluation -- see
     /// `AndTrace`'s own doc. `None` everywhere except an `And` arm invoked with `want_trace: true`,
     /// which is only the `explain`/`explain_analyze` diagnostic entry points, never a production
@@ -9274,14 +9437,14 @@ impl ComposeEstimate {
     /// `leaf`, plus whichever of the card/artwork spaces the caller already has in hand for free --
     /// every call site that has one is expected to pass it, not re-derive it via `result`'s own scale.
     fn leaf_spaces(k: usize, broadcast: usize, scatter: usize, card: Option<usize>, artwork: Option<usize>) -> Self {
-        let space = SpaceEstimate { printing: k, card, artwork };
+        let space = SpaceEstimate::spaces(k, card, artwork);
         Self { result: space, candidate: space, broadcast, scatter, collection_broadcast: 0, exact_domain: None, and_trace: None }
     }
 
     /// A card-space collection leaf specifically -- see `collection_broadcast`'s doc for why this
     /// isn't just `leaf(k, 0, k)`.
     fn collection_leaf(k: usize, card: Option<usize>, artwork: Option<usize>) -> Self {
-        let space = SpaceEstimate { printing: k, card, artwork };
+        let space = SpaceEstimate::spaces(k, card, artwork);
         Self { result: space, candidate: space, broadcast: 0, scatter: 0, collection_broadcast: k, exact_domain: None, and_trace: None }
     }
 }
@@ -9576,11 +9739,27 @@ enum Candidate {
 }
 
 /// Folds one mechanism's `Candidate` into the outermost `And` arm's running accumulators --
-/// `result` (this function's own printing-space quantity) and `exact_domain_cards`/
+/// `result` (this arm's own three-space `SpaceEstimate`) and `exact_domain_cards`/
 /// `exact_domain_printing`/`exact_domain_artworks` (the tightest EXACT intersection found so far in
 /// each space, `None` until some mechanism produces one). `mechanism` is diagnostic only (folded
 /// into the `debug_assert!` messages below so a failure names which mechanism produced the bad
 /// candidate) and has no effect on `result`/`exact_domain_*`.
+///
+/// **Round 58: the two variants fold into two different CHANNELS, never one contested slot.** `Exact`
+/// lowers `result`'s `guaranteed` in all three spaces; `Estimate` lowers `result.printing`'s
+/// `estimate` and nothing else. That is the structural replacement for "both write `result` and
+/// `.min()` picks whichever is smaller regardless of which is trustworthy" -- the conflation Rounds
+/// 40/52/55/56/57 each worked around separately (see `SpaceMeasure`'s own doc). It is exactly
+/// behaviour-preserving on the ACCURACY read (`SpaceMeasure::best()` is `min` over both channels, so
+/// the printing number every existing consumer sees is unchanged), and it makes the soundness read
+/// (`guaranteed`) newly available and newly trustworthy: an undershooting `Estimate` can no longer
+/// pull it below truth.
+///
+/// `exact_domain_*` are RETAINED, unchanged, and deliberately not merged into the `guaranteed`
+/// channels they currently duplicate for card/artwork -- see `ExactDomain`'s doc for why this is a
+/// stronger claim than a per-space bound, and `result.printing.guaranteed` (seeded from the per-leaf
+/// fold, unlike `exact_domain_printing`, which starts `None`) for a live case where they genuinely
+/// differ.
 ///
 /// A pure structural extraction: every call site below used to write this same fold out by hand (see
 /// this function's own call sites in the `And` arm for the mechanical, behavior-preserving swap).
@@ -9597,7 +9776,7 @@ enum Candidate {
 /// invariant, only a debug build (`cargo test`, or a debug wheel run against real traffic) should
 /// ever surface it.
 fn fold_candidate(
-    result: &mut usize,
+    result: &mut SpaceEstimate,
     exact_domain_cards: &mut Option<usize>,
     exact_domain_printing: &mut Option<usize>,
     exact_domain_artworks: &mut Option<usize>,
@@ -9616,13 +9795,15 @@ fn fold_candidate(
                 "fold_candidate[{mechanism}]: artworks ({artworks}) > printings ({printings}) (cards={cards}) -- \
                  every printing has exactly one artwork, so artworks <= printings must hold for an exact candidate"
             );
-            *result = (*result).min(printings);
+            result.printing.lower_guaranteed(printings);
+            result.card.lower_guaranteed(cards);
+            result.artwork.lower_guaranteed(artworks);
             *exact_domain_cards = Some(exact_domain_cards.map_or(cards, |d| d.min(cards)));
             *exact_domain_printing = Some(exact_domain_printing.map_or(printings, |d| d.min(printings)));
             *exact_domain_artworks = Some(exact_domain_artworks.map_or(artworks, |d| d.min(artworks)));
         }
         Candidate::Estimate { printing } => {
-            *result = (*result).min(printing);
+            result.printing.lower_estimate(printing);
         }
     }
 }
@@ -9656,7 +9837,7 @@ fn fold_candidate(
 fn scan_two_bucket_exact<B: Copy>(
     v: &[FilterExpr],
     covered: &mut CoveredState,
-    result: &mut usize,
+    result: &mut SpaceEstimate,
     exact_domain_cards: &mut Option<usize>,
     exact_domain_printing: &mut Option<usize>,
     exact_domain_artworks: &mut Option<usize>,
@@ -10143,7 +10324,7 @@ fn is_estimate_class_mechanism(mechanism: &str) -> bool {
 /// overlapping subset.
 fn and_trace_build_tree(leaves: &[AndTraceLeaf], considered: &[AndTraceGroup], final_est: SpaceEstimate) -> AndTraceNode {
     let leaf_node = |l: &AndTraceLeaf| AndTraceNode::Leaf { expr: l.expr.clone(), card: l.card, printing: l.printing.unwrap_or(0), artwork: l.artwork };
-    let ties = |g: &&AndTraceGroup| g.hit && g.printing == Some(final_est.printing);
+    let ties = |g: &&AndTraceGroup| g.hit && g.printing == Some(final_est.printing());
     let winner = considered
         .iter()
         .filter(|g| ties(g) && !is_estimate_class_mechanism(g.mechanism))
@@ -10161,7 +10342,7 @@ fn and_trace_build_tree(leaves: &[AndTraceLeaf], considered: &[AndTraceGroup], f
             op,
             mechanism,
             card: w.card,
-            printing: w.printing.unwrap_or(final_est.printing),
+            printing: w.printing.unwrap_or(final_est.printing()),
             artwork: w.artwork,
             children: covered_children,
         });
@@ -10169,7 +10350,14 @@ fn and_trace_build_tree(leaves: &[AndTraceLeaf], considered: &[AndTraceGroup], f
     } else {
         children.extend(leaves.iter().map(leaf_node));
     }
-    AndTraceNode::Op { op: "min_fold", mechanism: None, card: final_est.card, printing: final_est.printing, artwork: final_est.artwork, children }
+    AndTraceNode::Op {
+        op: "min_fold",
+        mechanism: None,
+        card: final_est.card.best(),
+        printing: final_est.printing(),
+        artwork: final_est.artwork.best(),
+        children,
+    }
 }
 
 fn compose_printing_estimate(
@@ -10241,7 +10429,12 @@ fn compose_printing_estimate(
                     .iter()
                     .map(|c| {
                         let e = compose_printing_estimate(c, indexes, offsets, n_printings, false);
-                        AndTraceLeaf { expr: format!("{c:?}"), card: e.result.card, printing: Some(e.result.printing), artwork: e.result.artwork }
+                        AndTraceLeaf {
+                            expr: format!("{c:?}"),
+                            card: e.result.card.best(),
+                            printing: Some(e.result.printing()),
+                            artwork: e.result.artwork.best(),
+                        }
                     })
                     .collect(),
                 considered: Vec::new(),
@@ -10256,11 +10449,18 @@ fn compose_printing_estimate(
             // types; the two-leaf case is answered exactly one level up in `exact_result_total` and never
             // needs this.
             // Only `result` is tightened. `candidate` keeps the untightened `min`, because that is what
-            // narrowing leaves the alternatives to walk once its broad children decline. Printing-space
-            // only from here down to the final `SpaceEstimate` construction: `result`/`exact_domain_*`
-            // stay bare `usize` locals through every tightening step below (unchanged from before this
-            // struct held three spaces), and get wrapped back into a `SpaceEstimate` only once, at the
-            // very end -- narrower diff, same values, against logic already checked with a paired diff.
+            // narrowing leaves the alternatives to walk once its broad children decline.
+            //
+            // Round 58: `result` is a real `SpaceEstimate` accumulator from here down, not a bare
+            // printing-space `usize` that gets wrapped once at the end. That is what lets
+            // `fold_candidate` route an EXACT candidate and an ESTIMATE candidate into two different
+            // channels of the same space instead of making them compete for one `.min()` slot -- see
+            // `SpaceMeasure`'s and `fold_candidate`'s own docs. `card`/`artwork` start UNKNOWN in both
+            // channels (deliberately NOT seeded from `folded`, whose per-leaf card/artwork counts are
+            // only admissible through the breadth-guarded `narrow_floor` fold at the very end -- see
+            // the retired `domain_hint`'s own post-mortem further down); `printing` is seeded from
+            // `pair_bounded_min` over the per-leaf fold, in BOTH channels, exactly the number this arm
+            // started from before this round.
             //
             // Round 40: `covered.flags[i]` becomes `true` the moment leaf `v[i]` participates in a
             // GENUINE exact/bound joint tightening somewhere in this arm (2+ leaves actually
@@ -10279,7 +10479,11 @@ fn compose_printing_estimate(
             // leaf subset an exact/bound mechanism already answered, not any leaf a mechanism merely
             // touched for some OTHER partner.
             let mut covered = CoveredState::new(v.len());
-            let mut result = pair_bounded_min(v, indexes, folded.result.printing, &mut covered);
+            let mut result = SpaceEstimate {
+                printing: SpaceMeasure::known(pair_bounded_min(v, indexes, folded.result.printing(), &mut covered)),
+                card: SpaceMeasure::UNKNOWN,
+                artwork: SpaceMeasure::UNKNOWN,
+            };
             // Round 46: hoisted here (used to be declared much further down, right before their own
             // first write) so every `fold_candidate` call site in this arm -- including the two
             // ESTIMATE-class ones below (`SetCollectorRange`, the `arith_tuple_totals` merge) that fire
@@ -10993,14 +11197,14 @@ fn compose_printing_estimate(
                 // then scaled into PRINTING space the same way this function already does elsewhere
                 // (Round 33's arith-tuple merge, the legality arm): `* n_printings / n_cards`.
                 let dim_est = compose_printing_estimate(&v[di], indexes, offsets, n_printings, false);
-                let subtype_card = compose_printing_estimate(&v[si], indexes, offsets, n_printings, false).result.card.unwrap_or(0);
+                let subtype_card = compose_printing_estimate(&v[si], indexes, offsets, n_printings, false).result.card.best().unwrap_or(0);
                 let (rest_max, dim_card): (usize, usize) = match dim {
                     SubtypePairDim::Set(set_name) => (
                         u32::from(indexes.subtype_pairs.set.rest_max) as usize,
                         indexes.subtype_pairs.set.set_cards.get(set_name).map_or(0, |c| u32::from(*c) as usize),
                     ),
-                    SubtypePairDim::Colors(_) => (u32::from(indexes.subtype_pairs.colors.rest_max) as usize, dim_est.result.card.unwrap_or(0)),
-                    SubtypePairDim::Identity(_) => (u32::from(indexes.subtype_pairs.identity.rest_max) as usize, dim_est.result.card.unwrap_or(0)),
+                    SubtypePairDim::Colors(_) => (u32::from(indexes.subtype_pairs.colors.rest_max) as usize, dim_est.result.card.best().unwrap_or(0)),
+                    SubtypePairDim::Identity(_) => (u32::from(indexes.subtype_pairs.identity.rest_max) as usize, dim_est.result.card.best().unwrap_or(0)),
                 };
                 let indep = dim_card.checked_mul(subtype_card).and_then(|p| p.checked_div(n_cards)).unwrap_or(0);
                 let card_est = indep.min(rest_max);
@@ -11148,7 +11352,7 @@ fn compose_printing_estimate(
                     }
                 }
                 match by_class[IndepClass::Price as usize].as_slice() {
-                    [i] if n_printings > 0 => Some((*i, children_estimates[*i].result.printing as f64 / n_printings as f64)),
+                    [i] if n_printings > 0 => Some((*i, children_estimates[*i].result.printing() as f64 / n_printings as f64)),
                     _ => None,
                 }
             };
@@ -11774,7 +11978,7 @@ fn compose_printing_estimate(
                                 units.push(IndepUnit {
                                     class,
                                     leaves: field_children,
-                                    est: SpaceEstimate { printing: printings, card: Some(cards), artwork: Some(artworks) },
+                                    est: SpaceEstimate::spaces(printings, Some(cards), Some(artworks)),
                                     mask,
                                 });
                             }
@@ -11828,7 +12032,7 @@ fn compose_printing_estimate(
                                 units.push(IndepUnit {
                                     class,
                                     leaves: field_children,
-                                    est: SpaceEstimate { printing: printings, card: Some(cards), artwork: Some(artworks) },
+                                    est: SpaceEstimate::spaces(printings, Some(cards), Some(artworks)),
                                     mask,
                                 });
                             }
@@ -11856,16 +12060,18 @@ fn compose_printing_estimate(
                         continue;
                     }
                     let printing_indep =
-                        if n_printings == 0 { 0 } else { ((a.est.printing as f64) * (b.est.printing as f64) / (n_printings as f64)).round() as usize };
+                        if n_printings == 0 { 0 } else { ((a.est.printing() as f64) * (b.est.printing() as f64) / (n_printings as f64)).round() as usize };
                     let card_indep = a
                         .est
                         .card
-                        .zip(b.est.card)
+                        .best()
+                        .zip(b.est.card.best())
                         .map(|(x, y)| if n_cards == 0 { 0 } else { ((x as f64) * (y as f64) / (n_cards as f64)).round() as usize });
                     let artwork_indep = a
                         .est
                         .artwork
-                        .zip(b.est.artwork)
+                        .best()
+                        .zip(b.est.artwork.best())
                         .map(|(x, y)| if n_artworks == 0 { 0 } else { ((x as f64) * (y as f64) / (n_artworks as f64)).round() as usize });
                     fold_candidate(
                         &mut result,
@@ -11938,17 +12144,20 @@ fn compose_printing_estimate(
             let narrow_floor = |get: fn(&SpaceEstimate) -> Option<usize>, domain: usize| -> Option<usize> {
                 children_estimates.iter().filter_map(|ce| get(&ce.result)).filter(|&c| !range_too_broad_to_narrow(c, domain)).min()
             };
-            let card_floor = narrow_floor(|s| s.card, n_cards);
-            let artwork_floor = narrow_floor(|s| s.artwork, n_artworks);
-            let result_card = match (exact_domain_cards, card_floor) {
-                (Some(d), Some(f)) => Some(d.min(f)),
-                (d, f) => d.or(f),
-            };
-            let result_artwork = match (exact_domain_artworks, artwork_floor) {
-                (Some(d), Some(f)) => Some(d.min(f)),
-                (d, f) => d.or(f),
-            };
-            let result_space = SpaceEstimate { printing: result, card: result_card, artwork: result_artwork };
+            let card_floor = narrow_floor(|s| s.card.best(), n_cards);
+            let artwork_floor = narrow_floor(|s| s.artwork.best(), n_artworks);
+            // Round 58: a narrow leaf's OWN exact card/artwork count is a proven upper bound on the
+            // whole `And` (Round 42's principle again -- a sub-conjunction's count bounds the
+            // conjunction), so it folds into `guaranteed`, alongside whatever `Candidate::Exact`
+            // mechanisms already lowered it to. `SpaceMeasure::min` over `[guaranteed, floor]` is
+            // exactly the `(Some(d), Some(f)) => d.min(f) | (d, f) => d.or(f)` match this replaces.
+            let mut result_space = result;
+            if let Some(f) = card_floor {
+                result_space.card.lower_guaranteed(f);
+            }
+            if let Some(f) = artwork_floor {
+                result_space.artwork.lower_guaranteed(f);
+            }
             // `exact_domain`: the SAME `best_other`/arith-merge intersection, but captured BEFORE
             // `result` could be tightened any further by `pair_bounded_min` (above) -- so unlike
             // `result`, `.printing`/`.card`/`.artwork` here are guaranteed to describe the exact same
@@ -11957,7 +12166,7 @@ fn compose_printing_estimate(
             // tightening this match found, from whichever source got there first), which is exactly
             // why `scan_units` -- the printing SPAN of the CANDIDATE cards, not the tightest known
             // match count -- needs its own field instead of reusing `result`.
-            let exact_domain = exact_domain_printing.map(|printing| SpaceEstimate { printing, card: exact_domain_cards, artwork: exact_domain_artworks });
+            let exact_domain = exact_domain_printing.map(|printing| ExactDomain { printing, card: exact_domain_cards, artwork: exact_domain_artworks });
             // Round 37a: `tree` is assembled last, from the now-finished `leaves`/`considered`
             // against this arm's own final `result_space` -- see `and_trace_build_tree`'s own doc for
             // why this is exact (for printing) rather than a heuristic.
@@ -11970,7 +12179,7 @@ fn compose_printing_estimate(
             let n_cards = offsets.len() - 1;
             let n_artworks = u32::from(*indexes.artwork_base.last().expect("artwork_base has n_cards+1 entries")) as usize;
             let clamp = |space: SpaceEstimate| SpaceEstimate {
-                printing: space.printing.min(n_printings),
+                printing: space.printing.map(|p| p.min(n_printings)),
                 card: space.card.map(|c| c.min(n_cards)),
                 artwork: space.artwork.map(|a| a.min(n_artworks)),
             };
@@ -12080,7 +12289,7 @@ fn compose_printing_estimate(
             let card = exact_result_total(inner, indexes, Mode::Card).map(|c| n_cards.saturating_sub(c));
             let artwork = exact_result_total(inner, indexes, Mode::Artwork).map(|a| n_artworks.saturating_sub(a));
             if src.card_space {
-                let space = SpaceEstimate { printing: complement, card, artwork };
+                let space = SpaceEstimate::spaces(complement, card, artwork);
                 ComposeEstimate { result: space, candidate: space, broadcast: 0, scatter: 0, collection_broadcast: k, exact_domain: None, and_trace: None }
             } else {
                 ComposeEstimate::leaf_spaces(complement, 0, k, card, artwork)
@@ -15912,7 +16121,7 @@ fn compose_gather_declines(
     mode: Mode,
 ) -> Option<PagingTaken> {
     // The gather's own decline is about the composed set it would page over, so it reads `result`.
-    let printing_matches = compose_printing_estimate(filter, indexes, offsets, printings.len(), false).result.printing;
+    let printing_matches = compose_printing_estimate(filter, indexes, offsets, printings.len(), false).result.printing();
     // Artwork's domain is n_artworks, not n_cards. That used to be approximated by `cards.len()`
     // because the exact figure meant prefix-summing `artwork_groups` here -- real O(n_cards) work
     // paid just to maybe decline. It is a stored index now, so read the truth: the stand-in is
@@ -16385,7 +16594,7 @@ fn acquire_plan_features(
         let t_est = std::time::Instant::now();
         let est = compose_printing_estimate(composed, indexes, offsets, n_printings as usize, false);
         let and_estimate_ns = t_est.elapsed().as_nanos() as u64;
-        let (printing_matches, broadcast, scatter, collection_broadcast) = (est.result.printing, est.broadcast, est.scatter, est.collection_broadcast);
+        let (printing_matches, broadcast, scatter, collection_broadcast) = (est.result.printing(), est.broadcast, est.scatter, est.collection_broadcast);
         // Two build kinds, charged at different rates: `broadcast` = legality broadcast-down (linear
         // pass), `scatter` = range-slice scatter (cheap). `project` = the second pass (printing→
         // card/artwork), 0 for printing mode. Keeping all three separate is what lets a bare range's
@@ -16448,7 +16657,7 @@ fn acquire_plan_features(
         // magnitude. `.min()`-folding it in AFTER the calibrated baseline is what keeps this a strict
         // tightening: `est.result.card` is a genuine upper bound on the true count (never smaller), so
         // it can only pull `est_cards` down toward the truth, never push it up past a reasonable guess.
-        let est_cards = est.result.card.map_or(est_cards_before_and_arm, |dc| dc.min(est_cards_before_and_arm));
+        let est_cards = est.result.card.best().map_or(est_cards_before_and_arm, |dc| dc.min(est_cards_before_and_arm));
         // Exact PRINTING total for the same composed filter -- valid as the candidate cards' full
         // printing SPAN (what `scan_all` below needs) only when the filter is CARD-INVARIANT
         // (`composed_card_invariant`): for a card-invariant field, every printing of a matching card
@@ -16477,10 +16686,10 @@ fn acquire_plan_features(
         // printing-scaled one wearing a card-shaped name (`domain_hint_is_card_space_not_printing_scaled`)
         // -- can only be >= the real domain (it ignores what non-plane siblings would additionally
         // narrow), so `min`-ing it with the existing estimate is a strict tightening, never a regression.
-        let domain_cards_before_card = if est.candidate.printing == est.result.printing {
+        let domain_cards_before_card = if est.candidate.printing() == est.result.printing() {
             est_cards
         } else {
-            calibrated_balls_into_bins(est.candidate.printing, n_cards as usize)
+            calibrated_balls_into_bins(est.candidate.printing(), n_cards as usize)
         };
         // `est.card` additionally tightens `domain_cards`, beyond the `else` branch above, but ONLY for
         // a genuine `And` -- found live (`id:g border:white`, artwork mode): `est.candidate == est.result`
@@ -16503,7 +16712,7 @@ fn acquire_plan_features(
         // for this pass. Restricting the extra tightening to `And` keeps today's fix to the case it was
         // actually verified against, without newly trusting a leaf-level answer nothing here checked.
         let is_and = matches!(composed, FilterExpr::And(_));
-        let domain_cards = if is_and { est.result.card.map_or(domain_cards_before_card, |dc| dc.min(domain_cards_before_card)) } else { domain_cards_before_card };
+        let domain_cards = if is_and { est.result.card.best().map_or(domain_cards_before_card, |dc| dc.min(domain_cards_before_card)) } else { domain_cards_before_card };
         // Card mode's `push_card_matches`/`Prefer::Default` loop settles a card in exactly ONE printing
         // when the composed field is card-invariant: either the first printing checked satisfies the
         // residual (found, done) or it does not -- and since every OTHER printing of that card carries
@@ -16515,7 +16724,7 @@ fn acquire_plan_features(
         // that guard exists to catch, and without this exemption it clobbers the correct answer computed
         // below back to the full corpus.
         //
-        // Gated on `est.result.card == Some(domain_cards)`, not `composed_card_invariant` alone: the
+        // Gated on `est.result.card.best() == Some(domain_cards)`, not `composed_card_invariant` alone: the
         // "one printing settles it" argument only holds when `domain_cards` carries ZERO false
         // positives, since a false-positive candidate's residual is false on every printing and the
         // `Prefer::Default` loop has no way to know that in advance -- it still walks every printing
@@ -16530,7 +16739,7 @@ fn acquire_plan_features(
         // over (== `printings_per_card` exactly) across their WHOLE bucket, not just the near-universal
         // queries -- the gap is structural, not a selectivity artifact, because card-invariance makes
         // depth-1 true regardless of how selective the predicate is.
-        let card_invariant_domain_exact = composed_card_invariant && est.result.card == Some(domain_cards);
+        let card_invariant_domain_exact = composed_card_invariant && est.result.card.best() == Some(domain_cards);
         // What the MATERIALIZING alternatives scan if compose loses. Every mode narrows -- a
         // composable filter has an index for every leaf -- so all three are the NARROWED counts.
         // Printing mode took the unnarrowed universe while card/artwork took a narrowed count; only
@@ -16550,7 +16759,7 @@ fn acquire_plan_features(
         // because this feature is 76% of P3's arm on the broad-residual class, where it drove P3 to
         // pred/meas 1.53 while P4 sat at 0.88 — the pair inverted, with both plans over the same feature.
         // An earlier version of this used `exact_result_total(composed, Mode::Printing)` here whenever
-        // `est.candidate.printing == est.result.printing`, on the theory that a bare leaf's own exact
+        // `est.candidate.printing() == est.result.printing()`, on the theory that a bare leaf's own exact
         // MATCH count is the candidate cards' printing span. Checked directly against real data (a
         // paired diff on `scan_units` specifically, not just the pooled percentile view): 1,077
         // queries regressed, every one a bare leaf (`border:borderless`, `r>=mythic`, `year:2006`).
@@ -16600,7 +16809,7 @@ fn acquire_plan_features(
             // away from the leaf/pair-exact estimate, so `exact_printing_span` (already gated to
             // card-invariant filters above, where match count IS the matching cards' full span) is the
             // true span under exactly these candidates.
-            if est.candidate.printing == est.result.printing
+            if est.candidate.printing() == est.result.printing()
                 && let Some(printings) = exact_printing_span
             {
                 return printings.min(n_printings as usize);
@@ -16695,7 +16904,7 @@ fn acquire_plan_features(
                 // of the two-stage estimate, never a replacement for it.
                 let rt_before_and_arm =
                     exact_total.unwrap_or_else(|| artwork_estimate(printing_matches, capacity_cards, n_cards as usize, n_artworks));
-                let rt = est.result.artwork.map_or(rt_before_and_arm, |da| da.min(rt_before_and_arm));
+                let rt = est.result.artwork.best().map_or(rt_before_and_arm, |da| da.min(rt_before_and_arm));
                 // The bitmap `printing_bits_to_artwork_bits` popcounts is n_artworks bits wide, not
                 // n_printings -- 46,112 against 97,206 here, so this was 2.1x over as well.
                 (rt, printing_matches, n_artworks.div_ceil(64), domain_cards, scan_all(domain_cards))
@@ -16770,7 +16979,7 @@ fn acquire_plan_features(
         // card-invariance) -- never a value this guard would improve on by falling back to `n_printings`.
         let (eval_domain, scan_units) = if !(compose_leaf_nothing_to_verify(filter)
             || plane_leaves_nothing_to_verify(filter, mode, plane, indexes)
-            || (is_and && est.result.card.is_some())
+            || (is_and && est.result.card.best().is_some())
             || card_invariant_domain_exact)
             && range_too_broad_to_narrow(printing_matches, n_printings as usize)
         {
