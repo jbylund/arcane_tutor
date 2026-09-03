@@ -1,6 +1,6 @@
 # N-Way Estimator Follow-Up Queue
 
-Tracks what's left from the `And`-arm cardinality-estimation arc (Rounds 33-55), in the order we
+Tracks what's left from the `And`-arm cardinality-estimation arc (Rounds 33-56), in the order we
 intend to tackle it. This doc is the queue, not the depth — the round-by-round numbers live in
 [local-engine-gathered-scan-card-printing-varying-depth.md](local-engine-gathered-scan-card-printing-varying-depth.md),
 and the architecture/design rationale lives in
@@ -22,19 +22,24 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
    ordering constraint Round 55 surfaced (the fourth standing principle below):
    `SubtypePairEstimate` is already positioned after its own exact scan, but re-check rather than
    assume.
-2. **Generalize "anchored independence" further.** Round 50 shipped this deliberately narrow: only
-   `SubtypeArithBox`'s own hit, only a single residual `IndepClass::Price` leaf. Three separate
-   directions remain, each its own future round (validate independently, don't bundle):
+2. **Generalize "anchored independence" further.** Rounds 50 and 56 shipped two anchors
+   (`SubtypeArithBox`, `ColorCmcTable`), both with a single residual `IndepClass::Price` leaf, sharing
+   one `anchored_price_residual` helper. Three directions remain, each its own future round (validate
+   independently, don't bundle):
    - **More residual classes.** Only `Price` has a validated real-data example; other classes
-     (`ColorId`, `Cmc`, `Type`, etc., wherever `SubtypeArithBox`'s own residual isn't itself the arith
+     (`ColorId`, `Cmc`, `Type`, etc., wherever the anchor's own residual isn't itself the anchored
      dimension) need their own before/after check before being added, mirroring how
      `independence_safe_pair`'s own registry grew one validated class at a time (Round 38 → Round 40).
-   - **More anchor mechanisms.** `SubtypePairIndexes`/`ColorCmcTable`'s own exact hits are the same
-     shape (an exact joint, blind to whatever residual leaves remain) and would plausibly benefit the
-     same way — not attempted, no validated example yet for either.
+   - **`SubtypePairIndexes` as a third anchor** — the one remaining candidate named in the original
+     item, still without a validated example. Adding it is now mostly wiring, since Round 56 hoisted
+     the shared helper both existing anchors call.
    - **Combining multiple safe residual classes into one product**, not just one — needs the same
      order-statistics-bias care already documented in the design doc (never try residuals separately
      and pick the smallest) once 2+ classes are each independently validated as safe to anchor.
+   - Also cheap and already measured: Round 56's `any_price_source` precheck (skip the anchor loop
+     entirely when no `Price`-classified source exists anywhere, worth ~21% of `and_estimate_ns` on
+     `(color, cmc)`-with-no-price queries) was deliberately NOT applied to Round 50's own site, which
+     measured unregressed as-is. The same guard would help it too.
 3. **Measure the residual-size distribution for real 5+-leaf queries.** Still unmeasured since before
    this session started. This is the actual answer to "is the general bounded partition search worth
    building at all" — if real residuals rarely exceed 2-3 leaves, the "notice one bad case, build one
@@ -54,8 +59,12 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
   never confirmed either way.
 - **The Round 43 "swept trio"** (`legality`/`color`/`identity`×`price` — worse than either component's
   own baseline via `PlanePopcount` plus a plain-min-folded price leaf, not the double-independence
-  question Round 44 fixed) and the two smaller, less-confirmed stars (`identity+pow+set`,
-  `cmc+type+usd`). Real, small, not urgent absent evidence they matter for real routing regret.
+  question Round 44 fixed). The two smaller stars once listed here are now resolved rather than
+  pending: `cmc+type+usd` is partly addressed by Round 56 (its `*+cmc+usd` sibling shapes improved),
+  and `identity+pow+set` is explicitly **not worth chasing** — measured post-Round-55 as the survey's
+  worst shape by median ratio (1.08 abs-log, 17-34x on individual queries) while contributing ZERO
+  routing-relevant rows, since its absolute errors are 30-100 against a 1,024 boundary. Kept here only
+  so the ratio tables don't re-nominate it.
 - **`PriceJointTable`'s own boundary interpolation.** Shipped "any overlap counts fully" (no
   interpolation within a partially-overlapping bucket) for all three pairs now — already validated to
   1.00-1.92x on the worst real tail queries checked, so this is a refinement, not a bug. A real,
@@ -95,6 +104,16 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
   any number of them, in any order, over any overlapping subsets, is always sound (Round 42).
 - **Estimate-class candidates may only fill a gap no exact mechanism covers for that exact subset,
   never compete by magnitude with one** (Round 40).
+- **Rank candidate work by ABSOLUTE error that crosses a decision boundary, never by ratio.** An
+  estimate can be 34x over and completely harmless. Of 40,371 `root=and` survey rows, only **2.5%**
+  can flip a plan choice at all (straddle `STREAM_MIN_MATCHES` = 1,024 with >=200 absolute AND >=10%
+  relative error), and **83% of those are over-estimates**. `star:identity+pow+set` reads as the
+  survey's worst shape by median abs-log-ratio (1.08; individual queries 17-34x over) and contributes
+  **zero** such rows, because its absolute errors are 30-100. This is the same principle the engine
+  already encodes in `PAIR_MIN_PRINTINGS`/`STREAM_MIN_MATCHES` ("worth pairing only if broad enough
+  that an estimate about it can change a routing decision"); apply it when CHOOSING a target, not just
+  when building one. It picked Round 56's target and correctly vetoed the shape the ratio tables
+  ranked first.
 - **An estimate-class mechanism must be POSITIONED after every exact mechanism whose leaves it could
   compete for** — not merely made to respect `covered`, which only ever reflects what already ran.
   Round 55 demonstrated this concretely: its fallback, placed (per its own plan) before
@@ -143,6 +162,11 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
   the union-of-3-spaces top-N cutoff and a real per-space `rest_max` triple (item #1 above is the
   backport of both to the three older tables). Surfaced the estimate-placement ordering constraint now
   recorded as the fourth standing principle above.
+- Round 56: anchored independence for `ColorCmcTable` (second anchor after Round 50's), sharing one
+  hoisted `anchored_price_residual` helper. Routing-relevant misses 1,016 -> 880 (-13.4%), over-side
+  -141 / under-side +5, all 146 plan flips in the intended direction, monotone (0 of 1,229 changed
+  predictions increased). Fudge factor swept and REJECTED on real data — see the ledger's Round 56
+  section before proposing one again.
 - Harness fix (no round number, a Python-only fix outside the engine): `client/query_sampler.py`'s
   `_count_row` folded oracle/flavor words via `Counter.update(set(...))` — bare-set iteration is
   hash-seed-randomized per process, so tied-frequency co-occurring words could swap `most_common()`'s

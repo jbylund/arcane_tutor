@@ -242,7 +242,24 @@ confirmed uniform across all three currencies), `id×set` (1.151→0.106), `pow�
 grid search over a multiplicative bias (`fudge × independence`, 1.0–2.0) found `fudge = 1.0` — no
 bias at all — strictly optimal on both median and mean error for every pair checked so far, including
 `legality×usd` specifically (re-run after the Pauper investigation, isolated to rows where independence
-actually won: median signed error ≈ 0 at `fudge=1.0`). Declined despite looking plausible via plain independence: same-currency
+actually won: median signed error ≈ 0 at `fudge=1.0`).
+
+**Round 56 re-tested the fudge factor independently, on a different mechanism, and reached the same
+verdict for a sharper reason — record it here so it stops being re-proposed on intuition.** The
+proposal is appealing: anchored independence produces some under-estimates (44% of rows on the measured
+population, worst 0.62x), so bias the product up slightly (`× 1.15`) to shift the distribution toward
+the safe direction. Swept at 1.05/1.10/1.15/1.25/1.50 over 70 queries drawn at random from the full
+population of `star:identity+cmc+usd` (deliberately not the straddling tail — calibrating a constant on
+the rows selected for being wrong is fitting the tail), every non-trivial factor made **routing worse**:
+plain independence leaves 0 rows on the wrong side of the `STREAM_MIN_MATCHES` boundary, 1.10–1.25 put
+one back, 1.50 put two. The reason generalizes beyond this mechanism: **when the error population being
+corrected is already dominated by over-estimates (83% of all routing-relevant misses in the survey), a
+uniform upward bias pushes genuinely-small queries back across the very threshold the fix exists to get
+them under.** A factor also fails at its stated purpose — the worst under-estimate moves only
+0.62x→0.69x at 1.15, reaching 0.94x only at 1.50 where the whole distribution is wrecked — because
+those under-estimates come from real positive correlation on particular leaf combinations, not a uniform
+downward bias, so no single multiplier can target them. Two independent searches, two mechanisms, same
+answer: `fudge = 1.0`. Declined despite looking plausible via plain independence: same-currency
 price crosses (mixed signal, `usd×eur` net worse in printing space while `usd×tix`/`eur×tix` net
 better). ~~Don't re-attempt these without new evidence~~ — **`usd×eur` specifically closed in Round
 53**, not by adding it to this registry (plain independence really is the wrong tool here — the eur/usd

@@ -208,6 +208,101 @@ total regret by 0.0 ms).
 | 53 | `PriceJointTable`: a quantile-bucketed 2D `(usd, eur)` joint (64 buckets/axis, tie-safe construction — never splits a repeated price value, never a degenerate bucket), sparse `HashMap<u32, SpaceTotals>` over only the cell pairs that actually occur, linear-scanned at query time ("any overlap counts fully", no boundary interpolation). Two call sites: a standalone whole-And fold (usd+eur alone) and a new `by_class` special case feeding one combined unit into the existing independence pairing loop (usd+eur + something else) — both `Candidate::Estimate`, never `Exact`. `tix` deliberately untouched (r=0.336, weak) | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 66,378 shared rows (fresh seed): 200 plan-choice flips (0.3%), 100% confined to `unsafe:usd+eur` (690/900, 76.7%); `unsafe:usd+tix`/`unsafe:eur+tix` and every other shape show zero flips; `root=leaf`/`root=or` both 0.0%. Ratio diagnostic: mean abs-log-ratio −0.010 (95% CI excludes 0) — "B is MORE accurate" | see "Round 53" narrative below — validated BEFORE scoping via a real Pearson-correlation check (usd↔eur r=0.877, usd↔tix r=0.336) and a Python 2D-histogram simulation; independently re-verified after merging: all five worst-tail queries land at 1.01-1.24x (was 83-186x). A real, measured inefficiency found by the implementing agent (both call sites firing redundantly for a bare 2-leaf query with nothing to pair against) was fixed before merge, not deferred — see that section for the numbers |
 | 54 | Generalizes `PriceJointTable` (Round 53) past its `usd`×`eur`-only hardcoding to all three currency pairs: `price_joint_usd_eur`/`_usd_tix`/`_eur_tix`, built by the same closure-parameterized `build_price_joint_table`, dispatched via one shared `price_joint_table_for`/`resolve_price_joint_pair` helper replacing two hand-rolled `match` arms. `PRICE_JOINT_BUCKETS` (64) reused unchanged for all three — re-checked directly against the real corpus, not assumed | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 66,378 shared rows (fresh seed): 227 plan-choice flips (0.3%), 100% confined to `unsafe:usd+tix` (108/900, 12.0%) and `unsafe:eur+tix` (119/900, 13.2%); `unsafe:usd+eur` and every other shape show zero flips; `root=leaf`/`root=or` both 0.0%. Ratio diagnostic: mean abs-log-ratio −0.022 (95% CI excludes 0) — "B is MORE accurate" | see "Round 54" narrative below — surfaced by a fresh full-corpus survey run specifically to check what emerged once Round 53 stopped dominating it; validated the same way (Pearson r + a real joint-histogram simulation) BEFORE scoping, closing a real gap the design doc's own historical calibration work had found beneficial but never actually shipped. Independently re-verified: `usd`×`tix`/`eur`×`tix` land at 1.00-1.92x (was 42-87x); one real discrepancy between my own preliminary Python simulation and the shipped Rust result was investigated and resolved as a bug in MY OWN script, not the implementation — see that section for the full account |
 | 55 | `(subtype, subtype)` exact top-N table (`SubtypePairTable`), the first mechanism in this arm to pair a subtype against ANOTHER subtype rather than against `set:X`/`c:X`/`id:X`. Two departures from `SetSubtypeTable`'s own shape, each validated against the real corpus before scoping: top-N membership is the UNION of the tie-inclusive top-256 in each of the three spaces independently (not card-count-ranked alone), and `rest_max` is a real per-space TRIPLE consumed natively rather than one card-space scalar scaled by a global reprint ratio. Query time: a residual exact-hit scan over every unordered pair of subtype leaves (`Candidate::Exact`), plus a single-pair-only capped-independence fallback (`Candidate::Estimate`, printing-space-native) | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 55,833 shared rows (fresh seed 7, independently re-run by me): 219 plan-choice flips (0.4%; 0.5% of `root=and`), 100% confined to `same_family:type+type_realistic` (116/750, 15.5%) and `same_family:type+type_disjoint` (103/750, 13.7%); every other shape and both `root=leaf`/`root=or` show zero flips. Mechanism coverage for both `same_family:type` shapes 0% → 100%. Ratio diagnostic: mean abs-log-ratio 0.191 → 0.183 (B−A −0.008, 95% CI [−0.009, −0.007]) — "B is MORE accurate". Zero-true-count hit rate 74.0% → 79.5% | see "Round 55" narrative below — the design (union cutoff, triple `rest_max`, keep `min(indep, rest_max)`, N=256) was settled against real corpus data BEFORE scoping, including a direct check that N is NOT sized by the `StreamedSelect`/`GatheredScan` transition. The implementing agent hit a real regression the existing suite caught and fixed it by MOVING the estimate-class fallback later in the arm — an ordering constraint worth reading, not a detail |
+| 56 | Anchored independence for `ColorCmcTable`, the second anchor mechanism after Round 50's: that table's own EXACT `(color\|identity, cmc)` joint times a single residual `IndepClass::Price` leaf's own solo rate, folded as `Candidate::Estimate`. Round 50's inline closures hoisted into one shared `anchored_price_residual`/`anchored_leaves_for` both anchor sites call. NO fudge factor (swept and rejected), and deliberately NO `mark_covered`, inheriting `ColorCmcTable`'s own measured reason | kept | n/a (not this doc's own metric) | The routing-relevant metric this round exists for — `root=and` rows straddling the 1,024 `STREAM_MIN_MATCHES` boundary with >=200 absolute AND >=10% relative error, independently re-run by me at seed 7 over 39,411 shared and-rows: **1,016 -> 880 (-13.4%)**, over-side 845 -> 704 (-141), under-side 171 -> 176 (+5). 141 fixed, only 5 newly routing-relevant (all moderate under-shoots, pred 845-915 against truths 1,090-1,239). 146 plan flips, **every one in the intended direction** (145 `StreamedSelect -> GatheredScan`, 1 `PrintingCompose -> StreamedSelect`, zero the other way). Entirely confined to `star:identity+cmc+usd` (95 -> 21) and `star:color+cmc+usd` (78 -> 16); every other shape zero delta. Monotonicity confirmed empirically: 1,229 predictions changed, **0 increased** | see "Round 56" narrative below — validated BEFORE scoping (median 1.97x -> 1.01x on a 70-query random sample of the full shape population, deliberately not the straddling tail), including a factor sweep that **rejected** the fudge factor on real data. A pre-existing test's expected number legitimately changed; a zero-prediction case was checked directly against the empty-conjunction short-circuit risk |
+
+### Round 56
+
+Target: `star:identity+cmc+usd`, reached by re-reading the post-Round-55 survey through the lens that
+actually governs routing — **absolute** error big enough to cross a decision boundary, not ratio error.
+That reframing changed the target completely, and is worth keeping as the standing lens: of 40,371
+`root=and` rows only **2.5%** can flip a plan choice at all (straddle 1,024 with >=200 absolute and
+>=10% relative error), and **83% of those are over-estimates**. Shapes with spectacular ratio error but
+tiny absolute error contribute **zero** rows — `star:identity+pow+set` reads as the survey's single
+worst shape by median abs-log-ratio (1.08, with individual queries 17-34x over) yet its absolute errors
+are 30-100, structurally incapable of crossing any threshold. It was correctly left alone; chasing it
+would have been ratio vanity.
+
+**The diagnosis was exact**, traced directly rather than inferred: `ColorCmcTable` already returns the
+EXACT `(identity, cmc)` joint, wins the arm's `.min()`-fold outright, and the price leaf then
+contributes *nothing at all* because the joint is blind to it.
+
+```
+'cmc=4 id:b usd<0.21'  pred=3669  true=801
+  HIT ColorCmcTable  printing=3669  [id:b, cmc=4]     <- exact, and it wins the min-fold
+  HIT Independence   printing=5173  [id:b, usd<0.21]
+  HIT Independence   printing=3966  [cmc=4, usd<0.21]
+marginal usd<0.21 = 21014/97812 = 21.5%  ->  3669 * 0.215 = 788  vs true 801  (0.98x)
+```
+
+That is precisely Round 50's "anchored independence" one anchor over, and the followup queue's item
+already named `ColorCmcTable` as a candidate with "no validated example yet." This round supplied the
+example and shipped only that one anchor.
+
+**The fudge factor was measured and rejected, not skipped.** The intuition (bias slightly upward so
+errors land in the safe direction) is reasonable and was tested properly — swept at
+1.05/1.10/1.15/1.25/1.50 over 70 queries sampled at random from the full 245-query printing-mode
+population of the shape, deliberately NOT the straddling tail, since calibrating a constant on the rows
+selected for being wrong is fitting the tail:
+
+| factor | median | p90 | under-est | worst under | wrong side of 1,024 |
+|---|---|---|---|---|---|
+| current | 1.97x | 3.59x | 3/70 | 0.76x | 5 |
+| **1.00** | **1.01x** | **1.28x** | 31/70 | 0.62x | **0** |
+| 1.15 | 1.16x | 1.48x | 8/70 | 0.69x | 1 |
+| 1.50 | 1.53x | 1.98x | 2/70 | 0.94x | 2 |
+
+Every non-trivial factor made *routing* worse. The mechanism is obvious in hindsight and worth stating
+because it generalizes: when the population being fixed is already 83% over-estimates, biasing upward
+pushes genuinely-small queries back over the very line the round exists to get them under. A factor also
+fails at the job it was proposed for — the worst under-estimate only moves 0.62x -> 0.69x at 1.15,
+reaching 0.94x only at 1.50 where everything else is wrecked — because the under-estimates come from
+real positive price/color-cmc correlation, not a uniform downward bias, so a uniform multiplier cannot
+target them. Consistent with Round 38's own grid search finding `fudge = 1.0` strictly optimal for the
+independence registry. **Do not re-litigate this on intuition.**
+
+**Two implementation details that carried real measured weight.** First, the rate must come from the
+`AndSource` (`children_estimates[i].result.printing`), never re-derived from the literal bounds:
+`fuse_and_range_children` intersects same-index bounds into one `FusedRange`, and a naive product of two
+one-sided marginals measured 1.98x/2.58x on two-sided-range queries where the fused rate gives
+1.22x/1.23x. Verified end-to-end after merge — `usd>=0.23 usd<=0.31 cmc>=5 id:rw` lands at exactly
+**1,025** (1.22x), the fused number, not 1,667. Second, this site deliberately does **not**
+`mark_covered`, diverging from Round 50: `ColorCmcTable`'s own scan already refuses to cover its leaves
+because covering starves BOTH `Independence` candidates at once and measured WORSE (median
+`abs_log_ratio` 0.71 -> 1.12 on this very shape). Covering here would reintroduce that, and it is
+unnecessary anyway — the anchored candidate is the strict minimum of every other candidate, so it wins
+on merit. A test asserts that strict-minimum property, so it cannot silently start depending on
+starvation.
+
+**Independent re-verification** (my own wheels, `__file__` asserted; before = `costcell/trunk`
+`c87781d6`, whose Rust is identical to Round 55's `47c5fbbf`): `cmc=4 id:b usd<0.21` 3,669 -> **788**
+against true 801 (4.58x -> 0.98x) and `id:w usd<0.19 cmc>=5` 3,994 -> **744** against true 580 (6.89x ->
+1.28x) — both matching the pre-scoping predictions *exactly*, and both flipping `StreamedSelect` ->
+`GatheredScan`. `id:b cmc=4` with no price leaf is unchanged at an exact 3,669. `cargo test` 274 debug /
+271 release, `clippy --all-targets -- -D warnings` clean in debug (CI's invocation); the release-only
+`ARITH_TUPLE_BLOWUP_CARDS` dead-code error is the same pre-existing Round 51 artifact confirmed in Round
+55.
+
+**Three things worth recording honestly rather than burying.**
+
+- **A pre-existing test's expected number legitimately changed** (`color_cmc_table_star_shape_wins_the_
+  min_against_independence`, final `result.printing` 10 -> 5). That fixture is this mechanism's exact
+  synthetic worst case: prices are index-monotone and green ∩ `cmc<=3` is *by construction* the ten
+  cheapest printings, so price is perfectly redundant given the joint and independence undershoots by
+  the full 2x. Every structural claim the test was written to make still holds and is still asserted.
+  Real-corpus behavior runs the opposite direction (median 1.97x over -> 1.01x).
+- **Some queries now predict exactly 0 against a non-empty truth** (`cmc=7 c:r usd:0.95`: 0 vs true 1) —
+  a small joint times a small rate rounding to zero. Checked directly against the obvious risk (this
+  repo has an open empty-conjunction-short-circuit issue): it does **not** short-circuit execution.
+  Every plan that ran returned the correct rows and all plans agreed. The zero is purely a cost input.
+- **The plan mispredicted one shape.** `star:legality+cmc+usd` was expected to improve and did not — it
+  has no color/identity leaf, so `ColorCmcTable` never fires on it. Correct behavior, wrong expectation.
+
+Timing: +245 ns on a ~1.05 us `and_estimate_ns` baseline, confined to queries that actually form the
+candidate (paired A/B, same-build canary). Round 50's path measured flat under the hoist, which was the
+specific risk of sharing the helper. The implementing agent also found and fixed, before merge, a real
++21% tax this was levying on `(color, cmc)` queries with no price leaf at all — a provably equivalent
+precheck (with no `Price`-classified source anywhere, the residual bucket is empty regardless of what is
+explained), verified behavior-neutral row-for-row across a full 64,581-row survey.
 
 ### Round 55
 
