@@ -11264,7 +11264,20 @@ fn compose_printing_estimate(
                 // Folded as `Candidate::Estimate` (never `Exact`) so it narrows `result` only and never
                 // touches `exact_domain_*` -- the product of an exact count and an inexact rate is
                 // itself inexact, the same exact/estimate line Round 50's own site draws.
-                for &ai in &color_cmc_dim_positions {
+                //
+                // `any_price_source` is a cheap, provably EQUIVALENT precheck, not a heuristic: with no
+                // `Price`-classified source anywhere in this `And` (or an empty store),
+                // `anchored_price_residual` declines for EVERY dim position, whatever is explained --
+                // its `by_class[Price]` bucket would be empty either way -- so the per-position
+                // `color_cmc_exact` re-lookup below (up to 32 stored masks, each a prefix-sum
+                // `range_sum`) is pure waste. Measured on the real corpus: without this guard, a bare
+                // `id:b cmc=4` with no price leaf at all paid ~210 ns (~21%) more `and_estimate_ns` for
+                // a candidate that could never form. Not applied to Round 50's own site above, which
+                // measured unregressed by the hoist as-is; the same guard would help it too and is
+                // noted as a possible follow-up rather than folded into this round.
+                let any_price_source = n_printings > 0 && and_sources.iter().any(|src| indep_class_of(*src, indexes) == Some(IndepClass::Price));
+                let anchor_positions: &[usize] = if any_price_source { &color_cmc_dim_positions } else { &[] };
+                for &ai in anchor_positions {
                     let (field, op, mask) = color_cmc_dim(&v[ai]).expect("color_cmc_dim_positions only holds color_cmc_dim leaves");
                     // A second, cheap lookup into the same table `scan_two_bucket_exact` already
                     // queried above -- not threaded out of that shared helper, keeping this mechanism
