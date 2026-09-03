@@ -18192,6 +18192,18 @@ fn price_joint_standalone_and_arm_fold_fires_and_tightens_vs_min_fold_baseline()
          that was the only number available before this round for this exact 2-leaf shape"
     );
     assert!(est.exact_domain.is_none(), "PriceJointTable is Estimate-class, never Exact -- exact_domain must stay untouched by it");
+
+    // Fixed after this round's own review: the `by_class` registry's own Price-multi arm used to ALSO
+    // attempt this exact shape (both usd and eur classify as `IndepClass::Price`, `multi.len() == 2`),
+    // building a second, redundant `joint_estimate` that could never actually pair with anything (there
+    // is no third source in this 2-leaf query for it to pair against) -- pure wasted work, confirmed
+    // directly via timing (~3.6us, almost double the 3-leaf case's ~2.7us). The `and_sources.len() > 2`
+    // guard on that arm means no `Independence` group should ever appear here at all.
+    assert!(
+        !and_trace.considered.iter().any(|g| g.mechanism == "Independence"),
+        "a bare 2-leaf usd+eur query has nothing for the by_class registry's own Price unit to pair \
+         with -- it must not even be attempted, not just fail to win"
+    );
 }
 
 /// The independence-registry `by_class` special case: a fixture with usd+eur+`Type` (a THIRD,

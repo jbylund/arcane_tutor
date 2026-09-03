@@ -2322,17 +2322,19 @@ const PRICE_JOINT_BUCKETS: usize = 64;
 /// microseconds against a query whose OWN acquire cost is routinely in the same range, and a large,
 /// validated accuracy win in exchange (75-180x down to ~1.0-1.5x on the five worst real tail queries).
 ///
-/// A known, MEASURED inefficiency this round deliberately ships anyway (flagged for a follow-up round,
-/// not fixed here -- see the followup queue doc): the standalone fold and the `by_class` special case
-/// BOTH run for a bare 2-source `usd<op>a eur<op>b` query with nothing else (the standalone fold's own
-/// gate fires, AND `IndepClass::Price` has exactly 2 occurrences so the `by_class` arm's gate fires
-/// too) -- but the `by_class` arm's own unit can never actually pair with anything in that shape (there
-/// is no third source left to pair against), so its own `joint_estimate` call is entirely wasted work.
-/// Confirmed directly: the bare-2-leaf case's ~3.6us is almost exactly double the 3-leaf case's ~2.7us
-/// minus the old baseline's own leaf costs, consistent with two full table scans where only one payoff
-/// is ever used. Skipping the `by_class` arm's own attempt whenever `and_sources.len() == 2` would be
-/// a safe, zero-behavior-change fix (no pairing is possible in that shape either way) -- not made this
-/// round, since the task was to implement the two call sites as specified, not redesign them.
+/// A real, MEASURED inefficiency found and fixed before this round shipped: the standalone fold and
+/// the `by_class` special case both used to run for a bare 2-source `usd<op>a eur<op>b` query with
+/// nothing else (the standalone fold's own gate fires, AND `IndepClass::Price` has exactly 2
+/// occurrences so the `by_class` arm's own gate fired too) -- but the `by_class` arm's own unit can
+/// never actually pair with anything in that shape (there is no third source left to pair against), so
+/// its own `joint_estimate` call was entirely wasted work: confirmed directly, the bare-2-leaf case's
+/// ~3.6us was almost exactly double the 3-leaf case's ~2.7us minus the old baseline's own leaf costs,
+/// consistent with two full table scans where only one payoff was ever used. Fixed with an
+/// `and_sources.len() > 2` guard on the `by_class` arm itself (see that match arm's own doc) -- a
+/// zero-behavior-change fix (`_ => {}` already declines to push a unit for any shape it doesn't
+/// recognize, and a query with nothing else to pair against was never going to reach the pairing loop
+/// regardless), independently re-verified to halve the bare-2-leaf case's own cost with no change to
+/// any correctness-relevant test or corpus result.
 ///
 /// `cells` is keyed by a single combined `u32` (`(usd_bucket << 16) | eur_bucket`), not a `(u16, u16)`
 /// tuple -- mirroring `PairTotals`'s own combined-key precedent for the identical "two small ids into
@@ -10892,7 +10894,18 @@ fn compose_printing_estimate(
                         // usd+eur+tix (`multi.len() == 3`, guard fails, never reaches this arm at all)
                         // are NOT this special case -- both fall through to the unchanged `_ => {}` drop
                         // below, exactly like before this round.
-                        multi if class == IndepClass::Price && multi.len() == 2 => {
+                        //
+                        // `and_sources.len() > 2` guard: when usd+eur are the ONLY two residual sources
+                        // in the whole `And`, this unit could never pair with anything anyway (there is
+                        // no third source left to form another unit from -- the standalone whole-`And`
+                        // fold a few hundred lines up already answers that exact shape). Building it
+                        // there was pure waste, measured directly: a bare 2-leaf `usd+eur` query paid
+                        // for the SAME `joint_estimate` table scan twice (once here, once in the
+                        // standalone fold) for a unit that could structurally never be used. Skipping it
+                        // here changes no behavior -- `_ => {}` already declines to push a unit for any
+                        // shape it doesn't recognize, and a query with nothing else to pair against was
+                        // never going to reach the pairing loop below regardless.
+                        multi if class == IndepClass::Price && multi.len() == 2 && and_sources.len() > 2 => {
                             let fields: Vec<Option<NumField>> = multi.iter().map(|&p| price_field_of(and_sources[p], indexes)).collect();
                             let bounds: Vec<Option<(u32, u32)>> = multi.iter().map(|&p| price_leaf_bounds(and_sources[p], indexes)).collect();
                             let usd_eur = if let ([Some(fa), Some(fb)], [Some(a_bounds), Some(b_bounds)]) = (fields.as_slice(), bounds.as_slice()) {
