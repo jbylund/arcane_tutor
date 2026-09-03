@@ -620,8 +620,17 @@ SAME unmodified before-wheel run against itself, confirming it's this bug, not a
 refactor's own verification look like it found a regression when it's really this — worth fixing before
 it costs someone real debugging time. A related manifestation showed up in the harness's own query
 generation too (`--seed 0`, same corpus, two separate engine loads produced 9 different queries) — the
-same underlying class of bug propagating into what should be deterministic query sampling, not chased
-down further here.
+same underlying class of bug propagating into what should be deterministic query sampling. ~~Not chased
+down further here~~ — **closed** (a standalone Python fix, no round number): root-caused to
+`client/query_sampler.py`'s `_count_row` folding oracle/flavor words via `Counter.update(set(...))` —
+CPython's per-process string hash randomization makes bare-`set` iteration order vary run to run, so two
+words tied on raw frequency that always co-occur in the same rows could insert into the counter in
+either relative order depending on the hash seed; `most_common()`'s tie-break for equal counts falls
+back to insertion order, so which tied word won silently depended on `PYTHONHASHSEED`. Fixed with
+`sorted(set(...))`; verified byte-identical `generate_queries` output across 5 fresh process runs (was
+20-32 line diffs before), plus a subprocess-based regression test (two different `PYTHONHASHSEED`
+values, a corpus with deliberately tied co-occurring words) confirmed to fail on the pre-fix code and
+pass after.
 
 Blast radius: `card_engine/src/lib.rs` (+397/-96 lines — the enum, the two shared functions, ~10
 mechanism call-site migrations, no computation logic changed), `card_engine/src/tests.rs` (+296

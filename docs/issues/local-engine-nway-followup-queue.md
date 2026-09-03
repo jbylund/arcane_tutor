@@ -30,19 +30,12 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
    inherit it (confirmed: `cmc>=8 power<=2` improved 22→15 against true 13, but didn't close all the way
    to exact). Scope not yet investigated — needs its own look at `artwork_estimate`'s own logic before
    sizing the fix.
-3. **Fix the harness's own query-generation nondeterminism.** Found during Round 46: the identical
-   `--seed 0` run against the identical corpus produced 9 different generated queries across two
-   separate engine loads — a related instance of Round 47's own root cause (Rust `HashMap` iteration
-   order leaking into something that should be deterministic), this time in
-   `scripts/nway_estimate_truth_survey.py`/its `CorpusVocab` mining, not the engine itself. Lower
-   engine-correctness stakes than Round 47 was, but the same "silently pollutes future comparisons"
-   risk.
-4. **Measure the residual-size distribution for real 5+-leaf queries.** Still unmeasured since before
+3. **Measure the residual-size distribution for real 5+-leaf queries.** Still unmeasured since before
    this session started. This is the actual answer to "is the general bounded partition search worth
    building at all" — if real residuals rarely exceed 2-3 leaves, the "notice one bad case, build one
    validated mechanism" pattern (7 real gaps closed this way so far: Rounds 34, 40, 42, 44, 45, 48, 51)
    may just *be* the right architecture, not a placeholder for a general one.
-5. **Decide on / scope the actual general bounded partition search**, informed by #4's findings and
+4. **Decide on / scope the actual general bounded partition search**, informed by #3's findings and
    built on Round 49's own subset-tracking primitive (`CoveredState`'s `subsets: Vec<u64>`, already
    shipped). Not attempted until the above are in.
 
@@ -86,3 +79,9 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
 - Round 51: exact `arith_tuple` (printing, card, artwork) triples, precomputed at build time
   (`ArithTupleIndex.totals`) — closes Round 46's census gap; surfaced the `unique=artwork` acquire-path
   gap now tracked as item #2 above.
+- Harness fix (no round number, a Python-only fix outside the engine): `client/query_sampler.py`'s
+  `_count_row` folded oracle/flavor words via `Counter.update(set(...))` — bare-set iteration is
+  hash-seed-randomized per process, so tied-frequency co-occurring words could swap `most_common()`'s
+  tie-break across runs. Fixed with `sorted(set(...))`; verified byte-identical output across 5 fresh
+  process runs (was 20-32 line diffs before), plus a subprocess-based regression test that fails on the
+  pre-fix code and passes after.
