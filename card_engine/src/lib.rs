@@ -9212,6 +9212,11 @@ fn compose_printing_bits(
 /// `estimate_only`/`SpaceEstimate::spaces_approx_printing` instead, so `guaranteed` no longer holds
 /// values BELOW truth. `min(a bound, a guess)` is NOT a bound, which is why `SubtypePairEstimate`'s
 /// `min(indep, rest_max)` stays estimate-only despite `rest_max` alone being a bound.
+///
+/// A corollary that is easy to lose: a number derived from `best()` may not be written to `guaranteed`
+/// either, since `best()` can resolve from the estimate channel. That is why the `And` arm seeds its
+/// own `printing` accumulator from the per-leaf fold's `SpaceMeasure` DIRECTLY, channel by channel,
+/// rather than wrapping one `best()`-derived `usize` in `known()` the way Round 58 left it.
 #[derive(Clone, Copy)]
 struct SpaceMeasure {
     /// Tightest PROVEN upper bound on the true count, or `None` for "no mechanism proved one".
@@ -10552,9 +10557,9 @@ fn compose_printing_estimate(
             // `SpaceMeasure`'s and `fold_candidate`'s own docs. `card`/`artwork` start UNKNOWN in both
             // channels (deliberately NOT seeded from `folded`, whose per-leaf card/artwork counts are
             // only admissible through the breadth-guarded `narrow_floor` fold at the very end -- see
-            // the retired `domain_hint`'s own post-mortem further down); `printing` is seeded from
-            // `pair_bounded_min` over the per-leaf fold, in BOTH channels, exactly the number this arm
-            // started from before Round 58.
+            // the retired `domain_hint`'s own post-mortem further down); `printing` is seeded from the
+            // per-leaf fold's own two channels with `pair_bounded_min`'s real counts folded into both --
+            // see the seed's own comment below for why it is no longer one `known()`-wrapped `usize`.
             //
             // Round 40: `covered.flags[i]` becomes `true` the moment leaf `v[i]` participates in a
             // GENUINE exact/bound joint tightening somewhere in this arm (2+ leaves actually
@@ -10573,11 +10578,35 @@ fn compose_printing_estimate(
             // leaf subset an exact/bound mechanism already answered, not any leaf a mechanism merely
             // touched for some OTHER partner.
             let mut covered = CoveredState::new(v.len());
-            let mut result = SpaceEstimate {
-                printing: SpaceMeasure::known(pair_bounded_min(v, indexes, folded.result.printing(), &mut covered)),
-                card: SpaceMeasure::UNKNOWN,
-                artwork: SpaceMeasure::UNKNOWN,
-            };
+            // Round 59: the seed carries the per-leaf fold's OWN two channels through, instead of
+            // collapsing them into one `usize` and re-wrapping it in `known()`. That collapse is what
+            // made Round 58 byte-identical, but it also undid the leaf-level channel split one level
+            // up: `folded.result.printing()` is `best()`, which resolves from the ESTIMATE channel
+            // whenever a leaf's guess is the smallest number in the fold -- so the reprint-ratio
+            // approximations this round demoted at the leaves would be laundered straight back into
+            // `guaranteed` here, and `result.printing.guaranteed` at the `And` root (the number the
+            // queued cross-space clamp is meant to clamp against) would still sit below truth. This
+            // is what makes the leaf demotions mean anything above a single leaf.
+            //
+            // `pair_bounded_min` is handed `guaranteed`, not `best()`, for exactly that reason: seeded
+            // with a proven bound it can only ever return a proven bound (its own contributions are a
+            // real `PairTotals` count or a disjointness proof's exact 0), so folding its result into
+            // BOTH channels is sound. `guaranteed` is `Some` here by construction -- the fold above
+            // starts from `ComposeEstimate::leaf(n_printings, ..)`, a real count, so the domain size
+            // is always in the guaranteed channel even when every leaf is estimate-only (`f:modern
+            // f:legacy`).
+            //
+            // Behaviour-preserving on the ACCURACY read, and this is the load-bearing part: the seed's
+            // `best()` was `min(folded.best(), pair_min)` and still is, because `pair_min` is now
+            // `min(folded.guaranteed, k)` and `min(folded.guaranteed, folded.estimate, k)` is the same
+            // number either way.
+            let folded_printing_bound =
+                folded.result.printing.guaranteed.expect("the And fold seeds printing's guaranteed channel from leaf(n_printings)");
+            let pair_min = pair_bounded_min(v, indexes, folded_printing_bound, &mut covered);
+            let mut printing = folded.result.printing;
+            printing.lower_guaranteed(pair_min);
+            printing.lower_estimate(pair_min);
+            let mut result = SpaceEstimate { printing, card: SpaceMeasure::UNKNOWN, artwork: SpaceMeasure::UNKNOWN };
             // Round 46: hoisted here (used to be declared much further down, right before their own
             // first write) so every `fold_candidate` call site in this arm -- including the two
             // ESTIMATE-class ones below (`SetCollectorRange`, the `arith_tuple_totals` merge) that fire
@@ -12907,6 +12936,12 @@ fn walk_value_orderby_page<'a>(
 /// Both are still UPPER BOUNDS for three or more children -- the intersection of three sets is at most
 /// the smallest pairwise intersection -- but a pairwise bound is much tighter than a single-leaf one
 /// whenever the leaves are individually broad, which is exactly when the estimate matters.
+///
+/// Round 59: `single_min` must itself be a PROVEN bound (`SpaceMeasure::guaranteed`), never a `best()`
+/// guess. This function's own contributions are real counts -- a stored `PairTotals` entry, or a
+/// disjointness proof's exact 0 -- so given a bound it returns a bound, and the `And` arm folds the
+/// result into both channels on that basis. Hand it a guess and the guess comes back out wearing the
+/// return type of a bound, which is the exact confusion `SpaceMeasure` exists to prevent.
 // Round 40: `covered.flags` gains a `true` at position `i` for every child that participated in a
 // genuine `PairTotals`/disjointness hit here -- read by the And arm's independence registry scan
 // (below) so a leaf already given an EXACT joint by this mechanism is never also handed to an inexact

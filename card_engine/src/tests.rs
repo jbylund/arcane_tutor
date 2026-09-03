@@ -19824,6 +19824,41 @@ fn legality_leaf_printing_is_a_guess_and_claims_no_bound() {
     assert!(est.candidate.printing.guaranteed.is_none());
 }
 
+/// **The demotions have to survive the `And` arm to mean anything.** The arm's `printing` accumulator
+/// used to be seeded `SpaceMeasure::known(pair_bounded_min(.., folded.result.printing(), ..))` --
+/// `printing()` is `best()`, which resolves from the ESTIMATE channel whenever a leaf's guess is the
+/// smallest number in the fold, so a demoted leaf's approximation was laundered straight back into
+/// `guaranteed` one level up. Seeding from the fold's own two channels fixes that.
+///
+/// `f:A cmc<=1` is the shape that shows it: BOTH leaves are reprint-ratio arms reporting 36 against a
+/// true 100, so pre-fix the arm's `guaranteed` was 36 -- 0.36x of the truth, in the channel the queued
+/// cross-space clamp is supposed to clamp artwork and card space DOWN to. The assertion is stated as
+/// the invariant (`guaranteed >= the true count`) rather than as a specific number, so it keeps
+/// holding if some later mechanism starts answering this shape exactly.
+#[test]
+fn the_and_arm_does_not_launder_a_demoted_leaf_back_into_guaranteed() {
+    let data = reprint_skewed_store();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let f = FilterExpr::And(vec![
+        FilterExpr::Legality { shift: Some(0), expected: super::LEGALITY_LEGAL },
+        FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Le, rhs: NumExpr::Const(1.0) },
+    ]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, false);
+    // Both leaves match exactly the 20 heavily-reprinted cards, whose real printing count is 100.
+    const TRUE_PRINTINGS: usize = R59_LEGAL_CARDS * R59_LEGAL_CARD_PRINTINGS;
+    let bound = est.result.printing.guaranteed.expect("the domain seed always puts n_printings in the guaranteed channel");
+    assert!(
+        bound >= TRUE_PRINTINGS,
+        "the And arm's proven bound is {bound}, below the true {TRUE_PRINTINGS} -- a demoted leaf's \
+         reprint-ratio guess leaked into `guaranteed` through the seed"
+    );
+    assert_eq!(est.result.printing.estimate, Some(36), "the guess itself is unchanged and still lives in its own channel");
+    assert_eq!(est.result.printing(), 36, "and the accuracy read every consumer sees is unchanged");
+}
+
 /// The same demotion on the bare cmc/power/toughness arm's `bare_numeric_field_count` branch -- the
 /// third instance of the identical `card_count * n_printings / n_cards` idiom, and the one NOT named
 /// in this round's plan (found by applying the admission rule to every leaf arm rather than to the two
