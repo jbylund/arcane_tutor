@@ -15124,6 +15124,15 @@ fn arith_tuple_key_budget_catches_a_blown_domain() {
 
 /// Above `ARITH_TUPLE_GUARD_MIN_CARDS`, and large enough that an all-distinct key space
 /// clears `10*sqrt(n)+32` by a wide margin.
+///
+/// Gated exactly as its only consumer is: `arith_tuple_key_budget_catches_a_blown_domain` is a
+/// `#[cfg(debug_assertions)]` `#[should_panic]` test on a `debug_assert!`, so in a release build the
+/// test is compiled out and this const has no reader. Without the gate that reads as dead code, which
+/// made `cargo clippy --all-targets --release -- -D warnings` fail on every branch of this arc --
+/// reported as "pre-existing, left alone" by five consecutive rounds. `cfg` rather than
+/// `#[allow(dead_code)]` deliberately: the const genuinely should not exist in a release build, so
+/// matching the consumer's own gate is the fix, where an `allow` would only silence a true warning.
+#[cfg(debug_assertions)]
 const ARITH_TUPLE_BLOWUP_CARDS: usize = 6_000;
 
 /// `super::sigma_bound`'s Rust port must agree with the Python original
