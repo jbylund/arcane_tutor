@@ -17628,12 +17628,31 @@ fn scan_two_bucket_exact_mark_covered_on_hit_false_never_covers() {
 /// cmc/power/toughness/loyalty `And` (only a single bare leaf, Card-mode only). Meanwhile
 /// `compose_printing_estimate`'s own `And` arm, a few lines earlier in the SAME acquire call, already
 /// folds exactly this shape into `est.result.card`/`.artwork` via `arith_tuple_totals` (Round 51) --
-/// computed and then thrown away. This fixture uses the exact real-corpus-motivated shape from that
-/// round's own doc (`cmc<=1 power>=1 toughness>=1`, minus the `t:`/`f:` framing, since this is a plain
-/// `fuzz_store_n` store): confirms `exact_result_total` really does decline in both spaces, confirms
-/// `compose_printing_estimate`'s own fold is exact (matches a brute-force per-printing scan), and then
-/// drives the real `acquire_plan_features` entry point for `unique=artwork`/`unique=printing` (which
-/// DO reach the `PrintingCompose` branch for this shape) end to end.
+/// computed and then thrown away.
+///
+/// **This round's fix went through two shapes.** The first (a plain `.min()`/`.or()` merge of
+/// `exact_result_total` with `est.result.card`/`.artwork`, replacing the old calibrated-estimate
+/// fallback outright whenever either fired) was caught by `scripts/nway_estimate_truth_survey.py`'s
+/// `--compare` sweep BEFORE landing: `est.result.card`/`.artwork` can come from a mechanism that only
+/// covers a SUBSET of the And's children (found on a real corpus query, `id:ruw usd:0.50 cmc>=2`,
+/// artwork mode -- `ColorCmcTable`'s own exact `(identity, cmc)` joint is 21,048, but the true 3-leaf
+/// answer is 123, since that joint is blind to the highly-restrictive `usd:0.50` residual). The shipped
+/// fix instead applies `est.result.card`/`.artwork` as an ADDITIONAL `.min()` tightening layered ON TOP
+/// of the pre-existing calibrated-estimate baseline -- never a replacement for it -- exactly mirroring
+/// how the pre-existing `domain_cards` tightening a few lines below already uses the same field safely.
+/// This fixture demonstrates the fix actually reaching exactness for a shape where the And-arm's own
+/// fold DOES cover every leaf (the real motivating case), while `printing_compose_min_merge_never_makes_a_worse_estimate_than_the_calibrated_baseline`
+/// below demonstrates the safety net that keeps the `id:ruw`-style case from regressing.
+///
+/// This fixture uses the exact real-corpus-motivated shape from Round 51's own doc (`cmc<=1 power>=1
+/// toughness>=1`, minus the `t:`/`f:` framing, since this is a plain `fuzz_store_n` store): confirms
+/// `exact_result_total` really does decline in both spaces, confirms `compose_printing_estimate`'s own
+/// fold is exact (matches a brute-force per-printing scan) AND that the pre-existing calibrated
+/// baseline for this fixture/seed does not accidentally clip it (checked explicitly, since that's
+/// exactly the failure mode a different seed hit during this round's own test-writing -- fixed by
+/// picking a seed where it doesn't happen, not by relaxing the assertion), and then drives the real
+/// `acquire_plan_features` entry point for `unique=artwork`/`unique=printing` (which DO reach the
+/// `PrintingCompose` branch for this shape) end to end.
 ///
 /// `unique=card` is deliberately NOT asserted through `acquire_plan_features` here: this exact shape
 /// (only cmc/power/toughness leaves, nothing else) always fully compiles into ONE plane under Card
@@ -17641,19 +17660,67 @@ fn scan_two_bucket_exact_mark_covered_on_hit_false_never_covers() {
 /// `PrintingCompose` is ever consulted -- confirmed directly (`prep.count_source() == CountSource::Plane`
 /// below), and already exact there by an entirely different, pre-existing mechanism. This is the
 /// "Mode::Card's own routing quirk" the round's own plan calls out as real but out of scope. Card mode's
-/// fix is instead validated directly against the same two functions `acquire_plan_features`'s Mode::Card
-/// arm calls (`exact_result_total`/`compose_printing_estimate(..).result.card`), applying the identical
-/// `.min()` merge -- proving the FIX's own logic is correct for Card mode even though this particular
+/// fix is instead validated directly against the same shape `acquire_plan_features`'s Mode::Card arm
+/// computes (`exact_result_total`, the calibrated baseline, then `est.result.card` as an extra
+/// tightening) -- proving the FIX's own logic is correct for Card mode even though this particular
 /// shape can never reach it in production.
 #[test]
 fn acquire_plan_features_wires_and_arm_exact_card_artwork_for_pure_arith_tuple_and() {
-    use rand::SeedableRng;
-    let mut rng = rand::rngs::SmallRng::seed_from_u64(20_260_902);
-    let data = fuzz_store_n(&mut rng, 4_000);
+    // Hand-built, not `fuzz_store_n`, for full control: this round's own test-writing found that a
+    // *random* fuzz store's calibrated card/artwork baselines for this shape don't reliably overshoot
+    // the truth (an undershoot was hit on the first seed tried), which would silently clip the new
+    // exact tightening back down via the safety-net `.min()` and prove nothing about the fix. Every
+    // card gets the SAME reprint depth (2 printings each) deliberately -- an EARLIER version of this
+    // fixture gave the 4 matching cards MORE reprints than the 40 filler cards, which pushed the
+    // matching cards' own bare-leaf `cmc<=1` solo PRINTING estimate (scaled by the corpus's own AVERAGE
+    // reprint rate, a pre-existing, unrelated approximation -- see the `NumericCmp` leaf arm's own doc
+    // a few hundred lines up) below the true joint printing count, which then poisoned
+    // `printing_matches` and, through it, the calibrated baseline itself. Uniform reprint depth avoids
+    // that trap entirely: only the 4 matching cards' printings share ONE illustration each (a reprint,
+    // same art -- cards=4, printings=8, artworks=4 for the matching set); the 40 filler creatures keep
+    // distinct illustrations per printing.
+    let mut vocab = VocabInterner::new();
+    let mut cards = Vec::new();
+    for (cmc, pow, tou) in [(0u8, 1i8, 1i8), (1, 1, 1), (1, 2, 1), (0, 2, 2)] {
+        let mut c = stub_card(1 + cards.len() as u128, TYPE_CREATURE, &[], &mut vocab);
+        c.cmc = Some(cmc);
+        c.creature_power = Some(pow);
+        c.creature_toughness = Some(tou);
+        cards.push(c);
+    }
+    for i in 0..40 {
+        let mut c = stub_card(100 + i as u128, TYPE_CREATURE, &[], &mut vocab);
+        c.cmc = Some(5);
+        c.creature_power = Some(1);
+        c.creature_toughness = Some(1);
+        cards.push(c);
+    }
+    let n_cards = cards.len();
+    assert_eq!(n_cards, 44, "4 matching + 40 filler");
+    let printing_counts = vec![2usize; n_cards];
+    let mut data = store_of(cards, &printing_counts, vocab);
+    // Collapse each MATCHING card's 2 printings to a shared illustration (a reprint, same art). Filler
+    // cards keep `store_of`'s default distinct-per-printing illustrations.
+    for i in 0..4usize {
+        data.printings[2 * i + 1].illustration_id = data.printings[2 * i].illustration_id;
+    }
+    reassign_artwork_grouping(&mut data);
+    data.indexes.artwork_base = build_artwork_base_from(&data.indexes.artwork_groups.to_vec());
+    data.indexes.cmc = build_numeric_index(&data.cards, |c| c.cmc.map(i16::from));
+    data.indexes.power = build_numeric_index(&data.cards, |c| c.creature_power.map(i16::from));
+    data.indexes.toughness = build_numeric_index(&data.cards, |c| c.creature_toughness.map(i16::from));
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards, &data.offsets, &data.indexes.artwork_base);
+    data.indexes.border_printing = build_border_printing_planes(&data.printings, &data.strings);
+    data.indexes.rarity_printing = build_rarity_printing_planes(&data.printings);
+    data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
+
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
     let ctx = QueryCtx::from(archived);
     let n_printings = archived.printings.len();
+    assert_eq!(n_printings, 88, "44 cards x 2 printings each");
+    let n_artworks = u32::from(*archived.indexes.artwork_base.last().expect("artwork_base has n_cards+1 entries")) as usize;
+    assert_eq!(n_artworks, 4 + 80, "4 matching cards' printings collapse to 1 artwork each (4), 40 filler cards keep 2 distinct illustrations each (80)");
 
     let filter = FilterExpr::And(vec![
         FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Le, rhs: NumExpr::Const(1.0) },
@@ -17679,6 +17746,17 @@ fn acquire_plan_features_wires_and_arm_exact_card_artwork_for_pure_arith_tuple_a
     assert_eq!(est.result.card, Some(true_card), "the And arm's own fold must already be exact card-space");
     assert_eq!(est.result.artwork, Some(true_artwork), "the And arm's own fold must already be exact artwork-space");
 
+    // Confirm the seed choice: the pre-existing calibrated baselines (computed the same way
+    // `acquire_plan_features` does, `exact_cards`/`exact_total` both `None` here) must NOT already sit
+    // below the true value, or the safety-net `.min()` would silently clip the new tightening back down
+    // and this fixture would prove nothing about the fix.
+    let printing_matches = est.result.printing;
+    let calib_card = super::calibrated_balls_into_bins(printing_matches, n_cards);
+    let capacity_cards_baseline = super::balls_into_bins(printing_matches, n_cards);
+    let calib_artwork = super::artwork_estimate(printing_matches, capacity_cards_baseline, n_cards, n_artworks);
+    assert!(calib_card >= true_card, "seed choice invariant: calibrated card baseline ({calib_card}) must not undershoot the truth ({true_card})");
+    assert!(calib_artwork >= true_artwork, "seed choice invariant: calibrated artwork baseline ({calib_artwork}) must not undershoot the truth ({true_artwork})");
+
     // Real end-to-end routing: unique=artwork/printing both naturally reach PrintingCompose for this
     // shape (confirmed by count_source below) since a printing/artwork query never takes the
     // Card-mode-only PlanePopcountOrder branch even though the whole filter compiles to a plane.
@@ -17701,51 +17779,152 @@ fn acquire_plan_features_wires_and_arm_exact_card_artwork_for_pure_arith_tuple_a
     assert_eq!(prep_card.count_source(), CountSource::Plane, "Card mode's own pre-existing routing quirk: a pure cmc/power/toughness And fully compiles to one plane, which PlanePopcountOrder claims before PrintingCompose is ever consulted -- out of scope for this round, asserted here so a future change to that routing is caught");
     assert_eq!(feats_card.matches, true_card as u32, "still exact via the (unrelated, pre-existing) Plane mechanism");
 
-    // ... and separately validate the FIX's own merge logic directly, the same two calls
-    // `acquire_plan_features`'s Mode::Card arm makes, since real routing can never reach it here.
-    let exact_cards = match (exact_result_total(&filter, &archived.indexes, Mode::Card), est.result.card) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (a, b) => a.or(b),
-    };
-    assert_eq!(exact_cards, Some(true_card), "the fix's own merge, applied directly, must resolve to the true card count for this shape");
+    // ... and separately validate the FIX's own logic directly, the same shape
+    // `acquire_plan_features`'s Mode::Card arm computes, since real routing can never reach it here:
+    // calibrated baseline first (unconditionally), THEN `est.result.card` as an additional tightening.
+    let est_cards = est.result.card.map_or(calib_card, |dc| dc.min(calib_card));
+    assert_eq!(est_cards, true_card, "the fix's own logic, applied directly, must resolve to the true card count for this shape");
 }
 
-/// Round 52's `.min()` merge (`match (exact_result_total(..), est.result.card) { (Some(a), Some(b)) =>
-/// Some(a.min(b)), .. }`), tested in isolation. Honest finding from constructing this: given the
-/// mechanisms implemented as of this round, `exact_result_total`'s own Card-mode bare-leaf arm
-/// (`bare_numeric_field_count`) and `compose_printing_estimate`'s own bare-leaf arm for cmc/power/
-/// toughness call that SAME function for `.card` (see that arm's own doc, "Falls back to
-/// `arith_tuple_totals` only if the dedicated lookup somehow declines") -- so whenever BOTH sides are
-/// naturally `Some` for an identical filter today, they are the identical value, not just close. A
-/// real "both populated, genuinely differing" case could not be constructed through the actual index
-/// machinery without corrupting an index in a way that would corrupt both call sites identically (they
-/// share the one underlying lookup). This test therefore exercises the merge's own two-line shape
-/// directly, with hand-picked `Option<usize>` pairs mirroring the exact match arms in
-/// `acquire_plan_features` -- guarding the mechanism itself (a future third exact source, or a
-/// diverging index, could make two sides disagree for real) rather than asserting a disagreement that
-/// cannot happen yet.
+/// Round 52's actual shipped merge -- `est.result.card`/`.artwork` folded in as an ADDITIONAL `.min()`
+/// tightening on top of the pre-existing calibrated-estimate baseline, never a replacement for it (see
+/// `acquire_plan_features_wires_and_arm_exact_card_artwork_for_pure_arith_tuple_and`'s own doc for why
+/// the first, replacement-shaped attempt at this fix was wrong and how the corpus sweep caught it) --
+/// tested in isolation with hand-picked values mirroring the exact `.map_or(baseline, |x| x.min(baseline))`
+/// shape in `lib.rs`.
+///
+/// Honest finding from constructing this: `est.result.card`/`.artwork` is a genuine, always-safe upper
+/// bound on the true count when it fires (never smaller than the truth), which is exactly why folding
+/// it in via `.min()` against ANY baseline can only ever tighten that baseline toward the truth, never
+/// push it past a wrong, too-small answer -- there is no scenario where this merge makes the estimate
+/// WORSE than the baseline alone, regardless of whether the baseline itself happens to already be
+/// tight, loose, or (as `id:ruw usd:0.50 cmc>=2` showed for the FIRST attempt) `est.result.card` itself
+/// is the one that's loose relative to the true full-And answer.
 #[test]
-fn printing_compose_min_merge_prefers_tighter_of_two_populated_exact_sources() {
-    // The exact shape of both `acquire_plan_features` merges this round added (`exact_cards` and the
-    // artwork `rt`), copied verbatim rather than paraphrased so this test fails if that shape ever
-    // silently regresses to a plain `.or()`.
-    let merge = |a: Option<usize>, b: Option<usize>| -> Option<usize> {
-        match (a, b) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+fn printing_compose_min_merge_never_makes_a_worse_estimate_than_the_calibrated_baseline() {
+    // The exact shape of both places this round's fix touches (`est_cards`/`rt`), copied verbatim
+    // rather than paraphrased so this test fails if that shape ever silently regresses to something
+    // that can skip the baseline (e.g. reintroducing the `unwrap_or_else`-shaped bug this round shipped
+    // and then caught and fixed before merging).
+    let tighten = |and_arm: Option<usize>, baseline: usize| -> usize { and_arm.map_or(baseline, |x| x.min(baseline)) };
+
+    // The And-arm value is a genuine upper bound (>= baseline): a real tightening, must win.
+    assert_eq!(tighten(Some(174), 536), 174, "a tighter And-arm value must win over a looser baseline");
+    // The And-arm value is LOOSER than the baseline (the `id:ruw` failure mode this round caught before
+    // shipping: a partial-subset exact mechanism blind to a restrictive residual) -- the baseline must
+    // win, not the exact-but-loose And-arm number.
+    assert_eq!(tighten(Some(21_048), 123), 123, "a looser And-arm value (partial-subset mechanism blind to a residual leaf) must NOT override a tighter baseline");
+    // Equal: no change either way.
+    assert_eq!(tighten(Some(100), 100), 100, "equal sources: unchanged");
+    // No And-arm source at all: must fall through to the baseline unconditionally, never `0`/panic.
+    assert_eq!(tighten(None, 42), 42, "And-arm miss -- the baseline (already computed, never skipped) must be used as-is");
+}
+
+/// Direct reproduction of the real corpus regression this round's first (unshipped) fix attempt caused
+/// and the corpus sweep caught: `id:ruw usd:0.50 cmc>=2` in artwork mode, where `ColorCmcTable` folds
+/// an exact `(identity, cmc)` joint of 21,048 into `est.result.artwork` -- correct for JUST those two
+/// leaves, but blind to the third leaf (`usd:0.50`, true printing-space count only 295 of 97,206) that
+/// the real 3-leaf answer (123) is dominated by. `est.result.artwork` is still, correctly, `Some(21048)`
+/// here -- that part of `compose_printing_estimate`'s own And arm is untouched by this round and is not
+/// itself wrong (21,048 IS a valid upper bound on the true 3-leaf count, just an extremely loose one).
+/// What this proves is that `acquire_plan_features`'s OWN merge, as shipped, does not let that looseness
+/// leak into `rt`: since the pre-existing artwork two-stage estimate for this residual-heavy shape
+/// undershoots 21,048 by two orders of magnitude, the `.min()` safety net keeps `rt` at the (still not
+/// exact, but far more reasonable) two-stage estimate instead.
+#[test]
+fn and_arm_partial_subset_estimate_does_not_leak_into_artwork_matches() {
+    // Hand-built, mirroring `color_cmc_fixture`'s own small deterministic layout (`fuzz_store_n`
+    // leaves `indexes.color_cmc` at its default/unbuilt value, so it never fires there) plus one extra
+    // dimension (`price_usd`) `ColorCmcTable` cannot see, so its own exact `(colors, cmc)` joint is
+    // real but LOOSE relative to the true 3-leaf answer -- the exact real-corpus failure mode
+    // (`id:ruw usd:0.50 cmc>=2`) this round's first, unshipped fix attempt hit.
+    //
+    // 6 cards, colors/cmc laid out exactly as `color_cmc_fixture`: card0 (G, cmc1), card1 (G, cmc2),
+    // card2 (G+R, cmc2), card3 (G, cmc4), card4 (R, cmc2), card5 (none, cmc0). `colors<=G AND cmc>=2`:
+    // card1 (G, cmc2) and card5 (none/0<=G, cmc0 fails cmc>=2 -- so just card1... but card2 is G+R, not
+    // <=G, excluded; card4 is R, not <=G, excluded) -- so ColorCmcTable's own 2-leaf joint is card1
+    // alone UNLESS a second qualifying card exists; to get a materially LOOSE joint (several cards),
+    // colors<=G picks up card0/card1/card2-excluded/card3/card5, cmc>=2 keeps card1/card3/card5-excluded
+    // (cmc0 fails >=2) -- so `colors<=G cmc>=2` = {card1, card3} = 2 cards. Only card1 additionally has
+    // `price_usd=0.50`; card3 does not -- so the true 3-leaf joint is 1 card, ColorCmcTable's own
+    // 2-leaf joint is 2, a real (if modest) case of the same blind-to-the-residual-leaf shape.
+    let mut vocab = VocabInterner::new();
+    let g = super::color_to_bit("G");
+    let r = super::color_to_bit("R");
+    let mut cards = vec![
+        stub_card(1, TYPE_CREATURE, &[], &mut vocab),
+        stub_card(2, TYPE_CREATURE, &[], &mut vocab),
+        stub_card(3, TYPE_CREATURE, &[], &mut vocab),
+        stub_card(4, TYPE_CREATURE, &[], &mut vocab),
+        stub_card(5, TYPE_CREATURE, &[], &mut vocab),
+        stub_card(6, TYPE_CREATURE, &[], &mut vocab),
+    ];
+    let masks = [g, g, g | r, g, r, 0];
+    let cmcs = [1u8, 2, 2, 4, 2, 0];
+    for (i, c) in cards.iter_mut().enumerate() {
+        c.card_colors = masks[i];
+        c.card_color_identity = masks[i];
+        c.cmc = Some(cmcs[i]);
+    }
+    let mut data = store_of(cards, &[1; 6], vocab);
+    data.indexes.cmc = build_numeric_index(&data.cards, |c| c.cmc.map(i16::from));
+    let ptc = build_printing_to_card(&data.offsets);
+    let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
+    data.indexes.value_totals = build_all_value_totals(&data.cards, &data.printings, &ptc, &data.strings, &data.coll_vocab, max_ag);
+    data.indexes.color_cmc = super::build_color_cmc_tables(&data.cards, &data.printings, &ptc, max_ag);
+    // Only card1 (index 1, the sole true 3-leaf match) gets price_usd=0.50; every other printing gets
+    // a different price so it can never accidentally satisfy the price leaf too.
+    for (i, p) in data.printings.iter_mut().enumerate() {
+        p.price_usd = Some(if i == 1 { 50 } else { 999 }); // cents: $0.50 vs $9.99
+    }
+    data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
+    let p2c = build_printing_to_card(&data.offsets);
+    let ab2 = build_artwork_base_from(&data.indexes.artwork_groups.to_vec());
+    data.indexes.price_usd_cards = build_range_card_counts(&data.indexes.price_usd, &p2c, data.cards.len(), &data.printings, &ab2);
+    data.indexes.border_printing = build_border_printing_planes(&data.printings, &data.strings);
+    data.indexes.rarity_printing = build_rarity_printing_planes(&data.printings);
+    data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
+    // `printing_compose_indexes_built` requires this unconditionally (even for a query that never
+    // reaches `arith_tuple_totals`) -- an unbuilt fixture store reports 0 cards there, which the gate
+    // treats as "PrintingCompose's indexes aren't ready," declining to `Candidates` instead.
+    data.indexes.arith_tuple = build_arith_tuple_index(&data.cards, &data.offsets, &data.indexes.artwork_base);
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let ctx = QueryCtx::from(archived);
+    let n_printings = archived.printings.len();
+    assert_eq!(n_printings, 6);
+
+    let filter = FilterExpr::And(vec![
+        FilterExpr::ColorCmp { field: ColorField::Colors, op: CmpOp::Le, mask: g },
+        FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::PriceUsd), op: CmpOp::Eq, rhs: NumExpr::Const(0.5) },
+        FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Ge, rhs: NumExpr::Const(2.0) },
+    ]);
+    let est = super::compose_printing_estimate(&filter, &archived.indexes, &archived.offsets, n_printings, false);
+    let true_artwork = fuzz_reference_total(archived, &filter, "artwork");
+    assert_eq!(true_artwork, 1, "sanity: only card1 (G, cmc2, price=0.50) satisfies all three leaves");
+
+    // Sanity: this fixture must actually reproduce the failure MODE (a partial-subset exact candidate
+    // materially looser than the true full-And answer), or it isn't testing what it claims to.
+    let Some(and_arm_artwork) = est.result.artwork else {
+        panic!("fixture must populate est.result.artwork via a partial-subset mechanism (ColorCmcTable) for this test to mean anything -- got None");
     };
+    assert!(
+        and_arm_artwork > true_artwork,
+        "fixture must reproduce the failure MODE -- a real, exact-for-its-own-subset And-arm candidate \
+         that is nonetheless looser than the true full-And answer (got and_arm={and_arm_artwork}, true={true_artwork})"
+    );
 
-    // Both populated, genuinely different -- `.min()` must win regardless of which argument position
-    // (first == exact_result_total, second == est.result.card/.artwork) holds the smaller value.
-    assert_eq!(merge(Some(536), Some(174)), Some(174), "the tighter (second/And-arm) source must win, not whichever is checked first");
-    assert_eq!(merge(Some(174), Some(536)), Some(174), "same tighter value, opposite argument order -- must not be order-dependent");
-    assert_eq!(merge(Some(100), Some(100)), Some(100), "equal sources: still Some(the value), not accidentally doubled or dropped");
-
-    // One side missing must fall through to the other -- the case that already existed before this
-    // round for `exact_cards`'s `exact_total.unwrap_or(printing_matches)`-style single-source code, now
-    // extended to two potential sources.
-    assert_eq!(merge(Some(42), None), Some(42), "exact_result_total hit, And-arm miss -- must keep the hit");
-    assert_eq!(merge(None, Some(7)), Some(7), "exact_result_total miss, And-arm hit -- must adopt the new source (this is the actual bug this round fixes)");
-    assert_eq!(merge(None, None), None, "both decline -- falls through to the pre-existing statistical estimate, unchanged");
+    let params = kernel_params(Mode::Artwork, SortCol::Name, false, 100, 0);
+    let unsplit = filter.clone();
+    let (pe, split_filter) = split_planes(filter.clone(), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, false);
+    let mut acq_filter = split_filter;
+    let (feats, prep, _bits, _and_ns) = acquire_plan_features(&ctx, &params, &mut acq_filter, Some(&unsplit), pe.as_ref());
+    assert_eq!(prep.count_source(), CountSource::PrintingCompose, "fixture must reach the PrintingCompose acquire branch");
+    assert!(
+        feats.matches < and_arm_artwork as u32,
+        "acquire's own matches ({}) must NOT adopt the partial-subset And-arm value ({and_arm_artwork}) outright -- \
+         that is exactly the regression the corpus sweep caught before this round shipped",
+        feats.matches
+    );
 }
