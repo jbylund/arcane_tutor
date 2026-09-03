@@ -1,6 +1,6 @@
 # N-Way Estimator Follow-Up Queue
 
-Tracks what's left from the `And`-arm cardinality-estimation arc (Rounds 33-51), in the order we
+Tracks what's left from the `And`-arm cardinality-estimation arc (Rounds 33-52), in the order we
 intend to tackle it. This doc is the queue, not the depth — the round-by-round numbers live in
 [local-engine-gathered-scan-card-printing-varying-depth.md](local-engine-gathered-scan-card-printing-varying-depth.md),
 and the architecture/design rationale lives in
@@ -23,19 +23,12 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
    - **Combining multiple safe residual classes into one product**, not just one — needs the same
      order-statistics-bias care already documented in the design doc (never try residuals separately
      and pick the smallest) once 2+ classes are each independently validated as safe to anchor.
-2. **Fix `unique=artwork`'s own acquire path.** Found during Round 51's own verification: `unique=artwork`
-   queries route through a SEPARATE `artwork_estimate` function, not `compose_printing_estimate`'s
-   `exact_domain_artworks` — so even now that `arith_tuple_totals` (and other exact mechanisms) report a
-   real exact artwork total internally, `unique=artwork`'s own top-level `acquire.matches` doesn't fully
-   inherit it (confirmed: `cmc>=8 power<=2` improved 22→15 against true 13, but didn't close all the way
-   to exact). Scope not yet investigated — needs its own look at `artwork_estimate`'s own logic before
-   sizing the fix.
-3. **Measure the residual-size distribution for real 5+-leaf queries.** Still unmeasured since before
+2. **Measure the residual-size distribution for real 5+-leaf queries.** Still unmeasured since before
    this session started. This is the actual answer to "is the general bounded partition search worth
    building at all" — if real residuals rarely exceed 2-3 leaves, the "notice one bad case, build one
-   validated mechanism" pattern (7 real gaps closed this way so far: Rounds 34, 40, 42, 44, 45, 48, 51)
-   may just *be* the right architecture, not a placeholder for a general one.
-4. **Decide on / scope the actual general bounded partition search**, informed by #3's findings and
+   validated mechanism" pattern (8 real gaps closed this way so far: Rounds 34, 40, 42, 44, 45, 48, 51,
+   52) may just *be* the right architecture, not a placeholder for a general one.
+3. **Decide on / scope the actual general bounded partition search**, informed by #2's findings and
    built on Round 49's own subset-tracking primitive (`CoveredState`'s `subsets: Vec<u64>`, already
    shipped). Not attempted until the above are in.
 
@@ -78,7 +71,11 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
   narrowly scoped (see item #1 above for what's left to generalize).
 - Round 51: exact `arith_tuple` (printing, card, artwork) triples, precomputed at build time
   (`ArithTupleIndex.totals`) — closes Round 46's census gap; surfaced the `unique=artwork` acquire-path
-  gap now tracked as item #2 above.
+  gap, closed by Round 52.
+- Round 52: `est.result.card`/`.artwork` wired into `unique=card`/`unique=artwork`'s own acquire path as
+  an additional `.min()` tightening (never a replacement for the calibrated baseline — a real 170x
+  regression in the first attempt was caught by the corpus sweep before shipping and is now a dedicated
+  regression test). Closes Round 51's own `unique=artwork` gap.
 - Harness fix (no round number, a Python-only fix outside the engine): `client/query_sampler.py`'s
   `_count_row` folded oracle/flavor words via `Counter.update(set(...))` — bare-set iteration is
   hash-seed-randomized per process, so tied-frequency co-occurring words could swap `most_common()`'s

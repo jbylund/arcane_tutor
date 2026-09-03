@@ -385,10 +385,22 @@ above):
   independently reproduced against two real, pre-validated corpus populations (`cmc>=8 power<=2`:
   printing 30→21, now exactly matching the true 21; `cmc<=1 power>=1 tou>=1`: 3225→2786, exact). Fixing
   Round 41's own unclamped floor (the actual source of the 10,269 violations above) remains a separate,
-  still-open item. A NEW gap surfaced during this round's own verification: `unique=artwork`'s top-level
-  acquire path routes through a separate `artwork_estimate` function, not `exact_domain_artworks`, so it
-  didn't fully inherit this round's new exactness (improved, not closed) — tracked as
-  [local-engine-nway-followup-queue.md](local-engine-nway-followup-queue.md)'s item #2.
+  still-open item. ~~A NEW gap surfaced during this round's own verification: `unique=artwork`'s
+  top-level acquire path routes through a separate `artwork_estimate` function~~ — **closed in Round
+  52**: `acquire_plan_features`'s `unique=card`/`unique=artwork` branches now consult
+  `est.result.card`/`.artwork` (the SAME `ComposeEstimate` already computed a few lines earlier) as an
+  ADDITIONAL `.min()` tightening on top of the pre-existing calibrated-estimate baseline — never a
+  replacement for it. That distinction mattered: a first attempt that replaced the baseline outright
+  (reasoning that `est.result.card`/`.artwork`, like `exact_result_total`, is "exact") caused a real
+  170x regression on a real corpus query (`id:ruw usd:0.50 cmc>=2`, artwork mode, 123→21,048) — because
+  unlike `exact_result_total` (every arm gated to require an exact whole-filter shape-match, confirmed
+  by re-reading each arm's own guard), `est.result.card`/`.artwork` can legitimately come from a
+  mechanism covering only a SUBSET of the And's children (the same residual-scan architecture Rounds
+  42/48/50 built on purpose for printing space) — a genuine upper bound, but sometimes an extremely
+  loose one. Caught by the corpus sweep before shipping, fixed to a strict `.min()`-tightening, and now
+  a dedicated regression test. Independently re-verified: both motivating populations from Round 51 are
+  now exact in artwork mode, the regression scenario stays correct on both wheels, and a direct
+  row-by-row sweep comparison (not just the aggregate stat) found zero regressed rows.
 - ~~A real, separate nondeterminism bug (Round 46)~~ — **closed in Round 47.** `top_n_and_rest_max`
   (`build_subtype_pair_tables`'s shared cutoff) now extends past `n` to include every pair tied with
   the boundary card count, rather than a plain `sort_unstable_by_key` + `truncate` with no tiebreak.

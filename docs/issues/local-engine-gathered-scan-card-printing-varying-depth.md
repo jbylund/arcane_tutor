@@ -204,6 +204,80 @@ total regret by 0.0 ms).
 | 49 | Loosens the independence registry's `covered` gate from leaf-occupancy to subset-identity: `CoveredState { flags, subsets: Vec<u64> }` replaces the bare `covered: Vec<bool>` — `flags` keeps the unchanged Round-40 leaf-level bookkeeping, `subsets` records one bitmask per genuine joint hit (via `mark_covered`/`pair_bounded_min`). The independence registry no longer skips a leaf merely because SOME other mechanism touched it (`is_covered` deleted); it declines a candidate pairing only when that pairing's own combined leaf-mask exactly equals an already-recorded subset | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 66,366 shared rows (fresh seed): 378 plan-choice flips (0.6%), 100% confined to `root=and`'s `*+usd` star/cube shapes (`star:legality+identity+usd` 13.9%, `star:legality+color+usd` 12.8%, `star:legality+cmc+usd` 4.6%, `star:color+identity+usd` 3.4%, `star:cmc+type+usd` 2.2%, `subtype_cube:type+cmc+usd` 2.2%, `star:identity+type+usd` 1.6%, `star:color+type+usd` 1.3%); `root=leaf`/`root=or` show zero changes. Ratio diagnostic: mean abs-log-ratio **−0.034** (95% CI [−0.036, −0.032], excludes 0) — **"B is MORE accurate"**, reversing Round 48's own "B is LESS accurate" finding | see "Round 49" narrative below — independently reproduced end to end: the regression case (`t:elf usd<0.20 cmc>=2`) recovers exactly to printing=425 (matching the pre-Round-48 answer), Round 48's own motivating case (`t:elf cmc>=5 usd<10`) stays unchanged at 241, both traced via `and_trace` on isolated release wheels built myself, not just the implementing agent's report |
 | 50 | "Anchored independence" for `SubtypeArithBox`: on a box hit, scans for a SINGLE residual leaf classifying as `IndepClass::Price` (declines entirely if 2+, the price-triple guard) and multiplies the box's own exact joint by that leaf's solo rate, folding the product as a new `Estimate`-class candidate (`"SubtypeArithAnchoredIndependence"`) via `.min()`. Deliberately narrow — only `SubtypeArithBox`, only `Price` — mirroring Round 38/42's own "one mechanism, one class, validate, then expand" discipline | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 66,363 shared rows (fresh seed): 14 plan-choice flips (0.0%), 100% confined to `subtype_cube:type+cmc+usd` (9/900) and `star:cmc+type+usd` (5/900); `root=leaf`/`root=or` zero changes. Ratio diagnostic: mean abs-log-ratio −0.002 (95% CI [−0.002, −0.001], excludes 0) — "B is MORE accurate" | see "Round 50" narrative below — independently reproduced: `t:elf cmc>=5 usd<10` (true 177) tightens 241→188 (1.36x→1.06x); `t:elf usd<0.20 cmc>=2` (true 366), not required by the plan but checked anyway, ALSO improves 425→370 (1.16x→1.01x) — a genuine bonus, not assumed |
 | 51 | `ArithTupleIndex` gains `totals: Vec<SpaceTotals>`, one exact (printing,card,artwork) triple per distinct (cmc,power,toughness,loyalty) combination, summed once at build time from that key's own postings (`offsets`/`artwork_base`, already in scope at the one call site). `arith_tuple_count`→`arith_tuple_totals` now returns the exact triple instead of a card count; all 3 call sites updated — the main And-arm joint now folds `Candidate::Exact` (closing Round 46's census blind spot), the independence registry's Cmc/Pow multi-unit gains real `artwork: Some(...)`, the single-leaf fallback gains real card/artwork. `ARCHIVE_FORMAT_VERSION` bumped | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 66,372 shared rows (fresh seed): 144 plan-choice flips (0.2%), 100% confined to cmc/pow/tou-involving shapes; `root=leaf`/`root=or` zero changes. Ratio diagnostic: mean abs-log-ratio −0.003 (95% CI excludes 0) — "B is MORE accurate"; a targeted slice on rows this mechanism won (1,383 rows): `unique=printing` median abs-log-ratio 0.168→0.000 | see "Round 51" narrative below — validated against the real corpus BEFORE scoping (a direct `oracle_id`-grouped check of `corpus.jsonl`, no engine build needed) and independently re-reproduced after merging: `cmc>=8 power<=2` printing 30→21 (true 21, exact); `cmc<=1 power>=1 tou>=1` printing 3225→2786 (true 2786, exact). A real, honestly-flagged pre-existing gap found (not fixed, out of scope): `unique=artwork`'s own acquire path routes through a separate `artwork_estimate` function, not this mechanism's `exact_domain_artworks` — artwork FINAL improves but doesn't fully close (15 vs true 13, was 22) |
+| 52 | Wires `est.result.card`/`.artwork` (`compose_printing_estimate`'s own And-arm fold, already computed) into `acquire_plan_features`'s `unique=card`/`unique=artwork` acquire path, closing Round 51's own artwork gap — folded in as an ADDITIONAL `.min()` tightening on top of the pre-existing calibrated-estimate baseline, never a replacement for it. `exact_result_total` (the existing exact source for these modes) is untouched | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 66,378 shared rows (fresh seed): 184 plan-choice flips (0.3%), `root=leaf` 0.0%/`root=or` 0.0%. Ratio diagnostic: mean abs-log-ratio −0.017 (95% CI excludes 0) — "B is MORE accurate". Independently re-verified row-by-row (not just the aggregate): **zero rows regressed**, 3,038 improved | see "Round 52" narrative below — a real regression in the round's OWN first attempt was caught by the corpus sweep before shipping (a plain outright-replacement merge let a partial-subset exact mechanism's own valid-but-loose bound override a much-better calibrated estimate, `id:ruw usd:0.50 cmc>=2` artwork mode: 123→21,048 against true 123, a 170x regression) — the shipped fix instead layers `est.result.card`/`.artwork` as a tightening-only `.min()`, independently reproduced: both motivating queries now exact (`cmc>=8 power<=2` artwork 15→13, `cmc<=1 power>=1 tou>=1` artwork 1993→1400), and the regression scenario stays correct (123) on both wheels |
+
+### Round 52
+
+Target: close the `unique=artwork` acquire-path gap Round 51's own verification surfaced — queue item
+#2 in [local-engine-nway-followup-queue.md](local-engine-nway-followup-queue.md). Traced precisely (with
+one honest methodology stumble along the way, see below): `acquire_plan_features`'s `unique=printing`
+gets its number from `printing_matches = est.result.printing` — `compose_printing_estimate`'s own
+tightest fold, correct since Round 51. But `unique=card`/`unique=artwork` read from a completely
+different, narrower function instead — `exact_result_total`, a hand-maintained mirror recognizing only
+specific shapes (bare ranges, bare rarity, a 2-leaf `Eq`-only pair, `SetSubtypeTable`'s own arm, a
+subtype+arith whole-query shape, a single bare arith leaf for Card mode only) — with no arm at all for a
+pure 2+-leaf arith-tuple `And` (no subtype leaf involved). It declines, and artwork mode falls through to
+`artwork_estimate`, a statistical projection that never looks at `compose_printing_estimate`'s own
+result at all — even though `ComposeEstimate.result.card`/`.artwork` (the SAME `est` already computed a
+few lines earlier) already carries a structurally-exact figure whenever any And-arm mechanism fires,
+computed and thrown away.
+
+**A real methodology stumble, caught and corrected before it produced a wrong finding.** My own first
+attempt at re-verifying the gap used the stale, in-repo `.so` at `card_engine/card_engine/` — an
+editable build from August 26, predating Rounds 48-51 entirely — via a bare `import card_engine`, which
+gave misleadingly "already exact" results and nearly derailed the whole investigation. Caught by
+checking `card_engine.card_engine.__file__`'s own path; every finding in this round, from both me and
+the implementing agent, is from a freshly-built isolated wheel with that path explicitly asserted.
+
+**A real regression in this round's own FIRST fix attempt, caught by the corpus sweep before
+shipping.** The plan called for a plain `.min()`/`.or()` merge of `exact_result_total` with
+`est.result.card`/`.artwork`, reasoning that both are "exact." That reasoning had a real gap:
+`exact_result_total`'s own arms are each gated to require an EXACT shape-match of the WHOLE composed
+filter (confirmed directly: every arm's own guard — `children.len() == 2`, `[a, b] =
+children.as_slice()`, `arith_children.len() + 1 == children.len()` — can only fire when it explains
+every child, never a subset), so replacing the calibrated fallback outright with it was always safe.
+But `est.result.card`/`.artwork` can legitimately come from a mechanism covering only a SUBSET of the
+And's children — exactly the "residual scan" architecture Rounds 42/48/50 spent this whole arc
+building, on purpose, for the printing-space `result` field. Found directly on a real corpus query
+while validating: `id:ruw usd:0.50 cmc>=2`, artwork mode — `ColorCmcTable`'s own exact `(identity, cmc)`
+joint is a real, valid upper bound (21,048) but blind to the highly-restrictive `usd:0.50` residual
+(true answer: 123). Applying it as an outright replacement regressed this query by two orders of
+magnitude (123 → 21,048) — caught by `nway_estimate_truth_survey.py --compare`'s own ratio diagnostic
+flipping to "B is LESS accurate" before the fix was ever committed as final.
+
+**The shipped fix**: `est.result.card`/`.artwork` folded in as an ADDITIONAL `.min()` TIGHTENING layered
+on top of the pre-existing calibrated-estimate baseline (always computed first, never skipped) — never
+a replacement for it, mirroring how the pre-existing `domain_cards` tightening a few lines below already
+uses the same field safely. Since `est.result.card`/`.artwork` is always a genuine upper bound on the
+true count when it fires (it can only be too loose, never too small — `Candidate::Estimate` structurally
+cannot touch card/artwork space at all, so no estimate-class candidate can ever contaminate it), this
+merge is a mathematically strict tightening: it can only pull the reported value DOWN toward the truth,
+never push it UP past a reasonable calibrated guess, regardless of whether the And-arm's own value
+happens to be tight or loose for the FULL query. `exact_cards`/`exact_total` (from `exact_result_total`
+alone) are untouched — already safe to adopt outright, as they always were.
+
+**Verification, independently reproduced.** `cargo test`: 251 passed debug / 248 passed release (exact
+baseline+3). `cargo clippy --all-targets -- -D warnings`: clean on debug; release shows only the same
+pre-existing `ARITH_TUPLE_BLOWUP_CARDS` dead-code warning confirmed unrelated in every prior round.
+
+Rebuilt both isolated release wheels myself (before = fresh clone at `d5192fb0`, after = the agent's
+commit), `__file__` explicitly asserted both times, and reproduced all three key numbers directly via
+`engine.explain()`: `cmc>=8 power<=2` artwork FINAL 15→13 (true 13, now exact); `cmc<=1 power>=1
+tou>=1` artwork FINAL 1993→1400 (true 1400, now exact); and — the critical regression check —
+`id:ruw usd:0.50 cmc>=2` artwork FINAL stays 123 (true 123) on BOTH wheels, confirming the shipped
+`.min()`-as-tightening design does not reintroduce the 170x regression the first attempt caused.
+Re-ran `nway_estimate_truth_survey.py --compare` myself (fresh seed, 66,378 shared rows): 184
+plan-choice flips (0.3%), `root=leaf`/`root=or` both exactly 0.0%. Ratio diagnostic mean abs-log-ratio
+−0.017 (95% CI excludes 0) — "B is MORE accurate". Went a step further than the aggregate stat:
+computed a direct row-by-row comparison myself (not just the survey's own summary) — confirmed
+**zero rows regressed**, 3,038 improved.
+
+Blast radius: `card_engine/src/lib.rs` (+38/-2 lines, two `.min()`-tightening sites plus doc comments),
+`card_engine/src/tests.rs` (+307 lines, 3 new tests: the real motivating shape driven end to end through
+`acquire_plan_features` with an explicit "seed choice must not already undershoot" sanity check, a
+direct unit test of the `.min()`-merge's own safety property, and a hand-built reconstruction of the
+exact `id:ruw`-shaped regression proving the shipped code declines to let a partial-subset value leak
+through).
 
 ### Round 51
 
