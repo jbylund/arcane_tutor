@@ -9754,11 +9754,22 @@ const INDEP_CLASS_ORDER: [IndepClass; INDEP_CLASS_COUNT] = [
 /// classification (`identity+set`: median abs-log-ratio 1.151->0.106 combined, 118 improved/3
 /// regressed of 122 scored rows, printing space, n=300 draws; `pow+set`: 1.114->0.154, 72/1 of 73 --
 /// both far past the bar Round 38's own 610-row calibration used). Legality x {SetCode, DateCmp,
-/// YearCmp} is DELIBERATELY absent -- format legality is date-DEFINED (a format's cutoff IS a release
-/// date), a categorically different case from a real-world correlation-with-exceptions, reserved for a
-/// future EXACT per-(set,format) mechanism (the SubtypePairIndexes/#743-shaped fix Round 34 already
-/// proved out for a different pair), not independence -- left exactly as it behaves today (plain
-/// fold), not calibrated, not added, regardless of what a quick check might show. Same-currency price
+/// YearCmp} is DELIBERATELY absent, but **NOT for the reason this comment used to give**. It claimed
+/// "format legality is date-DEFINED (a format's cutoff IS a release date), a categorically different
+/// case from a real-world correlation-with-exceptions." Round 57 measured that and it is false in the
+/// space this arm works in: legality is CARD-level while `released_at` is PRINTING-level, so reprints
+/// scatter a format's legal cards across the whole axis -- every format except `oldschool` has legal
+/// printings back to 1993-08-05. The cutoff governs SET legality, not the printing population an
+/// estimate sees. What actually breaks independence here is ordinary (if extreme) correlation: a
+/// format's legal DENSITY varies over time, and independence substitutes the global density for the
+/// local one, so its error is exactly `global_density / window_density`. Measured skew spreads run from
+/// 1.0x (`legacy`/`commander`/`vintage` -- independence is essentially EXACT for those) to 250x
+/// (`oldschool`), which is the real source of the blowups that earned the blanket exclusion.
+///
+/// The DateCmp/YearCmp half is now moot rather than merely excluded: Round 57's `LegalityDateTotals`
+/// answers `(format, status) x released_at` EXACTLY in printing space for every range shape, so there
+/// is nothing left for independence to approximate there. `Legality x SetCode` is still genuinely
+/// absent and still uncalibrated. Same-currency price
 /// crosses (`usd`x`eur` etc) are also absent: this round's own calibration found a genuinely MIXED
 /// signal (`usd`x`eur` net WORSE in printing space -- median 0.159->0.394 -- while `usd`x`tix`/
 /// `eur`x`tix` net better), inconsistent enough on top of the design doc's own correlation reasoning
