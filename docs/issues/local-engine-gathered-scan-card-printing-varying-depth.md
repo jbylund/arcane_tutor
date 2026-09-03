@@ -211,6 +211,93 @@ total regret by 0.0 ms).
 | 56 | Anchored independence for `ColorCmcTable`, the second anchor mechanism after Round 50's: that table's own EXACT `(color\|identity, cmc)` joint times a single residual `IndepClass::Price` leaf's own solo rate, folded as `Candidate::Estimate`. Round 50's inline closures hoisted into one shared `anchored_price_residual`/`anchored_leaves_for` both anchor sites call. NO fudge factor (swept and rejected), and deliberately NO `mark_covered`, inheriting `ColorCmcTable`'s own measured reason | kept | n/a (not this doc's own metric) | The routing-relevant metric this round exists for — `root=and` rows straddling the 1,024 `STREAM_MIN_MATCHES` boundary with >=200 absolute AND >=10% relative error, independently re-run by me at seed 7 over 39,411 shared and-rows: **1,016 -> 880 (-13.4%)**, over-side 845 -> 704 (-141), under-side 171 -> 176 (+5). 141 fixed, only 5 newly routing-relevant (all moderate under-shoots, pred 845-915 against truths 1,090-1,239). 146 plan flips, **every one in the intended direction** (145 `StreamedSelect -> GatheredScan`, 1 `PrintingCompose -> StreamedSelect`, zero the other way). Entirely confined to `star:identity+cmc+usd` (95 -> 21) and `star:color+cmc+usd` (78 -> 16); every other shape zero delta. Monotonicity confirmed empirically: 1,229 predictions changed, **0 increased** | see "Round 56" narrative below — validated BEFORE scoping (median 1.97x -> 1.01x on a 70-query random sample of the full shape population, deliberately not the straddling tail), including a factor sweep that **rejected** the fudge factor on real data. A pre-existing test's expected number legitimately changed; a zero-prediction case was checked directly against the empty-conjunction short-circuit risk |
 | 57 | `LegalityDateTotals`: an EXACT per-`(format, status)` prefix sum over the `released_at` value axis (924 distinct dates), answering `f:X` × any date range in printing space by one subtraction. Keyed by the existing `legality_totals_key`; pruned by a 1,024-printing selectivity floor (`PairTotals`' own principle) AND by a second rule the plan didn't anticipate — drop any key covering the whole date index, which removed 9 phantom keys | kept | n/a (not this doc's own metric) | Routing-relevant straddles (>1,024 boundary, >=200 abs, >=10% rel), agent's sweep at seed 20260903 over 47,118 `root=and` rows: printing 463 → 452 (**−11**, all over-side), card 309 → 306 (−3), artwork 305 → 297 (−8); ALL 1,077 → 1,055. **Every one of the −22 is in `unsafe:legality+released`** (50 → 28); no other shape moved a single straddle. Target shape ratio, printing: median 1.02x → **1.00x**, p90 3.64x → **1.00x**, max 16.81x → **1.00x**. Coverage 0/900 → 813/900. 46 plan flips (0.1%), all in the target shape, and among those rows the count sitting on the wrong side of 1,024 went **31 → 8** | see "Round 57" narrative below — the investigation retracted its own premise twice before landing, an unplanned 9-phantom-key finding, and one honest cost: 173 card/artwork ratio regressions whose mechanism I verified and whose fix is the next round |
 | 58 | Splits every space into two independent channels — `SpaceMeasure { guaranteed, estimate }` — so a PROVEN bound and a BEST GUESS stop competing for one `.min()` slot. `Candidate::Exact` feeds `guaranteed`, `Candidate::Estimate` feeds `estimate`; consumers needing soundness read `guaranteed`, consumers needing accuracy read `estimate.min(guaranteed)`. `exact_domain` retained as its own `ExactDomain` type (a stronger cross-space same-set claim, not a synonym). **Phase 2 (the planned `COMPOSE_CARD_ESTIMATE_BIAS` skip) was measured to FAIL and deliberately NOT taken** | phase 1 kept, phase 2 rejected | n/a (not this doc's own metric) | **Byte-identical, verified at three independent seeds**: the agent at 64,581 (seed 20260958) and 64,563 (20260903) rows, and me at 54,336 shared rows (seed 4242) — zero differences on `predicted_matches`, `picked_plan`, `and_mechanism`, and additionally `count_source`/`true_total`/`n_plans_ran` in my run. Row sets matched exactly. So every straddle count and plan choice is unchanged by construction. `cargo test` 290 debug / 287 release (+6 tests). Timing: a flat **+25 to +110 ns** per `compose_printing_estimate` call (~1% on queries with real work, +8.9% bare leaves, +13.7% `Or`), measured interleaved A/B/A/B rather than by canary | see "Round 58" narrative below — the phasing caught a real `Or`-arm fold bug that would have been invisible in a blended round, and phase 2's rejection corrected a false premise **in my own plan** |
+| 59 | Makes `guaranteed` honest, enforcing "a source may claim a bound only if its number is a real count of a real set". **Three** leaf arms demoted to estimate-only (`FilterExpr::Legality`, the broadcast/devotion arm, and — found by auditing every arm rather than the two the plan named — the bare cmc/pow/tou `bare_numeric_field_count` branch), all three reporting `card_count * n_printings / n_cards`. Two mechanisms promoted via a new `Candidate::PrintingBound` variant: `LegalityDateTotals` (exact prefix-sum subtraction) and `PriceJointTable` (any overlap counted in full, hence a structural over-count). Plus the `And` arm's seed fixed — see below, without it the round does nothing above a single leaf. Plus a standing soundness check and the long-standing release-clippy error | kept | n/a (not this doc's own metric) | **Byte-identical**, independently verified by me at seed 777 over 54,321 shared rows: zero differences on `predicted_matches`/`picked_plan`/`and_mechanism`/`count_source`/`n_plans_ran`/`true_total`/`ratio`/`abs_log_ratio` **and on the entire `and_trace` dict**; agent's own run agrees at 64,605 keys. So the straddle table is empty in both directions and all three `unique` values. `cargo test` 299 debug / 296 release (+9). **`clippy --all-targets -- -D warnings` clean in BOTH profiles for the first time in this arc.** New `scripts/check_bound_class_soundness.py`: 5,553 bound-class candidates over 12 mechanisms in my run, none below truth | see "Round 59" narrative below — **two of this round's plan's claims were wrong and are corrected there**, plus the `best()`-laundering rule that generalizes beyond this round |
+
+### Round 59
+
+The round did what it set out to do structurally, and **two things its own plan asserted were wrong**.
+Both corrections are worth more than the round's mechanics.
+
+**Correction 1: it does not change behaviour.** The plan said "This round DOES change behaviour, so
+report routing-relevant straddles." It is byte-identical — zero prediction changes across 54,321 shared
+rows at my seed and 64,605 keys at the agent's, including the full `and_trace` dict. Reassigning which
+channel a number lives in cannot move an answer while `best()` still reads `min(guaranteed, estimate)`.
+
+**Correction 2: the 29 outvoted rows do NOT recover, and channel reassignment structurally cannot
+recover them.** The plan claimed demoting the `Legality` leaf out of `guaranteed` would stop it winning
+folds it should lose. It does not: `best()` is the min across BOTH channels, so moving a small number
+between them leaves it just as small and just as winning. Measured 0 of 25 (25 rather than 29 only
+because the seed differs; the set is identical before and after). The trace makes it plain:
+
+```
+considered  LegalityDateTotals  hit=True  printing=15090      <- exact, and now in `guaranteed`
+tree: op min_fold printing=11361
+  leaf printing=89264  YearCmp { op: Ge, year: 1999 }
+  leaf printing=11361  Legality { shift: 18, expected: 1 }    <- 0.72x undershoot, still wins
+```
+
+Recovering them needs the leaf to stop undershooting, not to be reclassified. And the real fix is now
+precisely characterised, which is the round's most useful output: the `Legality` arm already calls
+`exact_result_total(filter, indexes, Mode::Artwork)`, and the same function answers `Mode::Printing`
+exactly from `value_totals.legality`. Measured across all 16 formats in the survey catalog,
+leaf-scaled against that exact number: **0.647-0.955, median 0.850, 16 of 16 under truth** — a 4.5-35.3%
+undershoot, materially worse than the "5-13%" this doc previously recorded. Deliberately not taken here,
+since it is a real behaviour change owed its own validated round.
+
+**The catch that saved the round from being inert.** The `And` arm seeded its printing accumulator as
+`SpaceMeasure::known(pair_bounded_min(v, indexes, folded.result.printing(), ...))` — and
+`SpaceEstimate::printing()` IS `best()`. So the seed collapsed the per-leaf channel split into one
+`usize` and re-asserted it as proven, laundering a demoted leaf's approximation straight back into
+`guaranteed` one level up. That collapse is exactly what made Round 58 byte-identical, and it means the
+leaf demotions accomplish nothing above a single leaf without fixing it. Measured on an `f:A cmc<=1`
+fixture (both leaves demoted, true printing count 100): pre-fix the arm's `guaranteed` reads **36**,
+0.36x of truth, *in the channel the queued cross-space clamp is meant to clamp card and artwork down
+to*. Post-fix it is the domain. `pair_bounded_min` is now handed `guaranteed` rather than `best()`,
+which is sound because its own contributions are real counts (a stored `PairTotals` entry, or a
+disjointness proof's exact 0) — bound in, bound out. `best()` is unchanged either way, which is why
+byte-identity survives.
+
+**The rule that generalizes: a number derived from `best()` may never be written to `guaranteed`,**
+because `best()` can resolve from the estimate channel. Now recorded on `SpaceMeasure` itself. This is
+the general form of the seed bug and the thing most likely to be reintroduced.
+
+**A new non-invariant, also documented:** `printing.guaranteed.is_some()` is NOT invariant —
+`SpaceMeasure::add` needs both sides proven, so an `Or` of two demoted leaves leaves it absent.
+`printing.best().is_some()` still is, since every constructor fills the estimate channel.
+
+**The audit found three leaf arms, not two.** Applying the rule to every arm rather than the two the
+plan named turned up the bare cmc/power/toughness `bare_numeric_field_count` branch doing the identical
+reprint-ratio scaling — the highest-traffic of the three. Its `arith_tuple_totals` fallback is a real
+triple and keeps both channels.
+
+**Two corrections to the plan's smaller claims**, from the agent: only ONE member of
+`is_estimate_class_mechanism` now also contributes a bound (`LegalityDateTotals`), not two —
+`PriceJointTable` was never in that list, so it already out-ranked three-space mechanisms for trace
+attribution, which this round makes accidentally correct. And that predicate has exactly one call site
+(`and_trace_build_tree`'s winner selection); the old doc credited it for the `And` arm's `covered`
+bookkeeping, which is hand-written per call site. The name was kept because every accurate rename would
+imply moving `LegalityDateTotals` out of the list, changing `explain` output — i.e. retiring R40's
+class-priority rule, which is out of scope.
+
+**`SetCollectorRange` stayed out**, per the earlier decision, and is now pinned by a test on a
+non-contiguous `gap` set. The `Legality` leaf's own new test additionally *documents* a live
+`artwork(100) > printing(36)` cross-space violation and why the clamp had to wait for this round.
+
+**Two standing artifacts.** `scripts/check_bound_class_soundness.py` asserts no bound-class mechanism's
+printing-space candidate falls below truth, checking each candidate's OWN `and_trace.considered` number
+(losers included) rather than `predicted_matches` — stricter than the row-level view, which is where the
+card/artwork derivation confound lives. 5,553 candidates over 12 mechanisms in my run, none below truth,
+including 630 `PriceJointTable` and 242 `LegalityDateTotals`, corroborating both promotions' structural
+arguments. And the `ARITH_TUPLE_BLOWUP_CARDS` release-clippy error — reported as "pre-existing, left
+alone" by five consecutive rounds — is fixed by gating the const to `#[cfg(debug_assertions)]`, matching
+its only consumer; `cfg` rather than `#[allow(dead_code)]` because the const genuinely should not exist
+in a release build. **Both clippy profiles are clean for the first time in this arc**, so "release clippy
+is clean" is now a real signal rather than a skimmed caveat.
+
+Timing: nothing measurable, as expected for pure channel reassignment — 790 ns → 770 ns with 0 of 500
+queries outside a +/-100 ns band, against a same-build control showing a 10 ns shift with 3 of 500
+outside it. Worth noting the agent's bootstrap CI called even the identical-build control "significant",
+which is a caution about trusting that CI at this magnitude.
 
 ### Round 58
 

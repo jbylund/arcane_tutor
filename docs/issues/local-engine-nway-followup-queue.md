@@ -1,6 +1,6 @@
 # N-Way Estimator Follow-Up Queue
 
-Tracks what's left from the `And`-arm cardinality-estimation arc (Rounds 33-58), in the order we
+Tracks what's left from the `And`-arm cardinality-estimation arc (Rounds 33-59), in the order we
 intend to tackle it. This doc is the queue, not the depth — the round-by-round numbers live in
 [local-engine-gathered-scan-card-printing-varying-depth.md](local-engine-gathered-scan-card-printing-varying-depth.md),
 and the architecture/design rationale lives in
@@ -10,28 +10,22 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
 
 ## Active queue (in order)
 
-1. **Make `guaranteed` honest: audit every source that claims a proven upper bound.** Round 58 created
-   the two-channel `SpaceMeasure { guaranteed, estimate }` but, being byte-identical by construction,
-   left the channel assignments as-is — so `guaranteed` currently both OVER-claims and UNDER-claims.
-   The rule to enforce: a source may claim `guaranteed` only if its number is a real count of a real
-   set. An independence product never qualifies; a table lookup does.
-   - **Over-claiming (fix first).** `SpaceMeasure::known(v)` sets BOTH channels, and two leaf arms
-     (`FilterExpr::Legality`, the `is_broadcast_leaf_shape`/devotion arm) report
-     `card_count * n_printings / n_cards`, an average-case approximation measured to UNDERSHOOT by
-     5-13%. So `guaranteed` holds values BELOW truth today. Reclassing them estimate-only is also
-     exactly the fix for Round 57's 29 exactly-right-but-outvoted rows.
-   - **Under-claiming.** `LegalityDateTotals` (Round 57) is EXACT in printing space but folds
-     `Candidate::Estimate`, because `Candidate::Exact` demanded a full three-space triple it did not
-     have. Round 58 made "exact in one space, no claim in the others" expressible, so it can now claim
-     `guaranteed.printing` properly.
-   - **Audit the rest against the rule** rather than trusting the existing `is_estimate_class_mechanism`
-     split: confirm every `Candidate::Exact` user really counts a real set, and that every estimate-class
-     mechanism (`Independence`, `SetCollectorRange`, `SubtypePairEstimate`, both anchored-independence
-     arms, `SubtypeSubtypeEstimate`) really is a guess. Anchored independence is exact-joint x
-     estimated-rate, so it is a guess despite its exact anchor.
-   - **Must precede the cross-space clamp below**: clamping `guaranteed.artwork` to a
-     `guaranteed.printing` that is itself an undershooting approximation would propagate the undershoot
-     into artwork space.
+1. **Stop the `Legality` leaf (and its two siblings) undershooting — the real fix Round 59 identified.**
+   Round 59 demoted three leaf arms out of `guaranteed`, which made the channel honest but recovered
+   **0 of the 25** exactly-right-but-outvoted rows, because `best()` is `min(guaranteed, estimate)` and
+   the undershoot is still the smallest number in the fold. Reclassification cannot fix these; the leaf
+   has to stop being wrong.
+   - **The fix is nearly in hand.** The `Legality` arm already calls
+     `exact_result_total(filter, indexes, Mode::Artwork)`; the same function answers `Mode::Printing`
+     exactly from `value_totals.legality`. Measured across all 16 formats in the survey catalog,
+     leaf-scaled vs that exact number: **0.647-0.955, median 0.850, 16/16 under truth** — a 4.5-35.3%
+     undershoot, worse than the 5-13% previously on record.
+   - Do the same audit for the other two demoted arms (broadcast/devotion, and the bare
+     cmc/pow/tou `bare_numeric_field_count` branch) — all three use `card_count * n_printings / n_cards`
+     and each may have an exact counterpart available.
+   - This IS a behaviour change (unlike Round 59), so it needs the full straddle-by-direction-and-unique
+     treatment, and watch for shapes that relied on the undershoot being load-bearing.
+   - `scripts/check_bound_class_soundness.py` should stay green throughout.
 2. **Backport the `rest_max` triple + space-native independence to `SetSubtypeTable` /
    `ColorSubtypeTable`.** Round 55 shipped both ideas for the new `(subtype, subtype)` table but
    deliberately left these three untouched, so they still rank their top-256 by CARD count alone and
@@ -177,6 +171,12 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
   that an estimate about it can change a routing decision"); apply it when CHOOSING a target, not just
   when building one. It picked Round 56's target and correctly vetoed the shape the ratio tables
   ranked first.
+- **A number derived from `best()` may NEVER be written to `guaranteed`.** `best()` is
+  `min(guaranteed, estimate)` and can resolve from the estimate channel, so wrapping it in
+  `SpaceMeasure::known()` launders a guess into the proven-bound channel. Round 59 found exactly this in
+  the `And` arm's own seed, where it made the root's `guaranteed` read 36 against a true 100. Recorded on
+  `SpaceMeasure` itself. Corollary: `printing.guaranteed.is_some()` is NOT an invariant (an `Or` of two
+  estimate-only leaves leaves it absent); `printing.best().is_some()` is.
 - **An estimate-class mechanism must be POSITIONED after every exact mechanism whose leaves it could
   compete for** — not merely made to respect `covered`, which only ever reflects what already ran.
   Round 55 demonstrated this concretely: its fallback, placed (per its own plan) before
@@ -240,6 +240,13 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
   (the `COMPOSE_CARD_ESTIMATE_BIAS` skip) was measured to fail and deliberately not taken — preserved
   unmerged on `r58-phase2-measured-bad` (`e1d4fba7`, `e5f75f45`). Makes the five workarounds listed in
   the ledger's Round 58 section retirable, and item #1 above is the first of them.
+- Round 59: `guaranteed` made honest — three leaf arms demoted to estimate-only, `LegalityDateTotals`
+  and `PriceJointTable` promoted via a new `Candidate::PrintingBound`, and the `And` arm's seed fixed so
+  it no longer launders a `best()`-derived number into `guaranteed`. Byte-identical at two independent
+  seeds. Shipped `scripts/check_bound_class_soundness.py` (a standing check that no bound-class
+  mechanism predicts below truth) and finally fixed the `ARITH_TUPLE_BLOWUP_CARDS` release-clippy error
+  — **both clippy profiles are clean for the first time in this arc**. Recovered 0 rows by design; item
+  #1 above is the fix it identified.
 - Harness fix (no round number, a Python-only fix outside the engine): `client/query_sampler.py`'s
   `_count_row` folded oracle/flavor words via `Counter.update(set(...))` — bare-set iteration is
   hash-seed-randomized per process, so tied-frequency co-occurring words could swap `most_common()`'s
