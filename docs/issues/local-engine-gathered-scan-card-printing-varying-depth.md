@@ -205,6 +205,89 @@ total regret by 0.0 ms).
 | 50 | "Anchored independence" for `SubtypeArithBox`: on a box hit, scans for a SINGLE residual leaf classifying as `IndepClass::Price` (declines entirely if 2+, the price-triple guard) and multiplies the box's own exact joint by that leaf's solo rate, folding the product as a new `Estimate`-class candidate (`"SubtypeArithAnchoredIndependence"`) via `.min()`. Deliberately narrow — only `SubtypeArithBox`, only `Price` — mirroring Round 38/42's own "one mechanism, one class, validate, then expand" discipline | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 66,363 shared rows (fresh seed): 14 plan-choice flips (0.0%), 100% confined to `subtype_cube:type+cmc+usd` (9/900) and `star:cmc+type+usd` (5/900); `root=leaf`/`root=or` zero changes. Ratio diagnostic: mean abs-log-ratio −0.002 (95% CI [−0.002, −0.001], excludes 0) — "B is MORE accurate" | see "Round 50" narrative below — independently reproduced: `t:elf cmc>=5 usd<10` (true 177) tightens 241→188 (1.36x→1.06x); `t:elf usd<0.20 cmc>=2` (true 366), not required by the plan but checked anyway, ALSO improves 425→370 (1.16x→1.01x) — a genuine bonus, not assumed |
 | 51 | `ArithTupleIndex` gains `totals: Vec<SpaceTotals>`, one exact (printing,card,artwork) triple per distinct (cmc,power,toughness,loyalty) combination, summed once at build time from that key's own postings (`offsets`/`artwork_base`, already in scope at the one call site). `arith_tuple_count`→`arith_tuple_totals` now returns the exact triple instead of a card count; all 3 call sites updated — the main And-arm joint now folds `Candidate::Exact` (closing Round 46's census blind spot), the independence registry's Cmc/Pow multi-unit gains real `artwork: Some(...)`, the single-leaf fallback gains real card/artwork. `ARCHIVE_FORMAT_VERSION` bumped | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 66,372 shared rows (fresh seed): 144 plan-choice flips (0.2%), 100% confined to cmc/pow/tou-involving shapes; `root=leaf`/`root=or` zero changes. Ratio diagnostic: mean abs-log-ratio −0.003 (95% CI excludes 0) — "B is MORE accurate"; a targeted slice on rows this mechanism won (1,383 rows): `unique=printing` median abs-log-ratio 0.168→0.000 | see "Round 51" narrative below — validated against the real corpus BEFORE scoping (a direct `oracle_id`-grouped check of `corpus.jsonl`, no engine build needed) and independently re-reproduced after merging: `cmc>=8 power<=2` printing 30→21 (true 21, exact); `cmc<=1 power>=1 tou>=1` printing 3225→2786 (true 2786, exact). A real, honestly-flagged pre-existing gap found (not fixed, out of scope): `unique=artwork`'s own acquire path routes through a separate `artwork_estimate` function, not this mechanism's `exact_domain_artworks` — artwork FINAL improves but doesn't fully close (15 vs true 13, was 22) |
 | 52 | Wires `est.result.card`/`.artwork` (`compose_printing_estimate`'s own And-arm fold, already computed) into `acquire_plan_features`'s `unique=card`/`unique=artwork` acquire path, closing Round 51's own artwork gap — folded in as an ADDITIONAL `.min()` tightening on top of the pre-existing calibrated-estimate baseline, never a replacement for it. `exact_result_total` (the existing exact source for these modes) is untouched | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 66,378 shared rows (fresh seed): 184 plan-choice flips (0.3%), `root=leaf` 0.0%/`root=or` 0.0%. Ratio diagnostic: mean abs-log-ratio −0.017 (95% CI excludes 0) — "B is MORE accurate". Independently re-verified row-by-row (not just the aggregate): **zero rows regressed**, 3,038 improved | see "Round 52" narrative below — a real regression in the round's OWN first attempt was caught by the corpus sweep before shipping (a plain outright-replacement merge let a partial-subset exact mechanism's own valid-but-loose bound override a much-better calibrated estimate, `id:ruw usd:0.50 cmc>=2` artwork mode: 123→21,048 against true 123, a 170x regression) — the shipped fix instead layers `est.result.card`/`.artwork` as a tightening-only `.min()`, independently reproduced: both motivating queries now exact (`cmc>=8 power<=2` artwork 15→13, `cmc<=1 power>=1 tou>=1` artwork 1993→1400), and the regression scenario stays correct (123) on both wheels |
+| 53 | `PriceJointTable`: a quantile-bucketed 2D `(usd, eur)` joint (64 buckets/axis, tie-safe construction — never splits a repeated price value, never a degenerate bucket), sparse `HashMap<u32, SpaceTotals>` over only the cell pairs that actually occur, linear-scanned at query time ("any overlap counts fully", no boundary interpolation). Two call sites: a standalone whole-And fold (usd+eur alone) and a new `by_class` special case feeding one combined unit into the existing independence pairing loop (usd+eur + something else) — both `Candidate::Estimate`, never `Exact`. `tix` deliberately untouched (r=0.336, weak) | kept | n/a (not this doc's own metric) | `nway_estimate_truth_survey.py --compare`, 66,378 shared rows (fresh seed): 200 plan-choice flips (0.3%), 100% confined to `unsafe:usd+eur` (690/900, 76.7%); `unsafe:usd+tix`/`unsafe:eur+tix` and every other shape show zero flips; `root=leaf`/`root=or` both 0.0%. Ratio diagnostic: mean abs-log-ratio −0.010 (95% CI excludes 0) — "B is MORE accurate" | see "Round 53" narrative below — validated BEFORE scoping via a real Pearson-correlation check (usd↔eur r=0.877, usd↔tix r=0.336) and a Python 2D-histogram simulation; independently re-verified after merging: all five worst-tail queries land at 1.01-1.24x (was 83-186x). A real, measured inefficiency found by the implementing agent (both call sites firing redundantly for a bare 2-leaf query with nothing to pair against) was fixed before merge, not deferred — see that section for the numbers |
+
+### Round 53
+
+Target: fix the worst-performing shape in the whole estimator, found via a fresh, full-corpus
+accuracy survey (not a targeted follow-up from a prior round's own verification, for the first time in
+this arc) — `unsafe:usd+eur`. `usd>0.75 eur<0.16` predicted 25,444 against a true 137 (185.7× over);
+several other real tail queries in the same shape showed 75-180× error. Root cause: `IndepClass::Price`
+bundles usd/eur/tix into one class, so once 2+ price leaves are present the independence registry's own
+`by_class` bucketing hits its `_ => {}` catch-all ("2+ occurrences of a class with no combining table,
+dropped") and neither leaf becomes a unit at all — the query falls back to a bare per-leaf min-fold, not
+even a naive independence product.
+
+**Validated directly against the real corpus before committing to a design.** Checked the actual
+correlation rather than assuming: `usd`↔`eur` Pearson r=0.877 (strongly correlated — eur tracks a
+related but genuinely separate secondary market, not just an FX rate), but the eur/usd ratio itself
+spans p10=0.346 to p90=1.357 — too wide for a simple "translate the bound" rule to be tight. `usd`↔`tix`
+r=0.336 (weak — MTGO tickets are a mostly-separate economy), consistent with this design doc's own
+earlier finding that `usd`×`tix`/`eur`×`tix` measured "net better" under plain independence — confirming
+this round should target `usd`×`eur` only, leaving `tix` alone. A Python 2D-histogram simulation,
+quantile-bucketed (64 per axis, equal-*count* not equal-width — equal-log-width buckets were checked
+and rejected: they concentrate 38.6% of all mass in 5 of 64 buckets, since MTG prices are heavily
+skewed cheap), gave 1.03-1.52× on the five worst real tail queries — versus 75-180× under the fallback.
+A real degenerate-bucket risk was also checked directly: the top 10 distinct `usd` price points (all in
+the $0.15-$0.30 "bulk common" tier) each carry 1,500-1,700 occurrences on their own, comfortably more
+than a single bucket's ~1,282-item target share at 64 buckets — naive quantile construction would
+either split a repeated price across two buckets or produce empty ones. Fixed with tie-safe
+construction: only cut at an actual value boundary, never inside a run of identical values.
+
+**The architectural simplification that kept this well-scoped**: the `(usd, eur)` joint doesn't need to
+model correlation with anything else — subtype, color, cmc, legality, etc. are all reasonably assumed
+independent of the joint, exactly the same assumption already underlying every other independence
+pairing in this codebase. So the fix didn't need a new end-to-end mechanism handling arbitrary N-leaf
+queries — it only needed to answer `(usd, eur)` correctly in isolation, then plug into the *existing*
+independence-registry pattern as one more unit, exactly mirroring how `IndepClass::Cmc | IndepClass::Pow`'s
+own "multi" bucket already combines several same-field bounds into one unit before pairing outward via
+the existing `independence_safe_pair`/product loop — no new combination math needed there.
+
+**The implementation**, done by a background agent to a pre-approved plan: `PriceJointTable` — each
+axis's own tie-safe quantile bucket edges (raw integer cents, not floats — this codebase already stores
+prices that way everywhere else), plus a sparse `HashMap<u32, SpaceTotals>` over only the
+`(usd_bucket, eur_bucket)` cell pairs that actually occur. No dense 2D array or prefix-sum table: a
+plain linear scan over the sparse map (mirroring `ColorCmp`'s own `value_totals` precedent) at query
+time, "any overlap counts fully" (no boundary interpolation — deliberately out of scope, a plausible
+future refinement). Two call sites: a standalone whole-`And` fold (usd+eur alone, mirroring
+`SetCollectorRange`'s own narrow 2-source gate) and a new special case in the `by_class` multi-arm
+(usd+eur plus something else), both folding `Candidate::Estimate`, never `Exact`.
+
+**A real, measured inefficiency found by the implementing agent and fixed before merging, not
+deferred.** The agent's own report flagged that for a bare 2-leaf `usd+eur` query, *both* call sites
+fire — the standalone fold, and the `by_class` arm (since `Price` has exactly 2 occurrences) — but the
+`by_class` arm's own unit can never pair with anything in that shape (no third source exists to pair
+against), so its own table lookup is pure waste. Measured directly: the bare-2-leaf case cost ~3.6-3.9µs
+median against a 3-leaf case's ~2.7µs (a single scan). Rather than ship known waste and open a separate
+follow-up round for what's a small, well-understood, safe fix, I applied it directly in the agent's own
+worktree before merging: an `and_sources.len() > 2` guard on the `by_class` arm (zero behavior change —
+`_ => {}` already declines to push a unit for any shape it doesn't recognize, and a query with nothing
+else present was never reaching the pairing loop regardless), plus a new assertion in the existing
+standalone-fold test confirming no `Independence` group appears for this shape (the arm is never even
+attempted, not just outcompeted). Independently re-measured after the fix: median dropped to ~1.875µs,
+almost exactly halved as predicted.
+
+**Also flagged by the agent, correcting an assumption in the plan itself**: the real corpus populates
+1,834 of 2,860 possible cells (55×52 buckets after tie-collapse, not the assumed 64×64) — 64% density,
+not "far fewer" as the `ColorCmp` precedent's own doc implied at a much smaller (a few dozen entries)
+scale. The linear scan is still fast in absolute terms (microseconds), but this is a real, non-trivial
+cost documented honestly in the code rather than left as the original "cheap" assumption.
+
+**Verification, independently reproduced.** `cargo test`: 259 passed debug / 256 passed release (exact
+baseline+8, the new tests) — confirmed unchanged after applying the guard fix on top. `cargo clippy
+--all-targets -- -D warnings`: clean on debug; release shows only the same pre-existing
+`ARITH_TUPLE_BLOWUP_CARDS` dead-code warning confirmed unrelated in every prior round.
+
+Rebuilt both isolated release wheels myself (before = fresh clone at `d45476e9`, after = the agent's
+commit plus my own guard-fix commit), `__file__` explicitly asserted both times, and reproduced all
+five motivating queries directly via `explain()`: `usd>0.75 eur<0.16` 25,444→139 (true 137, 1.01x);
+`usd>0.52 eur<=0.18` 30,213→297 (true 286, 1.04x); `usd>1.75 eur<=0.38` 19,351→240 (true 193, 1.24x);
+`usd>4.13 eur<0.86` 12,097→173 (true 140, 1.24x); `usd>0.42 eur<0.16` 25,444→327 (true 307, 1.07x) — all
+matching the agent's own reported numbers exactly. Re-ran `nway_estimate_truth_survey.py --compare`
+myself (fresh seed, 66,378 shared rows): 200 plan-choice flips (0.3%), 100% confined to
+`unsafe:usd+eur` (690/900, 76.7% — up from a much lower pre-round coverage), `unsafe:usd+tix`/
+`unsafe:eur+tix` and every other shape at exactly 0.0%, `root=leaf`/`root=or` both 0.0%. Ratio
+diagnostic mean abs-log-ratio −0.010 (95% CI excludes 0) — "B is MORE accurate".
 
 ### Round 52
 

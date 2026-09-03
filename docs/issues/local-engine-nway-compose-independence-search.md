@@ -226,9 +226,17 @@ confirmed uniform across all three currencies), `id×set` (1.151→0.106), `pow�
 grid search over a multiplicative bias (`fudge × independence`, 1.0–2.0) found `fudge = 1.0` — no
 bias at all — strictly optimal on both median and mean error for every pair checked so far, including
 `legality×usd` specifically (re-run after the Pauper investigation, isolated to rows where independence
-actually won: median signed error ≈ 0 at `fudge=1.0`). Declined despite looking plausible: same-currency
+actually won: median signed error ≈ 0 at `fudge=1.0`). Declined despite looking plausible via plain independence: same-currency
 price crosses (mixed signal, `usd×eur` net worse in printing space while `usd×tix`/`eur×tix` net
-better) and `set×type` (similarly mixed across spaces) — don't re-attempt these without new evidence.
+better). ~~Don't re-attempt these without new evidence~~ — **`usd×eur` specifically closed in Round
+53**, not by adding it to this registry (plain independence really is the wrong tool here — the eur/usd
+ratio spans p10=0.346 to p90=1.357, too wide for the single-multiplier shape this registry's own
+`printing_indep`/`card_indep` formula assumes), but with a dedicated `PriceJointTable`: a real,
+Pearson r=0.877-validated correlation, captured via a quantile-bucketed 2D joint histogram instead of
+an independence product, feeding the SAME `by_class`/`IndepUnit` pairing machinery as one more unit so
+it still combines with other classes via the existing loop unmodified. `usd×tix`/`eur×tix` remain
+correctly untouched (r=0.336, weak — the existing plain treatment already reasonable). `set×type`
+(similarly mixed across spaces) is unrelated and still open — don't re-attempt it without new evidence.
 `color×identity` needs no registry entry: confirmed already 100%-covered by the pre-existing
 `PlanePopcount` mechanism, no live gap.
 
