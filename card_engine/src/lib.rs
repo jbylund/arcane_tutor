@@ -4807,10 +4807,13 @@ fn build_range_card_counts(
 /// measurement specific to the pair table (4.2x, 3,705 pairs -> 879, `layout` removed entirely), and
 /// this table's own is a different number over a different population. Measured on the production
 /// corpus (2026-09-03): this prunes **29 of the 70** `(format, status)` keys that occur at all, and
-/// every pruned key is a `banned`/`restricted`/degenerate-`not_legal` population of 1-34 printings,
-/// where no amount of precision can move a routing decision. The surviving 41 keys x 924 distinct
-/// release dates x 4 bytes is ~148 KB, 0.20% of the 70.7 MB archive -- the same order as
+/// every pruned key is a `banned`/`restricted`/degenerate-`not_legal` population of 1-970 printings,
+/// where no amount of precision can move a routing decision. The surviving 41 keys x (924 distinct
+/// release dates + 1 sentinel) x 4 bytes is ~148 KB, 0.20% of the archive -- the same order as
 /// `RangeCardCounts`' own documented 156.6 KB across five dimensions.
+///
+/// See `build_legality_date_totals` for the SECOND prune the floor alone does not catch: a key whose
+/// population is the whole date index, which is uninformative rather than merely small.
 const LEGALITY_DATE_MIN_PRINTINGS: usize = 1_024;
 
 /// Exact per-`(format, status)` PRINTING counts along the `released_at` value axis, as a prefix sum.
@@ -4868,9 +4871,9 @@ impl ArchivedLegalityDateTotals {
     /// build pass walked, so `prefix` is parallel to it. Two `partition_point`s and one subtraction:
     /// unlike `ArchivedRangeCardCounts::lookup`, there is no shape this declines on ARITHMETIC grounds
     /// (see this struct's own doc for why printing counts subtract and distinct counts do not). The
-    /// only miss is a key that is absent -- pruned by `LEGALITY_DATE_MIN_PRINTINGS`, or the table not
-    /// built for this store at all (an empty `by_key`, the same convention `color_cmc_exact`'s own
-    /// `by_mask.is_empty()` check uses).
+    /// only miss is a key that is absent -- pruned by either of `build_legality_date_totals`' two
+    /// prunes, or the table not built for this store at all (an empty `by_key`, the same convention
+    /// `color_cmc_exact`'s own `by_mask.is_empty()` check uses).
     fn range_printings(&self, values: &Archived<Vec<u32>>, key: u16, lo: u32, hi: u32) -> Option<usize> {
         let prefix = self.by_key.get(&key.into())?;
         // A prefix out of step with `values` can only come from a store built by different code, which
@@ -4901,6 +4904,20 @@ impl ArchivedLegalityDateTotals {
 /// transient at the corpus's 924 dates) and collapsed to the surviving sparse keys at the end. A hash
 /// lookup per increment would dominate the store build -- there are ~3.1M (printing, format)
 /// increments on the real corpus -- the same argument `build_pair_totals`' own dense accumulator makes.
+///
+/// **Two prunes, not one.** `LEGALITY_DATE_MIN_PRINTINGS` drops keys too small to matter. The second
+/// drops keys whose population is the ENTIRE date index, which the floor cannot catch because they are
+/// the broadest keys there are. This was measured, not anticipated: like `ValueTotals::legality`, the
+/// loop below walks all 32 format SLOTS rather than the 23 formats this corpus assigns, and an
+/// unassigned slot reads `not_legal` for every printing -- so 9 slots each cleared the floor at 97,812
+/// printings and cost 33 KB of archive for keys no query can even name (`FilterExpr::Legality`'s
+/// `shift` comes from `format_shift(name)`, and an unassigned slot has no name). Pruning them is
+/// provably behaviour-neutral, and for a reason that is not slot-specific: if a key covers every
+/// indexed printing, then `prefix[j] - prefix[i]` is exactly the date window's own `k`, which the date
+/// leaf's own estimate already contributes to the same `.min()`-fold -- so the candidate can never be
+/// tighter than what the arm already had. Checked against the real corpus rather than assumed safe for
+/// real formats too: the broadest real key is `commander`/`legal` at 97,496 of 97,812, so no genuine
+/// format-status is anywhere near this cut, and the prune removes exactly the 9 phantom slots.
 fn build_legality_date_totals(
     cards: &[OracleCard],
     printings: &[Printing],
@@ -4927,13 +4944,20 @@ fn build_legality_date_totals(
             }
         }
     }
+    // Printings WITH a release date, i.e. the population these prefix sums cover. Not
+    // `printings.len()`: an undated printing is absent from the index (and can never satisfy a date
+    // comparison), so it is not part of any key's total here.
+    let n_indexed = released_at.pids.len();
     for fmt in 0..MAX_FORMATS {
         for status in 0..N_STATUSES {
             let row = &counts[(fmt * N_STATUSES + status) * n_values..][..n_values];
             // `u32` cannot overflow here: this is a subset of the corpus's printings, and the store
             // caps those well below `u32::MAX`.
             let total: u32 = row.iter().sum();
-            if (total as usize) < LEGALITY_DATE_MIN_PRINTINGS {
+            // Both prunes -- too small to change a routing decision, or so broad that the joint IS the
+            // date marginal the fold already holds. See this fn's own doc for why the second is
+            // behaviour-neutral and what it actually removes.
+            if (total as usize) < LEGALITY_DATE_MIN_PRINTINGS || total as usize == n_indexed {
                 continue;
             }
             let mut prefix = Vec::with_capacity(n_values + 1);

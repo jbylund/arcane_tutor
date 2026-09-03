@@ -17620,10 +17620,15 @@ fn legality_date_totals_are_exact_for_every_window() {
     }
 }
 
-/// The build pass must apply `LEGALITY_DATE_MIN_PRINTINGS` and nothing else: format A's two broad
-/// statuses are stored (with the right total and the right array length), and format B's 10-printing
-/// `banned` key is pruned. Checked on the table itself, not through the `And` arm, so a pruning bug
-/// cannot hide behind a call-site gate.
+/// Both of the build pass's prunes, and no others. Checked on the table itself, not through the `And`
+/// arm, so a pruning bug cannot hide behind a call-site gate.
+///
+/// The fixture makes all three cases reachable at once. Kept: `A/legal` (1,200) and `A/not_legal`
+/// (1,800) -- broad but not universal. Pruned by the FLOOR: `B/banned`, 10 printings. Pruned as
+/// UNIVERSAL: `B/not_legal` covers 2,990 of the 3,000 indexed printings so it survives, but each of the
+/// 30 unassigned format slots reads `not_legal` for all 3,000, so each is exactly the date marginal and
+/// must be dropped -- the same 9-slot, 33 KB waste this prune was added for after measuring the real
+/// corpus. Net: exactly three stored keys.
 #[test]
 fn legality_date_totals_prunes_only_below_floor_keys() {
     let data = legality_date_fixture();
@@ -17659,6 +17664,29 @@ fn legality_date_totals_prunes_only_below_floor_keys() {
         table.range_printings(&archived.indexes.released_at.keys, banned_b, 0, u32::MAX),
         None,
         "an absent key must decline cleanly, never answer 0 (which would be a WRONG exact answer)",
+    );
+
+    // The universal prune. Every format slot from 2 upward is unassigned in this fixture, so each reads
+    // `not_legal` for all 3,000 indexed printings -- broad enough to clear the floor, and worth nothing
+    // because the answer would be the date window's own `k`.
+    let n_indexed = data.printings.iter().filter(|p| p.released_at_int.is_some()).count();
+    assert_eq!(n_indexed, 3_000, "fixture sanity: the dated printings");
+    for fmt in 2..32u8 {
+        let key = super::legality_totals_key(fmt * 2, 0);
+        assert!(
+            table.by_key.get(&key.into()).is_none(),
+            "unassigned slot {fmt}/not_legal covers every indexed printing, so it must be pruned as uninformative",
+        );
+    }
+    assert_eq!(
+        table.by_key.len(),
+        3,
+        "exactly A/legal, A/not_legal and B/not_legal survive both prunes -- nothing else",
+    );
+    assert_eq!(
+        table.range_printings(&archived.indexes.released_at.keys, super::legality_totals_key(2, 0), 0, u32::MAX),
+        Some(n_indexed - n_banned),
+        "B/not_legal is broad (2,990 of 3,000) but NOT universal, so it survives -- the prune must be `==`, not `>=`",
     );
 }
 
