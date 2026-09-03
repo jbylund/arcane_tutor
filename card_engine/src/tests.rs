@@ -2518,6 +2518,11 @@ fn fuzz_store_n(rng: &mut rand::rngs::SmallRng, ncards: usize) -> CardData {
     data.indexes.collector_number_cards = build_range_card_counts(&data.indexes.collector_number, &p2c, n_cards, &data.printings, &artwork_base);
     data.indexes.rarity_cards =
         build_range_card_counts(&data.indexes.rarity_printing_ordered, &p2c, n_cards, &data.printings, &artwork_base);
+    // Round 57: rides on `released_at` like the count tables above and must be rebuilt with it.
+    // Coverage rather than correctness here -- an absent key just declines -- but the fuzz store is the
+    // only place `legality_divergent` printings (whose legality word comes from the PRINTING, not the
+    // card) reach this build pass at all.
+    data.indexes.legality_date = super::build_legality_date_totals(&data.cards, &data.printings, &p2c, &data.indexes.released_at);
     // Same load-bearing property as the count tables: left at its default, every per-value acquire would
     // read an exact ZERO from an empty-but-"complete" table, which is a wrong total rather than a missing
     // one. `format_shifts` comes from the data, not the global registry, so the keys match what `bind`
@@ -6717,6 +6722,9 @@ fn bench_checked_vs_unchecked_access() {
         price_tix_cards: RangeCardCounts::default(),
         collector_number_cards: RangeCardCounts::default(),
         rarity_cards:   RangeCardCounts::default(),
+        // Round 57: parallel to `released_at` above, which is empty here, so the only consistent value
+        // is empty too (`build_legality_date_totals` returns exactly this for an empty date index).
+        legality_date:  super::LegalityDateTotals::default(),
         value_totals:   ValueTotals::default(),
         pair_totals:    PairTotals::default(),
         // Real builder, not `::default()`, so the Round 34 tightening is exercised (not silently
@@ -17455,6 +17463,472 @@ fn color_cmc_anchored_independence_declines_without_a_price_residual() {
             "{label}: no Price-classified residual, so the anchored candidate must not fire"
         );
         assert_eq!(est.result.printing, 20, "{label}: the table's own exact bound (20) stands as the arm's answer");
+    }
+}
+
+// ─── Round 57: exact legality x released_at printing prefix sums ───────────────
+
+/// The four distinct release dates `legality_date_fixture` uses, with, per date, how many of its
+/// printings are LEGAL in format A (shift 0), how many are NOT_LEGAL in A, and how many are
+/// additionally BANNED in format B (shift 2).
+///
+///   date         total  A-legal  A-not_legal   B-banned
+///   2000-01-01     700      600          100          4
+///   2010-01-01     700      300          400          3
+///   2010-06-01     700      200          500          2
+///   2020-01-01     900      100          800          1
+///   total        3,000    1,200        1,800         10
+///
+/// Chosen so that the joint is genuinely two-dimensional and far from BOTH marginals: `f:A` is 1,200
+/// printings and every date window in these tests is 700-1,400, while the joint cells are 100-600. A
+/// plain min-fold therefore reports a marginal and is wrong by 1.2-2.8x on this fixture, which is the
+/// gap this table closes. `2010-01-01`/`2010-06-01` share a year, so `year:2010` is a genuinely
+/// INTERIOR multi-date range -- the one shape `RangeCardCounts` declines, and the whole point of the
+/// round. `banned:B` totals 10 printings corpus-wide and so never clears
+/// `LEGALITY_DATE_MIN_PRINTINGS` (1,024), which is what the decline test relies on.
+const LEGALITY_DATE_BUCKETS: [(u32, usize, usize, usize); 4] =
+    [(20000101, 600, 100, 4), (20100101, 300, 400, 3), (20100601, 200, 500, 2), (20200101, 100, 800, 1)];
+
+/// Printings the fixture adds with NO release date at all, legal in format A. A printing with no
+/// release date is absent from the `released_at` index and can never satisfy a date comparison (SQL
+/// null semantics), so it must contribute to no date bucket -- which means the table's own total for
+/// `f:A` legal is 1,200 (index-only) while the corpus holds 1,250. A build pass that walked
+/// `printings` instead of the index would get that wrong in exactly this amount, so it is worth having
+/// in the fixture rather than only in prose.
+const LEGALITY_DATE_UNDATED_LEGAL: usize = 50;
+
+/// Build the fixture above: one printing per card, real `released_at` index and count table, real
+/// `value_totals`, and the Round 57 table itself.
+fn legality_date_fixture() -> CardData {
+    let mut vocab = VocabInterner::new();
+    // (release date or None, legality word) for card i, which owns printing i.
+    let mut spec: Vec<(Option<u32>, u64)> = Vec::new();
+    for (date, legal, not_legal, banned_b) in LEGALITY_DATE_BUCKETS {
+        for i in 0..(legal + not_legal) {
+            let mut word = if i < legal { super::LEGALITY_LEGAL } else { 0 };
+            if i < banned_b {
+                word |= super::LEGALITY_BANNED << 2;
+            }
+            spec.push((Some(date), word));
+        }
+    }
+    spec.extend(std::iter::repeat_n((None, super::LEGALITY_LEGAL), LEGALITY_DATE_UNDATED_LEGAL));
+    let mut cards: Vec<OracleCard> = (0..spec.len()).map(|i| stub_card(i as u128 + 1, TYPE_CREATURE, &[], &mut vocab)).collect();
+    for (c, (_, word)) in cards.iter_mut().zip(&spec) {
+        c.card_legalities = *word;
+    }
+    let mut data = store_of(cards, &vec![1usize; spec.len()], vocab);
+    for (p, (date, word)) in data.printings.iter_mut().zip(&spec) {
+        p.released_at_int = *date;
+        // Same word on the printing as on its card: no fixture card is `legality_divergent`, so the
+        // card word is the one every reader takes -- this just keeps the two consistent.
+        p.card_legalities = *word;
+    }
+    let p2c = build_printing_to_card(&data.offsets);
+    let max_ag = usize::from(data.indexes.max_artwork_groups.max(1));
+    // `store_of` built the planes from the placeholder printings, whose legality word was still 0 --
+    // and the legality existence planes are built from the PRINTING word, so a bare `f:A` leaf's own
+    // estimate (`legality_candidate_bits` -> plane popcount) reads 0 until these are rebuilt. Same
+    // rebuild `fuzz_store_n` does after it mutates the same fields.
+    data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
+    // Computed into locals first: each builder borrows `data.indexes` immutably (for `artwork_base`),
+    // which cannot overlap the assignments back into it.
+    let released_at = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.released_at_int);
+    let released_at_cards =
+        build_range_card_counts(&released_at, &p2c, data.cards.len(), &data.printings, &data.indexes.artwork_base);
+    let legality_date = super::build_legality_date_totals(&data.cards, &data.printings, &p2c, &released_at);
+    let value_totals = build_all_value_totals(&data.cards, &data.printings, &p2c, &data.strings, &data.coll_vocab, max_ag);
+    data.indexes.released_at = released_at;
+    data.indexes.released_at_cards = released_at_cards;
+    data.indexes.legality_date = legality_date;
+    data.indexes.value_totals = value_totals;
+    data
+}
+
+/// Independent linear reference for the number under test: printings whose `(format, status)` word
+/// matches `(shift, expected)` AND whose release date lands in the half-open `[lo, hi)`. A dumb scan
+/// over the store that shares no code at all with the prefix sums -- deliberately, so a build-pass bug
+/// cannot cancel against the lookup.
+fn linear_legality_date_reference(rows: &[(u64, Option<u32>)], shift: u8, expected: u64, lo: u32, hi: u32) -> usize {
+    rows.iter().filter(|(word, date)| (word >> shift) & 0b11 == expected && date.is_some_and(|d| d >= lo && d < hi)).count()
+}
+
+/// The `(effective legality word, release date)` of every printing in a store, in printing order --
+/// the reference's input, resolved once instead of per window. "Effective" is the same rule every
+/// reader applies: a `legality_divergent` card's status comes from the PRINTING's own word, everyone
+/// else's from the card's.
+fn legality_date_rows(data: &CardData) -> Vec<(u64, Option<u32>)> {
+    let p2c = build_printing_to_card(&data.offsets);
+    data.printings
+        .iter()
+        .enumerate()
+        .map(|(pid, p)| {
+            let card = &data.cards[p2c[pid] as usize];
+            let word = if card.legality_divergent { p.card_legalities } else { card.card_legalities };
+            (word, p.released_at_int)
+        })
+        .collect()
+}
+
+fn legal_in_a() -> FilterExpr {
+    FilterExpr::Legality { shift: Some(0), expected: super::LEGALITY_LEGAL }
+}
+
+/// `LegalityDateTotals::range_printings` must be EXACT for every window over the fixture's own date
+/// boundaries -- not just the one-sided ones -- checked against the linear reference, for both the
+/// `legal` and the `not_legal` status of format A.
+///
+/// Exhaustive over the 5 boundaries x 5 boundaries the fixture's 4 distinct dates admit (15 non-empty
+/// windows), which covers all four shapes at once: fully open, prefix, suffix, and every interior
+/// window including the single-date ones. Not sampled: the whole claim of this round is that no shape
+/// is special any more, so a sampled check would be checking the wrong thing.
+#[test]
+fn legality_date_totals_are_exact_for_every_window() {
+    let data = legality_date_fixture();
+    let rows = legality_date_rows(&data);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let table = &archived.indexes.legality_date;
+    let keys = &archived.indexes.released_at.keys;
+    assert_eq!(keys.len(), LEGALITY_DATE_BUCKETS.len(), "one distinct release date per fixture bucket");
+
+    // The boundaries a query can actually produce: 0 (below everything), each stored date, and each
+    // date + 1 (what `Eq`/`Le` produce), plus u32::MAX for a fully open upper end.
+    let mut bounds: Vec<u32> = vec![0, u32::MAX];
+    for (date, ..) in LEGALITY_DATE_BUCKETS {
+        bounds.push(date);
+        bounds.push(date + 1);
+    }
+    bounds.sort_unstable();
+    bounds.dedup();
+
+    for (status, label) in [(super::LEGALITY_LEGAL, "legal"), (0, "not_legal")] {
+        let key = super::legality_totals_key(0, status);
+        for &lo in &bounds {
+            for &hi in &bounds {
+                if hi <= lo {
+                    continue;
+                }
+                let want = linear_legality_date_reference(&rows, 0, status, lo, hi);
+                assert_eq!(
+                    table.range_printings(keys, key, lo, hi),
+                    Some(want),
+                    "A/{label}: [{lo}, {hi}) must be exact, not close",
+                );
+            }
+        }
+    }
+}
+
+/// The build pass must apply `LEGALITY_DATE_MIN_PRINTINGS` and nothing else: format A's two broad
+/// statuses are stored (with the right total and the right array length), and format B's 10-printing
+/// `banned` key is pruned. Checked on the table itself, not through the `And` arm, so a pruning bug
+/// cannot hide behind a call-site gate.
+#[test]
+fn legality_date_totals_prunes_only_below_floor_keys() {
+    let data = legality_date_fixture();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let table = &archived.indexes.legality_date;
+    let n_values = archived.indexes.released_at.keys.len();
+
+    for (status, want_total) in [(super::LEGALITY_LEGAL, 1_200usize), (0, 1_800)] {
+        let key = super::legality_totals_key(0, status);
+        let prefix = table.by_key.get(&key.into()).unwrap_or_else(|| panic!("A/{status} is {want_total} printings, well over the floor"));
+        assert_eq!(prefix.len(), n_values + 1, "prefix carries a trailing sentinel, so it is one longer than the date axis");
+        assert_eq!(u32::from(prefix[0]), 0, "prefix[0] is the empty prefix");
+        assert_eq!(u32::from(prefix[n_values]) as usize, want_total, "the last entry is the key's whole population");
+    }
+    // The undated printings are legal in A and must be in NONE of the date buckets: the whole-axis
+    // total stays 1,200 even though the corpus holds 1,250 such printings.
+    let legal_key = super::legality_totals_key(0, super::LEGALITY_LEGAL);
+    // One printing per card in this fixture, so pid and cid coincide.
+    let corpus_legal = data.cards.iter().filter(|c| c.card_legalities & 0b11 == super::LEGALITY_LEGAL).count();
+    assert_eq!(corpus_legal, 1_200 + LEGALITY_DATE_UNDATED_LEGAL, "fixture sanity: the corpus holds the undated ones too");
+    assert_eq!(
+        table.range_printings(&archived.indexes.released_at.keys, legal_key, 0, u32::MAX),
+        Some(1_200),
+        "a printing with no release date can never satisfy a date comparison, so it must be in no bucket",
+    );
+
+    let banned_b = super::legality_totals_key(2, super::LEGALITY_BANNED);
+    let n_banned: usize = LEGALITY_DATE_BUCKETS.iter().map(|(.., b)| *b).sum();
+    assert!(n_banned < 1_024, "fixture sanity: banned:B is {n_banned} printings, deliberately under the floor");
+    assert!(table.by_key.get(&banned_b.into()).is_none(), "a below-floor key must be absent, not stored at 10 printings");
+    assert_eq!(
+        table.range_printings(&archived.indexes.released_at.keys, banned_b, 0, u32::MAX),
+        None,
+        "an absent key must decline cleanly, never answer 0 (which would be a WRONG exact answer)",
+    );
+}
+
+/// The round's whole point: an INTERIOR multi-date range. `year:2010` spans two of the fixture's four
+/// dates with dates on both sides of it, so it is exactly the shape
+/// `ArchivedRangeCardCounts::lookup` declines -- and this test asserts BOTH halves of that contrast on
+/// the same store: `distinct_cards` returns `None` for the identical window, while the `And` arm
+/// answers it exactly.
+///
+/// True joint: `f:A` legal on 2010-01-01 (300) + 2010-06-01 (200) = 500. Both marginals are much
+/// larger -- `f:A` alone is 1,200 printings and `year:2010` alone is 700 + 700 = 1,400 -- so the plain
+/// min-fold would have reported 1,200, 2.4x over.
+#[test]
+fn legality_date_totals_answers_an_interior_multi_date_range() {
+    let data = legality_date_fixture();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+    let (lo, hi) = (20100000u32, 20110000u32);
+
+    // The contrast this round exists for, asserted rather than described: distinct CARD counts cannot
+    // subtract across an interior cut, so the pre-existing table on this same axis declines.
+    assert_eq!(archived.indexes.released_at_cards.distinct_cards(lo, hi), None, "RangeCardCounts must still decline the interior shape");
+    assert_eq!(archived.indexes.released_at_cards.distinct_artworks(lo, hi), None, "...in artwork space too");
+
+    let year_2010 = FilterExpr::YearCmp { op: CmpOp::Eq, year: 2010 };
+    let f = FilterExpr::And(vec![legal_in_a(), year_2010.clone()]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+
+    // Both marginals, measured on this store rather than asserted from the table, so the "differs from
+    // both" property is checked and not assumed.
+    let solo_legality = super::compose_printing_estimate(&legal_in_a(), &archived.indexes, &archived.offsets, n_printings, false);
+    let solo_date = super::compose_printing_estimate(&year_2010, &archived.indexes, &archived.offsets, n_printings, false);
+    assert_eq!(solo_legality.result.printing, 1_200 + LEGALITY_DATE_UNDATED_LEGAL, "f:A marginal (the undated legal printings count here)");
+    assert_eq!(solo_date.result.printing, 1_400, "year:2010 marginal (both 2010 dates)");
+
+    assert_eq!(est.result.printing, 500, "the exact interior joint, not either marginal's 1,250/1,400");
+    let trace = *est.and_trace.expect("want_trace");
+    let hit = trace.considered.iter().find(|g| g.mechanism == "LegalityDateTotals").expect("must be attempted");
+    assert!(hit.hit);
+    assert_eq!(hit.printing, Some(500));
+    assert_eq!((hit.card, hit.artwork), (None, None), "printing space only -- this table has no card/artwork number to report");
+    assert_eq!(hit.leaves.len(), 2, "the legality leaf and the one date child");
+}
+
+/// Every other range shape a date predicate can produce, through the `And` arm, each against the
+/// linear reference: a `<=` prefix cutoff, a `>=` suffix cutoff, a single exact date, and a two-child
+/// two-sided window (which `released_at_bounds_intersect` must fuse the same way
+/// `fuse_and_range_children` would).
+#[test]
+fn legality_date_totals_and_arm_is_exact_for_every_date_leaf_shape() {
+    let data = legality_date_fixture();
+    let rows = legality_date_rows(&data);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let cases: [(&str, Vec<FilterExpr>, u32, u32); 4] = [
+        ("year<=2000", vec![FilterExpr::YearCmp { op: CmpOp::Le, year: 2000 }], 0, 20010000),
+        ("year>=2020", vec![FilterExpr::YearCmp { op: CmpOp::Ge, year: 2020 }], 20200000, u32::MAX),
+        ("date=2010-06-01", vec![FilterExpr::DateCmp { op: CmpOp::Eq, value: 20100601 }], 20100601, 20100602),
+        (
+            "year>=2010 year<=2010",
+            vec![FilterExpr::YearCmp { op: CmpOp::Ge, year: 2010 }, FilterExpr::YearCmp { op: CmpOp::Le, year: 2010 }],
+            20100000,
+            20110000,
+        ),
+    ];
+    for (label, date_leaves, lo, hi) in cases {
+        let n_date_leaves = date_leaves.len();
+        let want = linear_legality_date_reference(&rows, 0, super::LEGALITY_LEGAL, lo, hi);
+        let mut children = vec![legal_in_a()];
+        children.extend(date_leaves);
+        let est = super::compose_printing_estimate(&FilterExpr::And(children), &archived.indexes, &archived.offsets, n_printings, true);
+        let trace = *est.and_trace.expect("want_trace");
+        let hit = trace.considered.iter().find(|g| g.mechanism == "LegalityDateTotals").unwrap_or_else(|| panic!("{label}: must be attempted"));
+        assert_eq!(hit.printing, Some(want), "{label}: the And arm must report the exact joint");
+        assert_eq!(est.result.printing, want, "{label}: and it must win the min-fold");
+        assert_eq!(hit.leaves.len(), 1 + n_date_leaves, "{label}: must list the legality leaf AND every literal date child");
+    }
+}
+
+/// The exact printing count is folded as `Candidate::Estimate`, never `Candidate::Exact`, so
+/// `exact_domain_*` must stay untouched: this table has no card or artwork number, and a consumer
+/// reading `exact_domain.card` would otherwise get one it never computed.
+#[test]
+fn legality_date_totals_never_populates_exact_domain() {
+    let data = legality_date_fixture();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let f = FilterExpr::And(vec![legal_in_a(), FilterExpr::YearCmp { op: CmpOp::Le, year: 2000 }]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+    assert_eq!(est.result.printing, 600, "the exact joint wins the fold");
+    assert!(est.exact_domain.is_none(), "a printing-only candidate must never claim an exact (printing, card, artwork) domain");
+    assert!(super::is_estimate_class_mechanism("LegalityDateTotals"), "classed by its fold channel -- see that fn's own doc");
+}
+
+/// A below-floor key declines CLEANLY: the mechanism is attempted and traced as a miss, and `result`
+/// is left exactly where the plain min-over-leaves fold put it -- not nudged, not zeroed.
+#[test]
+fn legality_date_totals_declines_below_the_floor() {
+    let data = legality_date_fixture();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let banned_b = FilterExpr::Legality { shift: Some(2), expected: super::LEGALITY_BANNED };
+    let year_2000 = FilterExpr::YearCmp { op: CmpOp::Le, year: 2000 };
+    let solo_a = super::compose_printing_estimate(&banned_b, &archived.indexes, &archived.offsets, n_printings, false);
+    let solo_b = super::compose_printing_estimate(&year_2000, &archived.indexes, &archived.offsets, n_printings, false);
+
+    let f = FilterExpr::And(vec![banned_b, year_2000]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+    let trace = *est.and_trace.expect("want_trace");
+    let group = trace.considered.iter().find(|g| g.mechanism == "LegalityDateTotals").expect("attempted even when the key is pruned");
+    assert!(!group.hit, "the key is under the floor, so this must trace as a MISS");
+    assert_eq!(group.printing, None);
+    assert_eq!(
+        est.result.printing,
+        solo_a.result.printing.min(solo_b.result.printing),
+        "a decline must leave the pre-existing min-over-leaves fold exactly as it was",
+    );
+}
+
+/// The `std::ptr::eq(idx, &indexes.released_at)` guard: a price or collector-number range is NOT the
+/// date axis and must never be read as one.
+///
+/// Two halves, because "declines" and "picks the right one" are different failures. With only a price
+/// range present the mechanism must not be attempted at all; with a price range AND a date range
+/// present it must be attempted and must resolve the DATE interval -- the price interval here selects
+/// a deliberately different, much smaller set (25 printings against the date window's 700), so reading
+/// the wrong index could not coincide.
+#[test]
+fn legality_date_totals_declines_for_a_non_date_range_leaf() {
+    let mut data = legality_date_fixture();
+    for (i, p) in data.printings.iter_mut().enumerate() {
+        p.price_usd = Some(i as u32 + 1); // 1..=3000 cents, so `usd<=0.25` is the first 25 printings
+        p.collector_number_int = Some(i as u16 + 1);
+    }
+    let price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
+    let collector_number = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.collector_number_int.map(u32::from));
+    data.indexes.price_usd = price_usd;
+    data.indexes.collector_number = collector_number;
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let cheap = usd_cmp(CmpOp::Le, 0.25);
+    let low_cn = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::CollectorNumberInt), op: CmpOp::Le, rhs: NumExpr::Const(25.0) };
+    for (label, other) in [("usd<=0.25", cheap.clone()), ("cn<=25", low_cn)] {
+        let f = FilterExpr::And(vec![legal_in_a(), other]);
+        let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+        let trace = *est.and_trace.expect("want_trace");
+        assert!(
+            !trace.considered.iter().any(|g| g.mechanism == "LegalityDateTotals"),
+            "{label} is not the released_at axis -- the mechanism must never be attempted",
+        );
+    }
+
+    // Both axes present: the mechanism fires on the DATE window (600), not the price window.
+    let f = FilterExpr::And(vec![legal_in_a(), cheap, FilterExpr::YearCmp { op: CmpOp::Le, year: 2000 }]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+    let trace = *est.and_trace.expect("want_trace");
+    let hit = trace.considered.iter().find(|g| g.mechanism == "LegalityDateTotals").expect("a date child IS present");
+    assert_eq!(hit.printing, Some(600), "must resolve `year<=2000`'s window, not `usd<=0.25`'s");
+    assert_eq!(hit.leaves.len(), 2, "the legality leaf and the date child only -- the price leaf is not this mechanism's");
+}
+
+/// The no-legality-leaf path must be structurally untouched, which is what makes the `any_legality_leaf`
+/// precheck a pure saving rather than a behavior change: a date range with no legality leaf anywhere
+/// must not attempt the mechanism, and must estimate identically to the same query measured before the
+/// mechanism could possibly see it (its own bare-range `k`).
+#[test]
+fn legality_date_totals_is_a_no_op_without_a_legality_leaf() {
+    let data = legality_date_fixture();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+
+    let year_2010 = FilterExpr::YearCmp { op: CmpOp::Eq, year: 2010 };
+    // Every fixture card is colorless, so `c:>=""` (Ge over the empty mask) matches every one of them:
+    // a leaf that contributes a real, non-legality estimate and leaves the date window as the answer.
+    let all_colors = FilterExpr::ColorCmp { field: ColorField::Colors, op: CmpOp::Ge, mask: 0 };
+    let f = FilterExpr::And(vec![all_colors, year_2010]);
+    let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
+    let trace = *est.and_trace.expect("want_trace");
+    assert!(
+        !trace.considered.iter().any(|g| g.mechanism == "LegalityDateTotals"),
+        "no legality leaf present -- must never be attempted",
+    );
+    assert_eq!(est.result.printing, 1_400, "unchanged: the 2010 window's own k");
+}
+
+/// A `Legality { shift: None }` leaf -- a format absent from all loaded data, which matches nothing --
+/// can never reach this mechanism, because it is not printing-composable at all. Asserted rather than
+/// assumed: the call site's `shift: Some(_)` pattern is belt-and-braces on top of this gate, and if the
+/// gate ever changed, the `unreachable!` inside the scan is what would fire.
+#[test]
+fn a_shiftless_legality_leaf_is_not_printing_composable() {
+    let data = legality_date_fixture();
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let leaf = FilterExpr::Legality { shift: None, expected: super::LEGALITY_LEGAL };
+    assert!(
+        !super::is_printing_composable(&leaf, &archived.indexes),
+        "no shift means no format slot, so compose never sees this leaf",
+    );
+    assert!(
+        super::is_printing_composable(&FilterExpr::Legality { shift: Some(0), expected: super::LEGALITY_LEGAL }, &archived.indexes),
+        "the bound form IS composable -- otherwise the assertion above would pass for the wrong reason",
+    );
+}
+
+/// Exactness over the FUZZ store, which is the only place `legality_divergent` printings reach this
+/// build pass -- a divergent card's status comes from the PRINTING's own word, not its card's, and a
+/// build pass that read the card word for those would be wrong on exactly the printings the divergence
+/// flag exists to flag.
+///
+/// EVERY stored key, over both open ends plus a strided subset of the store's own date boundaries.
+/// Strided rather than exhaustive purely for runtime -- the fuzz store holds several hundred distinct
+/// dates, and this test already runs in a debug build behind a 2,000-card store build. The fixture test
+/// above is the exhaustive one; what this adds is the divergent-legality and null-date populations the
+/// hand-built fixture cannot produce.
+#[test]
+fn legality_date_totals_are_exact_over_the_fuzz_store() {
+    use rand::SeedableRng;
+    let mut rng = rand::rngs::SmallRng::seed_from_u64(20_260_903);
+    let data = fuzz_store_n(&mut rng, 1_000);
+    let rows = legality_date_rows(&data);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let table = &archived.indexes.legality_date;
+    let keys = &archived.indexes.released_at.keys;
+    assert!(!table.by_key.is_empty(), "the fuzz store must populate at least one key, or this test proves nothing");
+    assert!(
+        data.cards.iter().any(|c| c.legality_divergent),
+        "the fuzz store must contain divergent cards, or the per-printing word path is unexercised",
+    );
+
+    // Both open ends plus every `BOUND_STRIDE`-th stored date and its successor (the two boundary
+    // values a query's `Eq`/`Le` actually produce). Every key is checked over the same set.
+    const BOUND_STRIDE: usize = 61;
+    let mut bounds: Vec<u32> = vec![0, u32::MAX];
+    for (i, k) in keys.iter().enumerate() {
+        if i % BOUND_STRIDE == 0 {
+            bounds.push(u32::from(*k));
+            bounds.push(u32::from(*k) + 1);
+        }
+    }
+    bounds.sort_unstable();
+    bounds.dedup();
+
+    for key in table.by_key.keys() {
+        let key = u16::from(*key);
+        let (shift, expected) = (((key >> 2) & 0x3f) as u8, u64::from(key & 0b11));
+        for &lo in &bounds {
+            for &hi in &bounds {
+                if hi <= lo {
+                    continue;
+                }
+                let want = linear_legality_date_reference(&rows, shift, expected, lo, hi);
+                assert_eq!(
+                    table.range_printings(keys, key, lo, hi),
+                    Some(want),
+                    "key {key} (shift {shift}, status {expected}): [{lo}, {hi}) must be exact",
+                );
+            }
+        }
     }
 }
 

@@ -4760,6 +4760,197 @@ fn build_range_card_counts(
     out
 }
 
+// ─── Round 57: exact `legality` x `released_at` printing prefix sums ───────────
+// docs/issues/local-engine-nway-followup-queue.md. `f:modern year<=2003`-shaped queries get NO
+// tightening from any mechanism today: `legality` x `released` is deliberately absent from the
+// independence registry (`INDEPENDENCE_SAFE_PAIR`), `released_at` is not a `PairTotals` dimension,
+// and the two leaves share no exact joint -- so `compose_printing_estimate`'s `And` fold reports the
+// smaller marginal exactly, measured 5-14x over on real queries (`f:gladiator year<=2003` predicted
+// 14,928 against a true 2,673). The registry's own exclusion was justified in the design doc by
+// "Modern/Pioneer-style format legality is *defined* by a release-date cutoff", which is wrong for
+// the data an estimator over PRINTINGS sees: every format except `oldschool` has legal printings back
+// to 1993-08-05, because legality is card-level and reprints scatter legal cards across the whole
+// date axis. The cutoff is a property of SET legality, not of the joint distribution.
+//
+// Independence would beat the status quo (17.2% -> 7.6% of measured (format, date-predicate) pairs on
+// the wrong side of the 1,024 sparse floor over 460 pairs), but its residual error is an IDENTITY,
+// not noise: substituting a format's global legal density for its local density makes the error
+// exactly `global_density / window_density`, which is why `premodern`'s 3.69x temporal skew in its own
+// era predicts the 0.27x undershoot that was measured. That error is per-format temporal STRUCTURE,
+// so the fix is to store the structure. A bucketed granularity sweep (23 formats) settled where:
+//
+//   granularity        cells   median   p90    max    mean |log|   wrong side of 1,024
+//   plain independence     0    1.00x  2.66x   6.1x     0.413      8/138
+//   per-year             782    1.00x  1.05x   2.7x     0.061      2
+//   per-quarter        3,059    1.00x  1.07x   2.6x     0.040      0
+//   per-month          7,544    1.00x  1.00x   1.3x     0.008      0
+//   per-date          21,252    1.00x  1.00x   1.0x     0.001      0
+//
+// Every coarser bucket leaves real error because the knees are mid-year (Modern's is 2003-07-28, 8th
+// Edition, 16.8% -> 100.0%; Pioneer's 2012-10-05) and `standard` has no knee at all -- it alternates
+// date-to-date (2024 reads 15.8%, 61.0%, 17.3%, 8.6%, 4.7%, 61.4%, ...) because main sets interleave
+// with supplemental products. Run-length compression was measured and rejected: only ~40% savings at
+// tol=0.20, because for 17 of 23 formats that high-frequency alternation IS the signal (`vintage`
+// compresses to 3 runs, `standard` needs 580 of 924).
+//
+// At per-DATE granularity this stops being an estimator at all: release dates are the atoms of the
+// `released_at` axis, so every query range aligns to bucket boundaries and there is nothing to
+// pro-rate. The stored value is the exact answer.
+
+/// A `(format, status)` key is worth a per-date prefix sum only if it is broad enough that an estimate
+/// about it can change a routing decision -- the identical line `PAIR_MIN_PRINTINGS` draws for
+/// `PairTotals`, at the same `STREAM_MIN_MATCHES` value and for the same stated reason (below it the
+/// sparse floor decides the plan, not the estimate's precision, and min-over-singles is already within
+/// a small factor of the truth).
+///
+/// A separate constant rather than reusing `PAIR_MIN_PRINTINGS`: that one's doc records a pruning
+/// measurement specific to the pair table (4.2x, 3,705 pairs -> 879, `layout` removed entirely), and
+/// this table's own is a different number over a different population. Measured on the production
+/// corpus (2026-09-03): this prunes **29 of the 70** `(format, status)` keys that occur at all, and
+/// every pruned key is a `banned`/`restricted`/degenerate-`not_legal` population of 1-34 printings,
+/// where no amount of precision can move a routing decision. The surviving 41 keys x 924 distinct
+/// release dates x 4 bytes is ~148 KB, 0.20% of the 70.7 MB archive -- the same order as
+/// `RangeCardCounts`' own documented 156.6 KB across five dimensions.
+const LEGALITY_DATE_MIN_PRINTINGS: usize = 1_024;
+
+/// Exact per-`(format, status)` PRINTING counts along the `released_at` value axis, as a prefix sum.
+///
+/// **Printing space only, and that is the whole point.** Printing counts are ADDITIVE -- each printing
+/// has exactly one release date -- so a prefix sum answers any `[lo, hi)` exactly by subtraction,
+/// including a genuinely interior multi-date range (`year:2024`). Distinct CARD and ARTWORK counts are
+/// not additive: a card with printings on both sides of a cut lands in both halves. That is precisely
+/// the constraint `RangeCardCounts` documents for this same axis (its `lookup` declines a multi-value
+/// interior range and names `year:Y` as the shape it cannot answer), and it is the same split that
+/// lets `MaskCmcCounts` sum its own cmc axis additively (cmc is single-valued per card). So this table
+/// makes printing mode exact for EVERY range shape and leaves card/artwork mode unimproved --
+/// deliberately, not as an oversight; the calibrated occupancy estimator that converts an exact
+/// printing count into card/artwork estimates is its own follow-up, and it depends on this table
+/// existing because its input is the exact printing count.
+///
+/// Keyed exactly as `ValueTotals::legality` and `PairTotals::legality` already are, via
+/// `legality_totals_key` (`(shift << 2) | status`) -- one entry per (format, status) rather than per
+/// format, because `FilterExpr::Legality` carries a single 2-bit `expected` and statuses PARTITION each
+/// space (a printing has exactly one status per format), so a per-status entry is exact on its own.
+/// Counted per PRINTING and reading a `legality_divergent` card's own PRINTING word, the same
+/// derivation `ValueTotals::legality` uses and for the same reason.
+///
+/// **Unlike `ValueTotals`, this table may be incomplete** -- `LEGALITY_DATE_MIN_PRINTINGS` prunes it.
+/// Absence is read as "no answer" and the caller keeps the bound it already had, exactly the
+/// distinction `PairTotals`' own doc draws against `ValueTotals` (where absence must mean an exact
+/// zero, so the floor could not be applied at all).
+#[derive(Archive, Serialize, Deserialize, Default)]
+struct LegalityDateTotals {
+    /// `legality_totals_key(shift, status)` -> a prefix sum with `released_at.keys.len() + 1` entries:
+    /// `prefix[i]` is the number of printings with this (format, status) whose release date is one of
+    /// `released_at.keys[0..i)`. `prefix[0]` is 0 and the last entry is the key's whole population, so
+    /// ANY `[i, j)` window is `prefix[j] - prefix[i]` with no case split at all.
+    ///
+    /// That trailing sentinel is why this is one array rather than `MaskCmcCounts`/`RangeCardCounts`'
+    /// `below`/`at_or_above` pair: those store one entry per value and therefore need
+    /// `range_sum`/`lookup`'s four-way branch on whether each end is open. The sentinel is the same
+    /// idiom `PrintingValueIndex::starts` already uses for the same reason -- it removes the
+    /// `get(i + 1).unwrap_or(len)` at every use site.
+    ///
+    /// The date axis itself is NOT duplicated here. `RangeCardCounts` keeps its own `values` copy
+    /// because it is reached through `range_card_counts_for` and its callers would have to thread the
+    /// index in; this table's only caller has already resolved the index reference itself (that is what
+    /// the `std::ptr::eq(idx, &indexes.released_at)` guard IS), so `range_printings` takes `values` as
+    /// a parameter the way `ArchivedMaskCmcCounts::range_sum` does -- 3.7 KB saved and one fewer copy
+    /// that could drift.
+    by_key: HashMap<u16, Vec<u32>>,
+}
+
+impl ArchivedLegalityDateTotals {
+    /// Exact PRINTING count for one `(format, status)` `key` And'd with the half-open release-date
+    /// range `[lo, hi)`, or `None` when this table cannot answer.
+    ///
+    /// `values` must be `indexes.released_at.keys` -- the same distinct, ascending release dates the
+    /// build pass walked, so `prefix` is parallel to it. Two `partition_point`s and one subtraction:
+    /// unlike `ArchivedRangeCardCounts::lookup`, there is no shape this declines on ARITHMETIC grounds
+    /// (see this struct's own doc for why printing counts subtract and distinct counts do not). The
+    /// only miss is a key that is absent -- pruned by `LEGALITY_DATE_MIN_PRINTINGS`, or the table not
+    /// built for this store at all (an empty `by_key`, the same convention `color_cmc_exact`'s own
+    /// `by_mask.is_empty()` check uses).
+    fn range_printings(&self, values: &Archived<Vec<u32>>, key: u16, lo: u32, hi: u32) -> Option<usize> {
+        let prefix = self.by_key.get(&key.into())?;
+        // A prefix out of step with `values` can only come from a store built by different code, which
+        // `ARCHIVE_FORMAT_VERSION` already refuses to load -- checked anyway, because the indices below
+        // are derived from `values` and used to index `prefix`.
+        if prefix.len() != values.len() + 1 {
+            return None;
+        }
+        if hi <= lo {
+            return Some(0); // empty or unsatisfiable range
+        }
+        let pos = |v: u32| values.partition_point(|x| u32::from(*x) < v);
+        let (i, j) = (pos(lo), pos(hi));
+        Some((u32::from(prefix[j]) - u32::from(prefix[i])) as usize)
+    }
+}
+
+/// Build one prefix sum per surviving `(format, status)` key from a single value-major walk of the
+/// `released_at` index.
+///
+/// Walking the INDEX rather than `printings` is what makes a printing's date position the loop
+/// variable instead of a binary search -- the same reason `build_range_card_counts` walks it too. It
+/// also gets the null handling right for free: a printing with no release date is absent from the
+/// index, and it can never satisfy a date comparison (SQL null semantics), so it must contribute to no
+/// bucket.
+///
+/// The accumulator is DENSE (32 format slots x 4 statuses x one u32 per distinct date, ~473 KB
+/// transient at the corpus's 924 dates) and collapsed to the surviving sparse keys at the end. A hash
+/// lookup per increment would dominate the store build -- there are ~3.1M (printing, format)
+/// increments on the real corpus -- the same argument `build_pair_totals`' own dense accumulator makes.
+fn build_legality_date_totals(
+    cards: &[OracleCard],
+    printings: &[Printing],
+    printing_to_card: &[u32],
+    released_at: &PrintingValueIndex,
+) -> LegalityDateTotals {
+    let n_values = released_at.keys.len();
+    let mut out = LegalityDateTotals::default();
+    if n_values == 0 {
+        return out;
+    }
+    const N_STATUSES: usize = 4; // a 2-bit `expected`, so exactly four
+    let mut counts = vec![0u32; MAX_FORMATS * N_STATUSES * n_values];
+    for b in 0..n_values {
+        let run = released_at.starts[b] as usize..released_at.starts[b + 1] as usize;
+        for &pid in &released_at.pids[run] {
+            let card = &cards[printing_to_card[pid as usize] as usize];
+            // Per PRINTING, reading the PRINTING's own word for a divergent card (30A, Collectors'
+            // Edition, gold border) -- the same derivation `ValueTotals::legality`'s `keys_of` uses.
+            let word = if card.legality_divergent { printings[pid as usize].card_legalities } else { card.card_legalities };
+            for fmt in 0..MAX_FORMATS {
+                let status = (word >> (fmt * 2)) & 0b11;
+                counts[(fmt * N_STATUSES + status as usize) * n_values + b] += 1;
+            }
+        }
+    }
+    for fmt in 0..MAX_FORMATS {
+        for status in 0..N_STATUSES {
+            let row = &counts[(fmt * N_STATUSES + status) * n_values..][..n_values];
+            // `u32` cannot overflow here: this is a subset of the corpus's printings, and the store
+            // caps those well below `u32::MAX`.
+            let total: u32 = row.iter().sum();
+            if (total as usize) < LEGALITY_DATE_MIN_PRINTINGS {
+                continue;
+            }
+            let mut prefix = Vec::with_capacity(n_values + 1);
+            let mut running = 0u32;
+            prefix.push(running);
+            for &c in row {
+                running += c;
+                prefix.push(running);
+            }
+            // `MAX_FORMATS` is 32, so `shift` is even and <= 62 -- exactly the domain
+            // `legality_totals_key`'s own doc requires for the key not to collide.
+            out.by_key.insert(legality_totals_key((fmt * 2) as u8, status as u64), prefix);
+        }
+    }
+    out
+}
+
 /// One-shot env override for the guard statics below: reads
 /// `CARD_ENGINE_<NAME>` once (each static is a LazyLock), falling back to the
 /// measured default when the var is unset or unparseable. Production leaves
@@ -5263,6 +5454,11 @@ struct CardIndexes {
     /// distinct cards for `r<=rare` is not the sum of the at-rarity counts. Prefix/suffix/at is the
     /// shape the question needs, and it is the shape this struct already is.
     rarity_cards:           RangeCardCounts,
+    /// Round 57: exact per-`(format, status)` PRINTING counts along the `released_at` value axis, as
+    /// prefix sums parallel to `released_at.keys` above. ~148 KB. Printing space only -- distinct card
+    /// and artwork counts do not subtract, which is the same limit `released_at_cards` documents. For
+    /// `compose_printing_estimate`'s `And` arm; see `LegalityDateTotals`'s own doc.
+    legality_date:          LegalityDateTotals,
     /// Exact 3-space totals for the low-cardinality dimensions whose predicate tests one value:
     /// border, layout, frame, and (format, status). ~2 KB.
     value_totals:   ValueTotals,
@@ -8027,6 +8223,41 @@ fn bare_range_bounds<'i>(
     }
 }
 
+/// Round 57: the positions of every bare `released_at` range child of an `And`, plus their fused
+/// half-open `[lo, hi)` (`lo = max(lo_i)`, `hi = min(hi_i)`). `None` when the `And` holds no date
+/// child at all.
+///
+/// The `std::ptr::eq(idx, &indexes.released_at)` test is what keeps a price or collector-number range
+/// out: `bare_range_bounds` resolves all five printing-range families and hands back the index
+/// REFERENCE rather than a discriminant, so pointer identity is exact rather than heuristic -- the
+/// same idiom `range_card_counts_for` and Round 33's own `collector_number_bounds` use, and for the
+/// same reason (threading a dimension tag through `resolve_numeric_range_leaf` would touch every
+/// caller for no more safety).
+///
+/// Deliberately re-derived from `v` rather than read off `and_sources`: `fuse_and_range_children` only
+/// emits a `FusedRange` for a group of 2+, so a lone `year<=2003` child stays an `AndSource::Child` and
+/// both cases would have to be handled anyway (`collector_number_bounds` does exactly that). One pass
+/// over `v` gives the literal child POSITIONS the trace wants alongside the interval, applying the
+/// same `max`/`min` fusion math `fuse_and_range_children` itself does.
+fn released_at_bounds_intersect(v: &[FilterExpr], indexes: &Archived<CardIndexes>) -> Option<(Vec<usize>, u32, u32)> {
+    let mut positions: Vec<usize> = Vec::new();
+    let (mut lo, mut hi) = (0u32, u32::MAX);
+    for (i, c) in v.iter().enumerate() {
+        if let Some((idx, c_lo, c_hi)) = bare_range_bounds(c, indexes)
+            && std::ptr::eq(idx, &indexes.released_at)
+        {
+            positions.push(i);
+            lo = lo.max(c_lo);
+            hi = hi.min(c_hi);
+        }
+    }
+    // `hi < lo` is an unsatisfiable conjunction (`year>=2005 year<=2003`). Clamping to `[lo, lo)`
+    // yields 0, which is what an empty range means -- the same clamp `fuse_and_range_children` applies,
+    // for the same reason (every consumer computes a width by subtracting two `partition_point`s, and
+    // that subtraction underflows if the ends cross).
+    (!positions.is_empty()).then(|| (positions, lo, hi.max(lo)))
+}
+
 /// Build `CardRangePopcount`'s two bitmaps from an exact range slice — `bare_range_bounds` supplies
 /// the index + half-open `[lo, hi)` for whichever range family the leaf is (usd/cn/date) — in a
 /// single pass: the tight printing-space membership set (`range_pbits`, set directly from the
@@ -9829,6 +10060,14 @@ fn and_trace_for(filter: &FilterExpr, indexes: &Archived<CardIndexes>, offsets: 
 /// `"ColorCmcAnchoredIndependence"` (Round 56) is the exact same construction one anchor over --
 /// `ColorCmcTable`'s own exact `(color|identity, cmc)` joint times a single residual `Price` leaf's own
 /// solo rate -- and stays ESTIMATE-class for the identical reason.
+/// `"LegalityDateTotals"` (Round 57) is the one entry here whose NUMBER is exact: at per-date
+/// granularity its `(format, status)` x `released_at` prefix sum has nothing to pro-rate. It is classed
+/// by its FOLD CHANNEL rather than its precision, because that is the property this predicate actually
+/// governs -- it folds `Candidate::Estimate` (only printings are stored; card/artwork counts do not
+/// subtract on the `released_at` axis, see `LegalityDateTotals`'s own doc) and therefore never
+/// participates in `exact_domain_*`. Classing it exact/bound here would let a printing-only candidate
+/// out-rank, for trace attribution, a mechanism that answered all three spaces. Nothing is lost: the
+/// second-pass pick only needs a tie against the global min, and an exact value cannot undershoot it.
 /// `"SubtypeSubtypeEstimate"` (Round 55) is the direct one-bucket analog of `"SubtypePairEstimate"` --
 /// `SubtypePairTable`'s own capped independence-product MISS branch (the HIT branch,
 /// `"SubtypeSubtypeExact"`, is a genuine table lookup and stays in the exact/bound class, same split as
@@ -9845,6 +10084,7 @@ fn is_estimate_class_mechanism(mechanism: &str) -> bool {
             | "SubtypeArithAnchoredIndependence"
             | "ColorCmcAnchoredIndependence"
             | "SubtypeSubtypeEstimate"
+            | "LegalityDateTotals"
     )
 }
 
@@ -11311,6 +11551,96 @@ fn compose_printing_estimate(
                                 artwork: None,
                             });
                         }
+                    }
+                }
+            }
+            // Round 57 tightening: a format-legality leaf (`f:modern`, `banned:X`, `restricted:X`)
+            // And'd with 1+ bare `released_at` range children gets the EXACT printing count from
+            // `indexes.legality_date` instead of the plain min-fold above. See that table's own doc
+            // (right after `build_range_card_counts`) for the full motivation -- in short, this pair is
+            // deliberately absent from the independence registry, `released_at` is not a `PairTotals`
+            // dimension, and nothing else joins them, so `f:gladiator year<=2003` predicted 14,928
+            // against a true 2,673, the smaller marginal exactly.
+            //
+            // Mirrors the `ColorCmcTable` block just above one level: bucket A is every legality leaf
+            // position, bucket B is the ONE fused date range (`released_at_bounds_intersect`, the same
+            // `max`/`min` fusion `cmc_bounds_intersect` does for cmc), so this is a Cartesian product
+            // over (legality leaf) x (the one resolved date range). No covered-filtering on INPUT, for
+            // the same reason that scan skips it: a real table hit is a valid upper bound on the whole
+            // `And` regardless of what else already touched either leaf.
+            //
+            // Written as its own loop rather than through `scan_two_bucket_exact` for ONE reason: that
+            // helper folds `Candidate::Exact`, and this mechanism must fold `Candidate::Estimate`. The
+            // value is genuinely exact -- at per-date granularity there is nothing to pro-rate -- but
+            // `Candidate::Exact` requires a consistent (printings, cards, artworks) TRIPLE and
+            // debug-asserts `cards <= artworks <= printings`, and this table has only printings (see
+            // its own doc for why card/artwork counts cannot be had by subtraction on this axis).
+            // Folding an exact value through `Estimate` is sound and is what `PriceJointTable`/
+            // `SetCollectorRange` already do: it narrows `result` via `.min()` and never touches
+            // `exact_domain_*`, so no card/artwork consumer can ever read a number this table does not
+            // have.
+            //
+            // Deliberately does NOT call `mark_covered`, inheriting the `ColorCmcTable` call site's own
+            // decision for the same reason: this is a genuine sub-conjunction bound whose leaves the
+            // independence registry may still pair PRODUCTIVELY with a third class (`Legality` x
+            // `Type`, `Legality` x `Price`, ... are all registered safe), and covering them would
+            // starve those candidates the way covering `ColorCmcTable`'s leaves measurably starved
+            // `ColorId` x `Price`/`Cmc` x `Price`. It is also unnecessary here: `legality` x `released`
+            // is not itself a registered pair, so no independence candidate ever re-answers THIS
+            // subset, and the exact value wins the `.min()`-fold on merit whenever it is the smallest.
+            //
+            // Placement: immediately after the `ColorCmcTable`/`ColorCmcAnchoredIndependence` block, and
+            // Round 55's ordering constraint (an ESTIMATE-class mechanism must run after every EXACT
+            // mechanism whose leaves it could compete for, since `covered` only reflects what already
+            // ran and an undershooting estimate permanently pulls `result` below truth through the
+            // min-fold) is satisfied: everything after this point in the arm is the estimate-class
+            // independence registry (`"Independence"`) and the final `narrow_floor`/`result_space`
+            // assembly -- no exact candidate folds after here. The constraint is also slack for this
+            // mechanism in particular, since an exact value cannot undershoot in the first place.
+            //
+            // `any_legality_leaf` is a cheap, provably EQUIVALENT precheck, not a heuristic -- exactly
+            // the guard Round 56 added to its own anchor loop after measuring a real +21%
+            // `and_estimate_ns` tax from a loop that ran when it could never produce a candidate. With
+            // no legality leaf anywhere in this `And`, bucket A is empty and the scan below produces
+            // nothing whatever the date children are, so neither the position `Vec` nor
+            // `released_at_bounds_intersect`'s own per-child `bare_range_bounds` walk is worth paying
+            // for. `matches!` over `v` allocates nothing.
+            let any_legality_leaf = v.iter().any(|c| matches!(c, FilterExpr::Legality { shift: Some(_), .. }));
+            if any_legality_leaf
+                && let Some((date_positions, date_lo, date_hi)) = released_at_bounds_intersect(v, indexes)
+            {
+                let legality_positions: Vec<usize> =
+                    (0..v.len()).filter(|&i| matches!(v[i], FilterExpr::Legality { shift: Some(_), .. })).collect();
+                for &ai in &legality_positions {
+                    let FilterExpr::Legality { shift: Some(shift), expected } = &v[ai] else {
+                        unreachable!("legality_positions only holds `Legality {{ shift: Some(_), .. }}` leaves")
+                    };
+                    let key = legality_totals_key(*shift, *expected);
+                    let hit = indexes.legality_date.range_printings(&indexes.released_at.keys, key, date_lo, date_hi);
+                    if let Some(printing) = hit {
+                        fold_candidate(
+                            &mut result,
+                            &mut exact_domain_cards,
+                            &mut exact_domain_printing,
+                            &mut exact_domain_artworks,
+                            "LegalityDateTotals",
+                            Candidate::Estimate { printing },
+                        );
+                    }
+                    // Traces on a MISS too (like `ColorCmcTable`, unlike `SubtypePairIndexes`): a miss
+                    // here means the key was pruned by `LEGALITY_DATE_MIN_PRINTINGS`, which is a real,
+                    // deliberate decline worth seeing in a trace rather than silence.
+                    if let Some(t) = and_trace.as_mut() {
+                        let mut leaves: Vec<String> = vec![format!("{:?}", v[ai])];
+                        leaves.extend(date_positions.iter().map(|&p| format!("{:?}", v[p])));
+                        t.considered.push(AndTraceGroup {
+                            leaves,
+                            mechanism: "LegalityDateTotals",
+                            hit: hit.is_some(),
+                            printing: hit,
+                            card: None,
+                            artwork: None,
+                        });
                     }
                 }
             }
@@ -17989,7 +18319,11 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 // 2026090302 — Round 55: new `CardIndexes` field `subtype_subtype` (`SubtypePairTable`, the
 // (subtype, subtype) top-256-union-of-3-spaces table). Same blind spot again: entirely inside
 // `CardIndexes`.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026090302;
+//
+// 2026090303 — Round 57: new `CardIndexes` field `legality_date` (`LegalityDateTotals`, one exact
+// per-`(format, status)` printing prefix sum along the `released_at` value axis). Same blind spot
+// again: entirely inside `CardIndexes`.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026090303;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
@@ -18615,6 +18949,10 @@ impl QueryEngine {
         let collector_number_cards = build_range_card_counts(&collector_number_idx, &printing_to_card, cards.len(), &printings, &artwork_base);
         let rarity_idx = build_printing_value_index(&printings, &cards, &offsets, |p| p.card_rarity_int.map(u32::from));
         let rarity_cards = build_range_card_counts(&rarity_idx, &printing_to_card, cards.len(), &printings, &artwork_base);
+        // Round 57: out here for the same reason as the count tables above -- it reads
+        // `printing_to_card`, which the struct literal below moves -- and it must come after
+        // `released_at_idx`, since its prefix sums are parallel to that index's own `keys`.
+        let legality_date = build_legality_date_totals(&cards, &printings, &printing_to_card, &released_at_idx);
         // Out here for the same reason as the count tables: it reads `printing_to_card`, which the
         // struct literal below moves.
         let pair_totals = build_pair_totals(
@@ -18761,6 +19099,7 @@ impl QueryEngine {
             rarity_printing: build_rarity_printing_planes(&printings),
             rarity_printing_ordered: rarity_idx,
             rarity_cards,
+            legality_date,
             value_totals,
             pair_totals,
             subtype_pairs,
