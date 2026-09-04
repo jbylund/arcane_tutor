@@ -10914,16 +10914,27 @@ fn compose_printing_estimate(
             // number either way.
             let folded_printing_bound =
                 folded.result.printing.guaranteed.expect("the And fold seeds printing's guaranteed channel from leaf(n_printings)");
-            let pair_min = pair_bounded_min(v, indexes, folded_printing_bound, &mut covered);
+            let pair = pair_bounded_min(v, indexes, folded_printing_bound, &mut covered);
             // Round 62: the seed `printing_tightened` is measured against -- the per-leaf fold's own
             // printing measure, both channels, BEFORE `pair_bounded_min` or any `fold_candidate` gets
             // to lower it. See `ComposeEstimate::printing_tightened`'s doc for what the flag answers
             // and why the old `candidate == result` number comparison could not.
             let seed_printing = folded.result.printing;
             let mut printing = folded.result.printing;
-            printing.lower_guaranteed(pair_min);
-            printing.lower_estimate(pair_min);
+            printing.lower_guaranteed(pair.printing);
+            printing.lower_estimate(pair.printing);
             let mut result = SpaceEstimate { printing, card: SpaceMeasure::UNKNOWN, artwork: SpaceMeasure::UNKNOWN };
+            // Round 63: `PairTotals`' card/artwork columns now reach `result` instead of being fetched
+            // for the trace and discarded. `guaranteed` only, mirroring `fold_candidate`'s
+            // `Candidate::Exact` arm -- these are real counts of a real set, so they are proven bounds;
+            // the estimate channel stays absent so `best()` resolves to the bound rather than to a
+            // number nothing guessed. See `PairBound`'s doc for how this was found.
+            if let Some(c) = pair.card {
+                result.card.lower_guaranteed(c);
+            }
+            if let Some(a) = pair.artwork {
+                result.artwork.lower_guaranteed(a);
+            }
             // Round 46: hoisted here (used to be declared much further down, right before their own
             // first write) so every `fold_candidate` call site in this arm -- including the two
             // ESTIMATE-class ones below (`SetCollectorRange`, the `arith_tuple_totals` merge) that fire
@@ -13279,23 +13290,44 @@ fn walk_value_orderby_page<'a>(
 // matching `mark_covered`'s own guard. The disjoint-fill branch (`covered.flags.fill(true)`) is left
 // as-is -- `result` is already forced to 0 there, which no subsequent `.min()`-fold can undo, so no new
 // subset tracking is needed for it.
-fn pair_bounded_min(children: &[FilterExpr], indexes: &Archived<CardIndexes>, single_min: usize, covered: &mut CoveredState) -> usize {
+fn pair_bounded_min(children: &[FilterExpr], indexes: &Archived<CardIndexes>, single_min: usize, covered: &mut CoveredState) -> PairBound {
     if children.len() < 2 || !*PAIR_TOTALS {
-        return single_min;
+        return PairBound { printing: single_min, card: None, artwork: None };
     }
     let pt = &indexes.pair_totals;
     let ids: Vec<Option<u16>> = children.iter().map(|c| pair_leaf_id(c, pt)).collect();
-    let mut best = single_min;
+    let mut out = PairBound { printing: single_min, card: None, artwork: None };
     for (i, a) in children.iter().enumerate() {
         for (j, b) in children.iter().enumerate().skip(i + 1) {
             if leaves_are_disjoint(a, b) {
                 covered.flags.fill(true); // the whole And is provably empty; nothing else matters
-                return 0;
+                // Round 63 deliberately leaves card/artwork ABSENT here rather than proving them 0.
+                // A disjointness proof really does mean zero cards and zero artworks, so `Some(0)`
+                // would be a true statement about the ANSWER -- but `result.card` is consumed by
+                // `acquire_plan_features` as the DOMAIN the materializing alternatives walk, and those
+                // two part company exactly when narrowing declines a child. Tried and measured:
+                // `Some(0)` here drove `border:white border:black`'s `eval_domain`/`scan_units` to 0
+                // and flipped it `PrintingCompose -> GatheredScan`, against a realized
+                // `cards_visited` of 2,059 -- the 0.2us-against-199.3us mispricing `est.candidate`
+                // exists to prevent, since a plan still has to SCAN to discover a set is empty.
+                // A genuine `PairTotals` hit below is different: its count is what narrowing on both
+                // values actually reaches (verified, `cmc=5 frame:1997` eval_domain 643 against a
+                // realized 643).
+                return PairBound { printing: 0, card: None, artwork: None };
             }
             if let (Some(x), Some(y)) = (ids[i], ids[j])
-                && let Some(k) = pt.get(x, y, Mode::Printing)
+                && let Some((k, pair_cards, pair_artworks)) = pt.get_all(x, y)
             {
-                best = best.min(k);
+                out.printing = out.printing.min(k);
+                // Round 63: card and artwork come off the SAME hashmap lookup as the printing count
+                // (`get_all` against `get`), so this costs nothing and is exact. Folded per space
+                // independently, which is sound for the same reason the printing fold is: each stored
+                // entry is a real count of the pair's own intersection, and that intersection is a
+                // SUPERSET of the whole And's answer, so its count bounds the And's answer in whichever
+                // space it is read. Mirrors `fold_candidate`'s `Candidate::Exact` arm, which likewise
+                // takes a per-space `lower_guaranteed` over all three.
+                out.card = Some(out.card.map_or(pair_cards, |c: usize| c.min(pair_cards)));
+                out.artwork = Some(out.artwork.map_or(pair_artworks, |c: usize| c.min(pair_artworks)));
                 covered.flags[i] = true;
                 covered.flags[j] = true;
                 let mut mask: u64 = 0;
@@ -13311,7 +13343,26 @@ fn pair_bounded_min(children: &[FilterExpr], indexes: &Archived<CardIndexes>, si
             }
         }
     }
-    best
+    out
+}
+
+/// What `pair_bounded_min` proved, per space (Round 63).
+///
+/// `printing` is the tightest printing-space bound, seeded from the caller's own `single_min` so it is
+/// always present. `card`/`artwork` are `None` when no pair hit at all — an absent bound, never a zero
+/// (the "absence means unknown, never zero" rule `SpaceMeasure` exists to enforce).
+///
+/// Before Round 63 this function returned the printing number alone and the `And` arm built
+/// `SpaceEstimate { printing, card: UNKNOWN, artwork: UNKNOWN }` from it, so `PairTotals`' exact card
+/// and artwork columns were fetched by the trace's `get_all` and then thrown away. Found by reading
+/// `explain`'s own trace on `cmc=0 f:premodern`: the `considered` entry showed the `PairTotals` hit
+/// carrying `card: 216`, the true value, while the root reported 1,200 — `cmc=0`'s own solo count,
+/// arriving via `narrow_floor` because nothing had folded anything tighter. Round 60's decision to
+/// report both channels for all three spaces in the trace is the only reason that was visible.
+struct PairBound {
+    printing: usize,
+    card: Option<usize>,
+    artwork: Option<usize>,
 }
 
 /// The pair-table id for a leaf, or `None` when the leaf's dimension is not covered or its value was
