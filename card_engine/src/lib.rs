@@ -4087,6 +4087,23 @@ fn legality_totals_key(shift: u8, expected: u64) -> u16 {
     (u16::from(shift) << 2) | (expected as u16 & 0b11)
 }
 
+/// The `ValueTotals::legality` row for one (format, status) -- all three spaces at once.
+///
+/// Shared by `exact_result_total`'s `Legality` arm and `compose_printing_estimate`'s, which is the
+/// point: that compose arm needs printings AND artworks for the same key, and reaching them through
+/// two `exact_result_total` calls means walking that function's whole shape-dispatch prelude twice.
+/// Measured (Round 61, 8,247 legality-bearing survey queries at seed 0, against a 31,180-query
+/// no-legality control subset that stayed at exactly 1.000): the two-call form cost +9.3% of
+/// `and_estimate_ns` p50 on those queries, 3,584 ns -> 3,916 ns. One lookup, two columns, and the
+/// control subset says the remainder is free.
+///
+/// `None` is an exact ZERO in every space, not "unknown" -- this table is complete (see
+/// `ValueTotals`' own doc), so a missing key means no printing carries that (format, status). Both
+/// callers turn it into 0 rather than declining.
+fn legality_space_totals(indexes: &Archived<CardIndexes>, shift: u8, expected: u64) -> Option<&ArchivedSpaceTotals> {
+    indexes.value_totals.legality.get(&legality_totals_key(shift, expected).into())
+}
+
 /// A value is worth PAIRING only if it is broad enough that an estimate about it can change a routing
 /// decision. `STREAM_MIN_MATCHES` is that line: below it the sparse floor decides the plan, not the
 /// estimate's precision, and min-over-singles is already within a small factor of the truth.
@@ -9337,9 +9354,11 @@ impl SpaceEstimate {
     }
 
     /// `spaces`, for a leaf whose PRINTING figure is only an approximation while its card/artwork
-    /// counts are real -- the exact shape of the three `card_count * n_printings / n_cards` leaf arms
-    /// (`FilterExpr::Legality`, `is_broadcast_leaf_shape`/devotion, and bare cmc/power/toughness),
-    /// whose card count is exact and whose printing number is the corpus reprint ratio applied to it.
+    /// counts are real -- the exact shape of the remaining `card_count * n_printings / n_cards` leaf
+    /// arms (`is_broadcast_leaf_shape`/devotion, and bare cmc/power/toughness), whose card count is
+    /// exact and whose printing number is the corpus reprint ratio applied to it. `FilterExpr::Legality`
+    /// was the third until Round 61 gave it the exact `ValueTotals` printing count instead -- the
+    /// demotion this constructor exists for is the SECOND-best outcome, behind removing the guess.
     /// `printing` therefore fills the
     /// estimate channel ONLY; card/artwork fill both, as `spaces` does. See `SpaceMeasure`'s admission
     /// rule for why the asymmetry is the point rather than an oversight.
@@ -9482,7 +9501,7 @@ impl ComposeEstimate {
         Self { result: space, candidate: space, broadcast, scatter, collection_broadcast: 0, exact_domain: None, and_trace: None }
     }
 
-    /// `leaf_spaces`, for the three leaf arms whose printing figure is a card count scaled by the corpus
+    /// `leaf_spaces`, for the two leaf arms whose printing figure is a card count scaled by the corpus
     /// reprint ratio rather than a real count -- see `SpaceEstimate::spaces_approx_printing`. Named
     /// apart from `leaf_spaces` (rather than taking a flag) so a reader of either call site can see,
     /// without leaving the line, that `k` here is a GUESS and not a bound.
@@ -12534,20 +12553,43 @@ fn compose_printing_estimate(
             let illegal = legality_candidate_bits(indexes, n_cards, *shift, *expected, true).map_or(0, |b| popcount(&b));
             let scale = |c: usize| (c * n_printings).checked_div(n_cards).unwrap_or(0);
             // `legal` is already the exact CARD count this leaf matches -- reused directly rather than
-            // re-deriving it a second way through `exact_result_total`. Artwork has no equivalent
-            // cheap-popcount source here, so it comes from the `ValueTotals` lookup instead.
+            // re-deriving it a second way through `exact_result_total`.
             //
-            // Round 59: `scale(legal)` fills the ESTIMATE channel only. `legal * n_printings / n_cards`
-            // spreads this format's legal cards at the CORPUS-WIDE average reprint depth, which is not
-            // this format's own -- measured to undershoot the true printing count by 5-13%, so it is a
-            // guess that lands on either side of the truth, never a proven upper bound. Card and
-            // artwork are untouched (both are real counts) and still fill both channels.
-            ComposeEstimate::leaf_spaces_approx_printing(
-                scale(legal),
+            // Round 61: PRINTING is now the exact `ValueTotals::legality` count too, not
+            // `legal * n_printings / n_cards`. That scale spread a format's legal cards at the
+            // CORPUS-WIDE average reprint depth (3.083 on the production corpus), which is not the
+            // format's own, and the error is exactly `global_depth / that format's depth`: measured
+            // across all 23 formats it runs **0.647x to 1.040x**, with 16 of them under truth. The
+            // worst cases are small curated pools whose cards are reprinted far more than average --
+            // `oldschool` is 961 cards at depth 4.765, predicting 2,962 against a true 4,579 -- while
+            // formats covering nearly the whole corpus (`vintage`, `commander`) came out right only
+            // because their population's depth IS the corpus depth. `banned:`/`restricted:` were worse
+            // still, since their tiny card sets sit on the corpus's most-reprinted cards:
+            // `banned:modern` read 160 against a true 403 (0.40x), `restricted:vintage` 160 against 657
+            // (0.24x). Being an undershoot it won `min()`-folds against genuinely exact joints, which
+            // is what left Round 57's exactly-right-but-outvoted rows on record.
+            //
+            // The exact number costs nothing: it is the SAME `HashMap<u16, SpaceTotals>` row the
+            // artwork count was already reading, one column over. `legality_space_totals` is that one
+            // lookup, shared with `exact_result_total`'s own `Legality` arm -- reaching printings and
+            // artworks through two `exact_result_total` calls instead measured at +9.3% of this
+            // function's p50 on legality-bearing queries (see that helper's doc for the numbers and the
+            // control subset). A missing key is an exact 0, which is what "no printing has this
+            // (format, status)" means. All four statuses are stored -- `ValueTotals`' `keys_of` maps
+            // every shift to its own status with no filtering, unlike `PairTotals`, which deliberately
+            // keeps only legal/not_legal -- so `banned:`/`restricted:` leaves are exact here too, not
+            // just `f:`.
+            //
+            // `broadcast` below stays the scaled figure deliberately: it is a COST bucket (how much
+            // broadcast-down work a plan does), not a cardinality, so corpus-average spreading is the
+            // right shape for it and it is not what this round is about.
+            let totals = legality_space_totals(indexes, *shift, *expected);
+            ComposeEstimate::leaf_spaces(
+                totals.map_or(0, |t| t.get(Mode::Printing)),
                 scale(legal.min(illegal)),
                 0,
                 Some(legal),
-                exact_result_total(filter, indexes, Mode::Artwork),
+                Some(totals.map_or(0, |t| t.get(Mode::Artwork))),
             )
         }
         // Color family: exact via `ValueTotals`'s per-combo table — no `eval_planes`, no bitmap.
@@ -13370,7 +13412,7 @@ fn exact_result_total(composed: &FilterExpr, indexes: &Archived<CardIndexes>, mo
             return Some(vt.is_tags.get(value.as_str()).map_or(0, |t| t.get(mode)));
         }
         FilterExpr::Legality { shift: Some(shift), expected } => {
-            return Some(vt.legality.get(&legality_totals_key(*shift, *expected).into()).map_or(0, |t| t.get(mode)));
+            return Some(legality_space_totals(indexes, *shift, *expected).map_or(0, |t| t.get(mode)));
         }
         // A format absent from all loaded data matches nothing, in every space.
         FilterExpr::Legality { shift: None, .. } => return Some(0),

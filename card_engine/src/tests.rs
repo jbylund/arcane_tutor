@@ -16021,7 +16021,20 @@ fn subtype_arith_box_fires_alongside_unrelated_leaf_that_stays_uncovered() {
         p.collector_number_int = Some(i as u16 + 1); // 1..=48
         p.card_legalities = if i >= 8 { 0b01 } else { 0 };
     }
+    // Round 61: the same word at CARD level too. The planes read each printing's own word (the comment
+    // above), but `ValueTotals`/`PairTotals` read the CARD word unless `legality_divergent` is set --
+    // equivalent in production, where that flag is DEFINED as "this card's printings disagree", and
+    // equivalent here (one printing per card, so no card can disagree with itself). Setting only one
+    // of the two makes the fixture describe a store the builder can never produce.
+    for (i, c) in data.cards.iter_mut().enumerate() {
+        c.card_legalities = if i >= 8 { 0b01 } else { 0 };
+    }
     data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
+    // Round 61: the `Legality` leaf's printing figure is now the exact `value_totals` count, so this
+    // table has to exist for `f:pioneer`'s solo assertion below to read 40 instead of 0. Built HERE,
+    // after the `card_legalities` mutations above -- building it before them would count the unmutated
+    // (all-zero) words and silently produce wrong totals.
+    data.indexes.value_totals = build_all_value_totals(&data.cards, &data.printings, &ptc, &data.strings, &data.coll_vocab, usize::from(data.indexes.max_artwork_groups));
     data.indexes.collector_number = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.collector_number_int.map(u32::from));
 
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
@@ -16318,7 +16331,19 @@ fn anchored_independence_data() -> CardData {
         p.card_rarity_int = Some(1);
         p.card_legalities = if i < 20 { 0 } else { 0b01 };
     }
+    // Round 61: the same word at CARD level too -- see
+    // `subtype_arith_box_fires_alongside_unrelated_leaf_that_stays_uncovered`'s own copy of this
+    // comment. The planes read the printing word; `ValueTotals` reads the card word for a
+    // non-divergent card, and the two are equivalent only if both are set.
+    for (i, c) in data.cards.iter_mut().enumerate() {
+        c.card_legalities = if i < 20 { 0 } else { 0b01 };
+    }
     data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
+    // Round 61: the `Legality` leaf's printing figure is now the exact `value_totals` count, so this
+    // table has to exist for the legality stand-in leaf's solo assertion to read 30 instead of 0.
+    // Built HERE, after the `card_legalities` mutations above -- building it before them would count
+    // the unmutated (all-zero) words and silently produce wrong totals.
+    data.indexes.value_totals = build_all_value_totals(&data.cards, &data.printings, &ptc, &data.strings, &data.coll_vocab, usize::from(data.indexes.max_artwork_groups));
     data.indexes.price_usd = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_usd);
     data.indexes.price_eur = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.price_eur);
     // Separate from `build_bit_planes`/`data.indexes.planes` above (#724's printing-space rarity
@@ -18311,6 +18336,11 @@ fn and_arm_independence_tightens_legality_and_collector_number() {
         p.card_legalities = data.cards[i].card_legalities;
     }
     data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
+    // Round 61: the `Legality` leaf's printing figure is now the exact `value_totals` count, so this
+    // table has to exist for the solo assertion below to read 40 instead of 0. Built HERE, after the
+    // `card_legalities` mutation above -- building it before that loop would count the unmutated
+    // (all-zero) printing words and silently produce wrong totals.
+    data.indexes.value_totals = build_all_value_totals(&data.cards, &data.printings, &build_printing_to_card(&data.offsets), &data.strings, &data.coll_vocab, usize::from(data.indexes.max_artwork_groups));
     data.indexes.collector_number = build_printing_value_index(&data.printings, &data.cards, &data.offsets, |p| p.collector_number_int.map(u32::from));
 
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
@@ -18433,6 +18463,12 @@ fn and_arm_independence_permitted_against_a_different_partner_once_covered_by_an
     let p2c = build_printing_to_card(&data.offsets);
     data.indexes.pair_totals =
         build_pair_totals(&data.cards, &data.printings, &p2c, &data.strings, &data.coll_vocab, usize::from(data.indexes.max_artwork_groups));
+    // Round 61: the `Legality` leaf's printing figure is now the exact `value_totals` count, so this
+    // table has to exist for the solo assertion below to read 6,000 instead of 0. Built HERE, after
+    // the `card_legalities` mutation above -- building it before that loop would count the unmutated
+    // (all-zero) printing words and silently produce wrong totals.
+    data.indexes.value_totals =
+        build_all_value_totals(&data.cards, &data.printings, &p2c, &data.strings, &data.coll_vocab, usize::from(data.indexes.max_artwork_groups));
 
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
@@ -19960,16 +19996,21 @@ const R59_LEGAL_CARDS: usize = 20;
 /// Cards legal in no format, one printing each, `cmc = 5`.
 const R59_ILLEGAL_CARDS: usize = 80;
 
-/// A store whose matching cards are reprinted far more than the corpus average, so the two
+/// A store whose matching cards are reprinted far more than the corpus average, so the
 /// `card_count * n_printings / n_cards` leaf arms it exercises land measurably BELOW the truth --
-/// the soundness bug this round closes, reproduced rather than described.
+/// the soundness bug Round 59 closes, reproduced rather than described.
 ///
 /// 20 legal cards x 5 printings (100 printings) + 80 illegal cards x 1 printing (80), so
 /// `n_cards = 100` and `n_printings = 180`. Both `f:A` and `cmc<=1` match exactly the 20 legal cards,
-/// whose real printing count is 100 -- while the leaf arms report `20 * 180 / 100 = 36`. A 0.36x
+/// whose real printing count is 100 -- while a reprint-ratio arm reports `20 * 180 / 100 = 36`. A 0.36x
 /// undershoot is far past the corpus's own 5-13%, on purpose: a channel test wants the direction
 /// unmistakable, and the direction is the whole point (a number below the truth in the channel
 /// documented as a proven upper bound).
+///
+/// Round 61: `f:A` is no longer one of those arms -- the `Legality` leaf reads the exact `ValueTotals`
+/// printing count now, so on this store it reports the true 100. `cmc<=1` still scales, which is what
+/// keeps this fixture's remaining channel tests live. The skew itself is unchanged and is exactly what
+/// makes the legality tests here able to tell an exact count (100) from the old guess (36) at all.
 fn reprint_skewed_store() -> CardData {
     let mut vocab = VocabInterner::new();
     let n_cards = R59_LEGAL_CARDS + R59_ILLEGAL_CARDS;
@@ -19997,8 +20038,9 @@ fn reprint_skewed_store() -> CardData {
 }
 
 /// The store above really is skewed the way its doc claims, and `ValueTotals` really does hold the
-/// exact printing count the leaf arm declines to use. Checked separately so a failure in the channel
-/// tests below can never be a fixture problem misread as a channel problem.
+/// exact printing count -- which the leaf arm declined to use until Round 61 and now reads directly.
+/// Checked separately so a failure in the channel tests below can never be a fixture problem misread
+/// as a channel problem.
 #[test]
 fn reprint_skewed_store_has_the_claimed_skew() {
     let data = reprint_skewed_store();
@@ -20015,16 +20057,19 @@ fn reprint_skewed_store_has_the_claimed_skew() {
     );
 }
 
-/// **The soundness bug, closed.** The `Legality` leaf's printing figure is a card count multiplied by
-/// the corpus-wide reprint ratio, and on this store it lands at 36 against a true 100 -- so it must
-/// fill the GUESS channel and leave `guaranteed` absent. Its card count (an exact `_EXISTS` plane
-/// popcount) and its artwork count (a `ValueTotals` lookup) are real counts and still fill both.
+/// **Round 61 supersedes Round 59 for this arm.** Round 59's version of this test asserted the
+/// opposite of what is asserted here: that the `Legality` leaf's printing figure is a reprint-ratio
+/// GUESS (36 on this store, against a true 100) which must leave `guaranteed` absent. Round 61 removed
+/// the guess entirely -- the leaf now reads `ValueTotals::legality`'s exact `.printings` column, which
+/// costs one `HashMap` lookup the artwork line was already paying for -- so the premise the old test
+/// pinned is gone and its assertions are inverted here rather than deleted.
 ///
-/// The accuracy read is deliberately asserted to be UNCHANGED: `best()` is `min` over both channels,
-/// so demoting a channel cannot move the number any consumer reads. That is the point -- this round
-/// buys soundness in `guaranteed`, not accuracy in `best()`.
+/// This is the accuracy half Round 59 explicitly did not buy: `best()` moves from 36 to the true 100.
+/// The number is asserted against `exact_result_total(.., Mode::Printing)` rather than against a
+/// hard-coded 100 in the primary assertion, so the two can never drift apart -- with
+/// `reprint_skewed_store_has_the_claimed_skew` pinning that function's own answer at 100 separately.
 #[test]
-fn legality_leaf_printing_is_a_guess_and_claims_no_bound() {
+fn legality_leaf_printing_is_the_exact_value_totals_count() {
     let data = reprint_skewed_store();
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
@@ -20032,24 +20077,79 @@ fn legality_leaf_printing_is_a_guess_and_claims_no_bound() {
 
     let f = FilterExpr::Legality { shift: Some(0), expected: super::LEGALITY_LEGAL };
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, false);
-    assert_eq!(est.result.printing.estimate, Some(36), "20 legal cards * 180 printings / 100 cards");
-    assert!(
-        est.result.printing.guaranteed.is_none(),
-        "36 is BELOW the true 100 -- an average-case approximation must never claim to be a proven upper bound"
-    );
-    assert_eq!(est.result.printing(), 36, "the accuracy read is unchanged: best() is min over both channels");
+    let exact = super::exact_result_total(&f, &archived.indexes, Mode::Printing);
+    assert_eq!(est.result.printing.guaranteed, exact, "the leaf's printing figure IS the exact ValueTotals count, and claims the bound");
+    assert_eq!(est.result.printing.estimate, exact, "a real count fills both channels");
+    assert_eq!(est.result.printing(), 100, "and the accuracy read moves off the old 20 * 180 / 100 == 36 guess");
     assert_eq!(est.result.card.guaranteed, Some(20), "the card count IS a real count -- an exact _EXISTS popcount");
     assert_eq!(est.result.card.estimate, Some(20), "and a real count fills both channels");
-    // 100, not 20: `store_of` gives every printing a distinct illustration, so the 20 legal cards own
-    // 100 distinct artworks. Worth asserting rather than skipping, because it is a live instance of
-    // the cross-space inconsistency `SpaceMeasure`'s doc records as still open -- `artwork` (100) is
-    // above `printing` (36) here, and clamping the two is deliberately a LATER round. It is also why
-    // that clamp had to wait for this one: clamping artwork down to a printing figure of 36 would
-    // have propagated this leaf's undershoot into artwork space.
+    // Round 59 recorded `artwork` (100) sitting ABOVE `printing` (36) here as a live instance of the
+    // cross-space inconsistency `SpaceMeasure`'s doc still lists as open. Closing the printing guess
+    // closes this instance of it too: both spaces now read 100, which is the truth in both.
     assert_eq!(est.result.artwork.guaranteed, Some(100), "the artwork count is a real ValueTotals lookup too");
-    // `candidate` carries the same demotion -- it is built from the same `SpaceEstimate`, and the
-    // materializing alternatives' domain is no more proven than the result estimate is.
-    assert!(est.candidate.printing.guaranteed.is_none());
+    // `candidate` is built from the same `SpaceEstimate`, so it carries the same promotion.
+    assert_eq!(est.candidate.printing.guaranteed, exact);
+}
+
+/// The same exactness reaches `banned:`/`restricted:`, not just `f:`. Worth its own test because the
+/// SIBLING table deliberately drops those two statuses -- `build_pair_totals` skips any status that is
+/// neither `legal` nor `not_legal` (its own comment: they total ~7,000 printing-rows corpus-wide, too
+/// small to change routing) -- so "the legality tables only carry legal/not_legal" is a live and wrong
+/// belief a reader could carry over. `ValueTotals`' own `keys_of` closure has no such filter: it emits
+/// `legality_totals_key(shift, status)` for every format shift with whatever status that printing
+/// actually has, so all four statuses are stored and all four are exact.
+///
+/// Fixture: 8 cards at shift 0 -- 2 legal x 3 printings, 2 restricted x 2, 2 banned x 4, 2 not_legal x
+/// 1 -- so every status has a printing count (6 / 4 / 8 / 2) DISTINCT from its card count (2) and from
+/// the reprint-ratio scale the old code would have produced (`2 * 20 / 8 == 5` for every one of them,
+/// which matches none of the four).
+#[test]
+fn legality_leaf_is_exact_for_banned_and_restricted_too() {
+    let mut vocab = VocabInterner::new();
+    let statuses = [super::LEGALITY_LEGAL, super::LEGALITY_RESTRICTED, super::LEGALITY_BANNED, 0];
+    let per_card_printings = [3usize, 2, 4, 1];
+    let mut cards = Vec::new();
+    let mut counts = Vec::new();
+    for (status_idx, _) in statuses.iter().enumerate() {
+        for _ in 0..2 {
+            let mut c = stub_card(1 + cards.len() as u128, TYPE_CREATURE, &[], &mut vocab);
+            c.card_legalities = statuses[status_idx];
+            cards.push(c);
+            counts.push(per_card_printings[status_idx]);
+        }
+    }
+    let mut data = store_of(cards, &counts, vocab);
+    // Same reason as `reprint_skewed_store`: both the legality PLANES and `ValueTotals::legality` read
+    // each PRINTING's own word, which `store_of` left at 0.
+    let p2c = build_printing_to_card(&data.offsets);
+    let card_words: Vec<u64> = data.cards.iter().map(|c| c.card_legalities).collect();
+    for (p, &cid) in data.printings.iter_mut().zip(&p2c) {
+        p.card_legalities = card_words[cid as usize];
+    }
+    data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
+    data.indexes.value_totals =
+        build_all_value_totals(&data.cards, &data.printings, &p2c, &data.strings, &data.coll_vocab, usize::from(data.indexes.max_artwork_groups));
+
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let n_printings = archived.printings.len();
+    assert_eq!(archived.cards.len(), 8);
+    assert_eq!(n_printings, 20, "2*(3 + 2 + 4 + 1)");
+
+    // What the removed reprint-ratio scale would have said for EVERY status: 2 cards * 20 / 8.
+    const OLD_SCALE_FOR_EVERY_STATUS: usize = 5;
+    // The three INDEXED statuses only. `LEGALITY_NOT_LEGAL` (0) has no plane row in
+    // `LEGALITY_STATUS_TABLE` and `is_printing_composable` rejects it outright -- the parser never
+    // emits a bare leaf for it (`-f:X` is `Not(Legality{LEGAL})`), so it is not a shape this arm ever
+    // sees. Its 2 cards / 2 printings stay in the fixture purely as non-matching filler.
+    for (status, printings) in [(super::LEGALITY_LEGAL, 6usize), (super::LEGALITY_RESTRICTED, 4), (super::LEGALITY_BANNED, 8)] {
+        let f = FilterExpr::Legality { shift: Some(0), expected: status };
+        let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, false);
+        assert_eq!(est.result.printing.guaranteed, Some(printings), "status {status}: exact printing count, claimed as a bound");
+        assert_eq!(est.result.printing(), printings, "status {status}: accuracy read is the exact count");
+        assert_ne!(printings, OLD_SCALE_FOR_EVERY_STATUS, "fixture assumption: no status may coincide with the old scale");
+        assert_eq!(est.result.card.guaranteed, Some(2), "status {status}: 2 cards each");
+    }
 }
 
 /// **The demotions have to survive the `And` arm to mean anything.** The arm's `printing` accumulator
@@ -20058,11 +20158,13 @@ fn legality_leaf_printing_is_a_guess_and_claims_no_bound() {
 /// smallest number in the fold, so a demoted leaf's approximation was laundered straight back into
 /// `guaranteed` one level up. Seeding from the fold's own two channels fixes that.
 ///
-/// `f:A cmc<=1` is the shape that shows it: BOTH leaves are reprint-ratio arms reporting 36 against a
-/// true 100, so pre-fix the arm's `guaranteed` was 36 -- 0.36x of the truth, in the channel the queued
-/// cross-space clamp is supposed to clamp artwork and card space DOWN to. The assertion is stated as
-/// the invariant (`guaranteed >= the true count`) rather than as a specific number, so it keeps
-/// holding if some later mechanism starts answering this shape exactly.
+/// `f:A cmc<=1` is the shape that shows it: pre-Round-59 BOTH leaves were reprint-ratio arms reporting
+/// 36 against a true 100, so the arm's `guaranteed` was 36 -- 0.36x of the truth, in the channel the
+/// queued cross-space clamp is supposed to clamp artwork and card space DOWN to. Round 61 made the
+/// `f:A` half exact (100 in both channels); the `cmc<=1` half is still a demoted guess, which is what
+/// keeps this test exercising the laundering path rather than trivially passing. The assertion is
+/// stated as the invariant (`guaranteed >= the true count`) rather than as a specific number, so it
+/// keeps holding if some later mechanism starts answering this shape exactly.
 #[test]
 fn the_and_arm_does_not_launder_a_demoted_leaf_back_into_guaranteed() {
     let data = reprint_skewed_store();
@@ -20075,7 +20177,8 @@ fn the_and_arm_does_not_launder_a_demoted_leaf_back_into_guaranteed() {
         FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Le, rhs: NumExpr::Const(1.0) },
     ]);
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, false);
-    // Both leaves match exactly the 20 heavily-reprinted cards, whose real printing count is 100.
+    // Both leaves match exactly the 20 heavily-reprinted cards, whose real printing count is 100 --
+    // which is also, after Round 61, exactly what the `f:A` leaf now reports on its own.
     const TRUE_PRINTINGS: usize = R59_LEGAL_CARDS * R59_LEGAL_CARD_PRINTINGS;
     let bound = est.result.printing.guaranteed.expect("the domain seed always puts n_printings in the guaranteed channel");
     assert!(
