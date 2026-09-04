@@ -416,8 +416,10 @@ symptoms. Re-open only with a fresh survey that contradicts the numbers.
   On 750 real table-MISS pairs: median **1.309x -> 1.000x**, p90 8.25 -> 6.00, routing-relevant 3 -> 1.
   Deleted `top_n_and_rest_max` (no callers left), migrating its Round 47 tie rationale into the surviving
   helper and retargeting its four guard tests rather than deleting them. Survey-flat by construction —
-  see the sampler-coverage bullet above. One honest trade: `set`'s tail improved sharply while its median
-  moved further below truth (0.900 -> 0.586).
+  see the sampler-coverage bullet above. Per-query on identical truths, `set` lands **91 of 168 rows closer
+  to truth against 22 further** and cuts predictions of 0-against-nonzero-truth from 72 to 49; its median
+  ratio falling (0.900 -> 0.586) is an artifact of the distribution being zero-inflated, not a regression —
+  a median summarizes such a distribution badly.
 - Measurement, no round number (2026-09-04): **the residual-size distribution, and the route share
   that reframes this whole doc.** Measured over real weighted traffic (14,473 queries) rather than the
   sampler, deliberately — the sampler's shape templates decide residual sizes, so measuring against it
