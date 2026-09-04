@@ -212,6 +212,69 @@ total regret by 0.0 ms).
 | 57 | `LegalityDateTotals`: an EXACT per-`(format, status)` prefix sum over the `released_at` value axis (924 distinct dates), answering `f:X` × any date range in printing space by one subtraction. Keyed by the existing `legality_totals_key`; pruned by a 1,024-printing selectivity floor (`PairTotals`' own principle) AND by a second rule the plan didn't anticipate — drop any key covering the whole date index, which removed 9 phantom keys | kept | n/a (not this doc's own metric) | Routing-relevant straddles (>1,024 boundary, >=200 abs, >=10% rel), agent's sweep at seed 20260903 over 47,118 `root=and` rows: printing 463 → 452 (**−11**, all over-side), card 309 → 306 (−3), artwork 305 → 297 (−8); ALL 1,077 → 1,055. **Every one of the −22 is in `unsafe:legality+released`** (50 → 28); no other shape moved a single straddle. Target shape ratio, printing: median 1.02x → **1.00x**, p90 3.64x → **1.00x**, max 16.81x → **1.00x**. Coverage 0/900 → 813/900. 46 plan flips (0.1%), all in the target shape, and among those rows the count sitting on the wrong side of 1,024 went **31 → 8** | see "Round 57" narrative below — the investigation retracted its own premise twice before landing, an unplanned 9-phantom-key finding, and one honest cost: 173 card/artwork ratio regressions whose mechanism I verified and whose fix is the next round |
 | 58 | Splits every space into two independent channels — `SpaceMeasure { guaranteed, estimate }` — so a PROVEN bound and a BEST GUESS stop competing for one `.min()` slot. `Candidate::Exact` feeds `guaranteed`, `Candidate::Estimate` feeds `estimate`; consumers needing soundness read `guaranteed`, consumers needing accuracy read `estimate.min(guaranteed)`. `exact_domain` retained as its own `ExactDomain` type (a stronger cross-space same-set claim, not a synonym). **Phase 2 (the planned `COMPOSE_CARD_ESTIMATE_BIAS` skip) was measured to FAIL and deliberately NOT taken** | phase 1 kept, phase 2 rejected | n/a (not this doc's own metric) | **Byte-identical, verified at three independent seeds**: the agent at 64,581 (seed 20260958) and 64,563 (20260903) rows, and me at 54,336 shared rows (seed 4242) — zero differences on `predicted_matches`, `picked_plan`, `and_mechanism`, and additionally `count_source`/`true_total`/`n_plans_ran` in my run. Row sets matched exactly. So every straddle count and plan choice is unchanged by construction. `cargo test` 290 debug / 287 release (+6 tests). Timing: a flat **+25 to +110 ns** per `compose_printing_estimate` call (~1% on queries with real work, +8.9% bare leaves, +13.7% `Or`), measured interleaved A/B/A/B rather than by canary | see "Round 58" narrative below — the phasing caught a real `Or`-arm fold bug that would have been invisible in a blended round, and phase 2's rejection corrected a false premise **in my own plan** |
 | 59 | Makes `guaranteed` honest, enforcing "a source may claim a bound only if its number is a real count of a real set". **Three** leaf arms demoted to estimate-only (`FilterExpr::Legality`, the broadcast/devotion arm, and — found by auditing every arm rather than the two the plan named — the bare cmc/pow/tou `bare_numeric_field_count` branch), all three reporting `card_count * n_printings / n_cards`. Two mechanisms promoted via a new `Candidate::PrintingBound` variant: `LegalityDateTotals` (exact prefix-sum subtraction) and `PriceJointTable` (any overlap counted in full, hence a structural over-count). Plus the `And` arm's seed fixed — see below, without it the round does nothing above a single leaf. Plus a standing soundness check and the long-standing release-clippy error | kept | n/a (not this doc's own metric) | **Byte-identical**, independently verified by me at seed 777 over 54,321 shared rows: zero differences on `predicted_matches`/`picked_plan`/`and_mechanism`/`count_source`/`n_plans_ran`/`true_total`/`ratio`/`abs_log_ratio` **and on the entire `and_trace` dict**; agent's own run agrees at 64,605 keys. So the straddle table is empty in both directions and all three `unique` values. `cargo test` 299 debug / 296 release (+9). **`clippy --all-targets -- -D warnings` clean in BOTH profiles for the first time in this arc.** New `scripts/check_bound_class_soundness.py`: 5,553 bound-class candidates over 12 mechanisms in my run, none below truth | see "Round 59" narrative below — **two of this round's plan's claims were wrong and are corrected there**, plus the `best()`-laundering rule that generalizes beyond this round |
+| 60 | `and_trace` reports BOTH channels. `AndTraceLeaf`/`AndTraceNode::{Leaf,Op}` carry a bare `SpaceEstimate`, `AndTraceGroup` an `Option<SpaceEstimate>` (`Some` exactly when `hit`, so `hit == spaces.is_some()` holds by construction). Channels derived once at the fold via a new `Candidate::spaces()` matched arm-for-arm against `fold_candidate`, not hand-written at ~17 trace sites. Python boundary flattened and strictly additive: `card`/`printing`/`artwork` keep today's `best()` values, `{space}_guaranteed`/`{space}_estimate` added beside them, absence always `None` and never `0` | kept | n/a (not this doc's own metric) | **Behaviour-neutral, verified by me at seed 6060**: 15 semantic scalar fields over 54,279 shared rows, **0 differing**; `and_trace` with the six added keys stripped, **0 differing** (the whole-dict comparison Rounds 58/59 used now differs by design, since keys were added — not a regression). Fidelity across the whole run: **673,776 space-slots, 0 violations** of `{space} == min(guaranteed, estimate)`. `cargo test` 302 debug / 299 release, clippy clean both profiles. `check_bound_class_soundness.py` reports 5,480 bound-class candidates none below truth, and reports the **identical** count whether reading the new channels or falling back to its name map — the cross-check passing | see "Round 60" narrative below — one deviation (Independence's card/artwork estimates), a real diagnostic-path cost with the probe that isolated it, and the first direct look at what the channels actually contain |
+
+### Round 60
+
+Additive observability, and the first time this arc can *look* at what it spent five rounds reasoning
+about. Every "which channel won" question so far — the 173 card/artwork regressions, Round 57's 25
+outvoted rows, Round 55's undershoot, Round 59's seed laundering — was reverse-engineered from source
+and hand-built measurements. Now it is readable off `explain`.
+
+**Reuse over invention.** `SpaceEstimate` is already exactly `{ printing, card, artwork }` of
+`SpaceMeasure` and is `Copy`, so the trace carries that rather than a parallel encoding. A per-group
+"class" label was considered and rejected for a concrete reason: a mechanism's contribution is not one
+number in one channel. `Candidate::PrintingBound` lowers BOTH channels of printing;
+`Candidate::Exact` sets `guaranteed` in all three spaces and leaves `estimate` alone. A string cannot
+say either, and keeping the estimator's own shape makes a group's contribution directly comparable to
+the tree node it folded into — which is the comparison the blocked investigations actually need.
+
+**One deviation, and it is the right call.** `Candidate::Estimate` gained `card`/`artwork` fields that
+are REPORTED but never FOLDED. The `"Independence"` trace group has always carried
+`card_indep`/`artwork_indep` while `fold_candidate` discards them; deriving channels purely from a
+one-field `Estimate` would have turned those existing keys from `Some(n)` to `None` — a byte-identity
+violation on the round whose entire bar is byte-identity, and it breaks two pre-existing tests. So the
+plan's assertion "every `Estimate` populates `printing.estimate` only" holds for all six estimate
+mechanisms EXCEPT `Independence`'s card/artwork **estimate** channels. No `Estimate` ever touches
+`guaranteed`, which is the property that matters. Pinned by a dedicated test.
+
+**A real cost, honestly isolated.** The trace is built only under `want_trace: true`
+(`explain`/`explain_analyze`), never on the production path, so production is untouched. But the
+diagnostic path is not free, and the agent measured it properly rather than assuming — on the 300
+widest real `And`s (11-34 `considered` groups), `explain()` p50:
+
+| build | widest | sample |
+|---|---|---|
+| baseline `a297d101` | 41.1 us | 14.8 us |
+| probe: all struct changes, OLD 3-key serialization | 41.6 us | 15.0 us |
+| shipped | 46.2 us | 17.5 us |
+| rejected: `format!`-built key names | 53.4 us | 19.1 us |
+
+The probe is what makes this a finding rather than a number: the struct and tree changes are free, and
+the entire delta is the six extra `PyDict::set_item` calls per dict — this round's actual payload.
+Using `&'static str` key literals instead of `format!` recovered ~12 of an initial 30 points, which is
+worth remembering for any future addition at that boundary.
+
+**What the channels actually contain, now that they can be seen.** Round 59's non-invariant is not an
+edge case: **41,838 of 147,660** tree nodes have `printing_guaranteed` absent while `printing` is
+present, and on **17,628 of 32,745** roots the guess is TIGHTER than the proven bound. That is the
+normal state, not an anomaly — which is precisely why "absence must serialize as `None`, never `0`"
+was a hard constraint, and why the queued domain-seeding round is attractive.
+
+**The `narrow_floor` candidate set, framed as a candidate set.** 4,317 root nodes carry a
+`card_guaranteed` tighter than any child's `card_guaranteed` — the readable signature of the
+`best()`-into-`guaranteed` laundering. But the agent was careful to say it is not a verdict: the same
+set contains legitimate `Candidate::Exact` joints (e.g. `tou>=6 tou<=11` at 1,189 against a tightest
+child of 1,221), where a real multi-leaf mechanism genuinely proved something tighter than any single
+leaf. Round A still has to separate the two. That distinction is exactly what was invisible before.
+
+**Sequencing this establishes.** C (this round, observable) -> B (replace the three presence/equality
+proxies with explicit structural signals) -> domain-seeding (delete every `Option`, make `printing()`
+infallible by construction) -> A (`narrow_floor`, near-trivial once bounds are always present and
+honest). B grew from one instance to three: `est.candidate.printing() == est.result.printing()`,
+`est.result.card.best().is_some()`, and `est.result.card.best() == Some(domain_cards)` all read
+presence or equality as a stand-in for structure, and domain-seeding makes all three vacuous — so they
+must be fixed together, before it.
 
 ### Round 59
 

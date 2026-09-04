@@ -1,6 +1,6 @@
 # N-Way Estimator Follow-Up Queue
 
-Tracks what's left from the `And`-arm cardinality-estimation arc (Rounds 33-59), in the order we
+Tracks what's left from the `And`-arm cardinality-estimation arc (Rounds 33-60), in the order we
 intend to tackle it. This doc is the queue, not the depth — the round-by-round numbers live in
 [local-engine-gathered-scan-card-printing-varying-depth.md](local-engine-gathered-scan-card-printing-varying-depth.md),
 and the architecture/design rationale lives in
@@ -26,7 +26,37 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
    - This IS a behaviour change (unlike Round 59), so it needs the full straddle-by-direction-and-unique
      treatment, and watch for shapes that relied on the undershoot being load-bearing.
    - `scripts/check_bound_class_soundness.py` should stay green throughout.
-2. **Backport the `rest_max` triple + space-native independence to `SetSubtypeTable` /
+2. **Replace the three presence/equality proxies with explicit structural signals.** Each reads a
+   VALUE to answer a STRUCTURAL question, which is the same anti-pattern in three places:
+   - `est.candidate.printing() == est.result.printing()` — "did any mechanism tighten this?" `result <=
+     candidate` always holds, so inequality does imply tightening, but equality conflates "nothing
+     tightened" with "tightened to coincidentally the same number". Round 58 made it worse unnoticed:
+     `printing()` is `best()`, so it now compares two min-across-channel collapses.
+   - `est.result.card.best().is_some()` (~17155) — "did an `And` produce a card number?"
+   - `est.result.card.best() == Some(domain_cards)` (~16915) — "is the domain exact?"
+   All three are answerable directly: `covered` already tracks what tightened, and the trace records
+   which mechanisms hit. **They must be fixed together and before domain-seeding**, which makes all
+   three vacuous. Touches plan-cost features, so it needs the pairwise-ordering and feature-accuracy
+   guards, not just the estimate survey.
+3. **Seed every `SpaceEstimate` with the domain instead of `UNKNOWN`.** The domain size is a true upper
+   bound, so a space can start `{ guaranteed: n_cards, estimate: n_cards }` and only ever tighten. That
+   deletes every `Option`, makes `printing()` infallible by construction rather than by `expect`, and
+   removes the "absence means unknown, never zero" footgun that caused BOTH laundering bugs found so far
+   (Round 59's `And` seed, and `narrow_floor`'s still-live read). Round 60 measured how normal absence
+   currently is: **41,838 of 147,660** tree nodes have `printing_guaranteed` absent while `printing` is
+   present. Blocked on #2.
+4. **Untangle `narrow_floor`.** It reads `s.card.best()` and writes `result_space.card.lower_guaranteed(f)`
+   — a child's GUESS becoming the query's BOUND, the same laundering Round 59 fixed in the `And` seed.
+   Latent today (nothing writes a card-space estimate-only value yet); item #1 could unmask it. It is
+   also doing two jobs: its stated purpose is to give card/artwork the free per-leaf min-fold printing
+   already has, but its breadth filter is justified by what `narrow_rec` will actually narrow to — a
+   plan-cost concern, not an answer-cardinality one. Mathematically a broad leaf's count IS a sound
+   bound (`|A n B| <= |A|`), so the filter makes it deliberately weaker than the tightest sound bound,
+   for a reason belonging to a different question. It also computes a `min` (an upper bound) while being
+   named a floor. Round 60 left a candidate set — **4,317 root nodes** with `card_guaranteed` tighter
+   than any child's — but that set also contains legitimate `Candidate::Exact` joints, so separating
+   them is the round's actual work. Easiest after #3, when bounds are always present.
+5. **Backport the `rest_max` triple + space-native independence to `SetSubtypeTable` /
    `ColorSubtypeTable`.** Round 55 shipped both ideas for the new `(subtype, subtype)` table but
    deliberately left these three untouched, so they still rank their top-256 by CARD count alone and
    still scale one card-space `rest_max` into printing space by a global reprint ratio. Round 55's own
@@ -38,7 +68,7 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
    ordering constraint Round 55 surfaced (the fourth standing principle below):
    `SubtypePairEstimate` is already positioned after its own exact scan, but re-check rather than
    assume.
-3. **Generalize "anchored independence" further.** Rounds 50 and 56 shipped two anchors
+6. **Generalize "anchored independence" further.** Rounds 50 and 56 shipped two anchors
    (`SubtypeArithBox`, `ColorCmcTable`), both with a single residual `IndepClass::Price` leaf, sharing
    one `anchored_price_residual` helper. Three directions remain, each its own future round (validate
    independently, don't bundle):
@@ -56,12 +86,12 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
      entirely when no `Price`-classified source exists anywhere, worth ~21% of `and_estimate_ns` on
      `(color, cmc)`-with-no-price queries) was deliberately NOT applied to Round 50's own site, which
      measured unregressed as-is. The same guard would help it too.
-4. **Measure the residual-size distribution for real 5+-leaf queries.** Still unmeasured since before
+7. **Measure the residual-size distribution for real 5+-leaf queries.** Still unmeasured since before
    this session started. This is the actual answer to "is the general bounded partition search worth
    building at all" — if real residuals rarely exceed 2-3 leaves, the "notice one bad case, build one
    validated mechanism" pattern (8 real gaps closed this way so far: Rounds 34, 40, 42, 44, 45, 48, 51,
    52) may just *be* the right architecture, not a placeholder for a general one.
-5. **Decide on / scope the actual general bounded partition search**, informed by #4's findings and
+8. **Decide on / scope the actual general bounded partition search**, informed by #7's findings and
    built on Round 49's own subset-tracking primitive (`CoveredState`'s `subsets: Vec<u64>`, already
    shipped). Not attempted until the above are in.
 
@@ -247,6 +277,12 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
   mechanism predicts below truth) and finally fixed the `ARITH_TUPLE_BLOWUP_CARDS` release-clippy error
   — **both clippy profiles are clean for the first time in this arc**. Recovered 0 rows by design; item
   #1 above is the fix it identified.
+- Round 60: `and_trace` reports both channels — `SpaceEstimate` embedded in every trace struct,
+  channels derived once at the fold from `Candidate::spaces()`, Python keys flattened and strictly
+  additive. Behaviour-neutral (15 semantic fields x 54,279 rows, 0 differing; 673,776 space-slots, 0
+  fidelity violations). Made `check_bound_class_soundness.py` read the engine's own channels with its
+  name map kept as a cross-check. Costs ~12% on the DIAGNOSTIC path only (six extra `PyDict::set_item`
+  per dict, isolated by a probe); production untouched.
 - Harness fix (no round number, a Python-only fix outside the engine): `client/query_sampler.py`'s
   `_count_row` folded oracle/flavor words via `Counter.update(set(...))` — bare-set iteration is
   hash-seed-randomized per process, so tied-frequency co-occurring words could swap `most_common()`'s
