@@ -7,7 +7,7 @@ intend to tackle it.
 arc existed to unblock a joint refit of the COST MODEL, which had been blocked on bad cardinality
 estimates. Measured against realized counters, that block is gone: `matches` and `eval_domain` now read
 **1.00 at the median on every acquire route**, with a p90/p10 spread of 1.0 on `plane` and `candidates`
-— the route carrying 96.31% of real weighted query time. What the refit is now blocked on is a
+— the route carrying 96.31% of the crawl corpus's weighted time (see the population warning). What the refit is now blocked on is a
 DIFFERENT quantity: how many printings a plan actually walks. Those features were never a function of
 result cardinality, and four rounds of estimator work moved them barely at all (`scan_units` pooled p50
 0.67 -> 0.65, spread 12.4 -> 12.1 across Rounds 62-64). Items 1-2 are cost-feature calibration; items
@@ -20,9 +20,37 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
 
 ## Active queue (in order)
 
-**Scope note, measured 2026-09-04 — read this before scheduling anything here.** This arm governs
-about **2% of real weighted query time**. Over the 14,473-query weighted real-traffic corpus
-(`benchmarks/wild-queries/wild-corpus.jsonl`), acquire routes split:
+**Scope note — read this, AND read the population warning below it, before scheduling anything here.**
+
+**CORRECTED 2026-09-05: there is no measurement of real user traffic anywhere in this doc, and an
+earlier version of this note claimed one.** `benchmarks/wild-queries/wild-corpus.jsonl` is not a query
+log — it is **URLs discovered in a web crawl**, and it is heavily biased toward NAME lookups (people
+link to specific cards). That is visible in its own shape: 71.4% of its entries are not conjunctions
+at all, `!"Exact Card Name"` queries are common, and `format:` filters appear in **9 of 14,473**
+entries. So every "real traffic" figure below describes a LINK CORPUS, not what users type. Three
+populations get conflated as "traffic" and none is a query log:
+
+| `count_source` | wild (crawled URLs) | `--mode realistic` | `--mode uniform` |
+|---|---|---|---|
+| `candidates` | 99.1% | 67.3% | 40.3% |
+| `printing_compose` | **0.5%** | **28.2%** | **53.0%** |
+| `plane` | 0.4% | 3.3% | 2.8% |
+| n | 14,473 | 3,000 | 3,000 |
+
+**`--mode realistic` is NOT a proxy for the crawl corpus either** — it over-represents compose **56x**
+(28.2% against 0.5%), where uniform over-represents it 106x. It is closer to uniform than to the crawl.
+Do not read its name as "resembles production"; nothing here has been validated against production.
+**And no bench harness can express a crawl-corpus claim at all**: `bench_regret_matrix`,
+`bench_cost_error_attribution`, `bench_cost_error_percentiles` and `bench_feature_accuracy` accept only
+the synthetic sampler's `--mode`. Every cost-model number in this doc comes from a population where
+compose is 28-53% of queries rather than 0.5%. Treat them as WORST-CASE CORRECTNESS instruments, not
+latency ones, until someone builds a wild-corpus driver or gets a real log.
+
+The figures below are retained because they are still the best evidence available and the relative
+ordering between routes is probably directionally right — but the absolute shares are a property of a
+crawl, and the user has previously noted their own habitual usage (`f:modern` plus other filters) is a
+stronger signal for this repo than this corpus. Over that 14,473-entry crawl corpus, acquire routes
+split:
 
 | route | queries | mean | weighted TIME share |
 |---|---|---|---|
@@ -193,7 +221,8 @@ whichever term correlates with it"). Fix features first, then refit.
      against 17.6% `name`. On `edhrec` the 1.45 constant UNDER-charges by ~2.1x (residual 3.02); on
      `name` it OVER-charges by ~1.5x (residual 0.95). **The two orderings that make up 99% of real
      traffic have errors in opposite directions**, so Round 67's "compose is under-picked, 67% of
-     regret" is a uniform-mode result and must not be quoted as a real-traffic one. Run
+     regret" is a uniform-mode result and must not be quoted as a crawl-corpus one, let alone a
+     real-traffic one. Run
      `bench_regret_matrix.py --mode realistic` before acting on a direction.
    - Verify with `bench_regret_matrix.py` (does the share actually move), not only feature accuracy.
    - **`printings_walked` IS `uniform_mean` already — verified 2026-09-05.** `cost::printings_walked`
@@ -304,15 +333,16 @@ whichever term correlates with it"). Fix features first, then refit.
    against compose (see its own doc: "What the MATERIALIZING alternatives see"), so under-counting it
    prices those alternatives too cheap and biases the argmin AGAINST `PrintingCompose`.
    `scan_units [card_range_popcount] / card` has the same defect at p50 0.43 (spread 8.0).
-   - **Scope it honestly: this is a tail-correctness item, not a real-traffic latency item.** Measured
+   - **Scope it honestly: this is a tail-correctness item, not a latency item.** Measured
      2026-09-05 over the 14,473-query weighted real corpus, `PrintingCompose` was an OPTION on only
      **86 queries (0.6%)**, won 7, and when it lost it lost by a **median 130x** — with just **2**
      losses inside 1.5x and 3 inside 3x. So correcting a ~1.5x bias could flip at most 2-3 real
      queries. It matters for the tails a UNIFORM sampler probes and for the pathological mis-routes
-     (Round 63 hit a plan priced at 0.2us against a measured 199.3us), not for real-traffic latency.
+     (Round 63 hit a plan priced at 0.2us against a measured 199.3us), not for latency on any
+     population measured here.
    - **`bench_feature_accuracy` runs `--mode uniform` and is NOT traffic-weighted** (171,915
      feature-rows; its own help says uniform "reaches the rare tails where ordering errors hide"). Its
-     "57 flagged cells outside [0.8, 1.25]" therefore overstates real-traffic impact and understates
+     "57 flagged cells outside [0.8, 1.25]" therefore overstates crawl-corpus impact and understates
      nothing — read it as a correctness instrument, not a latency one. Every flagged cell is
      `printing_compose` or `card_range_popcount`; nothing on `candidates`/`plane` is flagged at all.
 8. **Seed every `SpaceEstimate` with the domain instead of `UNKNOWN`.** **A correctness and
@@ -432,8 +462,13 @@ symptoms. Re-open only with a fresh survey that contradicts the numbers.
        `(color, cmc)`-with-no-price queries) was deliberately NOT applied to Round 50's own site, which
        measured unregressed as-is. The same guard would help it too.
 
-- ~~**The general bounded partition search**~~ — **DELETED 2026-09-04: the population it needs does not
-  exist in real traffic.** This was the arc's long-standing "eventually we should do the general
+- ~~**The general bounded partition search**~~ — **DELETED 2026-09-04, but the evidence is weaker than
+  the deletion implies — see the population warning in the scope note.** The deletion rested on "the
+  population it needs does not exist in real traffic", where "real traffic" was the CRAWL corpus. A
+  corpus of crawled card links is exactly the population least likely to contain many-leaf composable
+  conjunctions, so this is close to circular. Re-open it if a real query log ever appears; the survey
+  evidence (residual >=3 leaves on 4 of 14,473) should be re-derived on that log rather than trusted.
+  Original reasoning follows. This was the arc's long-standing "eventually we should do the general
   version" item, built on Round 49's `CoveredState.subsets` primitive and blocked on measuring the
   residual-size distribution. That measurement is now done (see Completed), and it is decisive: of
   14,473 real weighted queries, **39** reach the `And` arm at all, and an uncovered residual of **>=3
@@ -777,7 +812,7 @@ symptoms. Re-open only with a fresh survey that contradicts the numbers.
   ratio falling (0.900 -> 0.586) is an artifact of the distribution being zero-inflated, not a regression —
   a median summarizes such a distribution badly.
 - Measurement, no round number (2026-09-04): **the residual-size distribution, and the route share
-  that reframes this whole doc.** Measured over real weighted traffic (14,473 queries) rather than the
+  that reframes this whole doc.** Measured over the weighted crawl corpus (14,473 entries) rather than the
   sampler, deliberately — the sampler's shape templates decide residual sizes, so measuring against it
   would partly measure the sampler. Results: **39 of 14,473** queries reach the `And` arm; uncovered
   residual >=3 leaves on **4**; `printing_compose` is **1.95% of weighted query time** against
