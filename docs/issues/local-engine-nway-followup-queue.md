@@ -20,48 +20,50 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
 
 ## Active queue (in order)
 
-**Scope note — read this, AND read the population warning below it, before scheduling anything here.**
+**Which population this queue is ranked by, decided 2026-09-05.** The **UNIFORM sampler is the primary
+lens**, used deliberately as a WEAKNESS-FINDER rather than as a traffic model — its own help says it
+"reaches the rare tails where ordering errors hide". So `bench_regret_matrix`,
+`bench_cost_error_attribution` and `bench_cost_error_percentiles` at `--mode uniform` are what rank this
+list, and the objective is **"where is the engine most wrong"**, not "what is most frequent". That is a
+correctness objective; argue items on it.
 
-**CORRECTED 2026-09-05: there is no measurement of real user traffic anywhere in this doc, and an
-earlier version of this note claimed one.** `benchmarks/wild-queries/wild-corpus.jsonl` is not a query
-log — it is **URLs discovered in a web crawl**, and it is heavily biased toward NAME lookups (people
-link to specific cards). That is visible in its own shape: 71.4% of its entries are not conjunctions
-at all, `!"Exact Card Name"` queries are common, and `format:` filters appear in **9 of 14,473**
-entries. So every "real traffic" figure below describes a LINK CORPUS, not what users type. Three
-populations get conflated as "traffic" and none is a query log:
+**Do NOT rank by `benchmarks/wild-queries/wild-corpus.jsonl`, and do not call it real traffic.** It is
+URLs discovered in a **web crawl**, not a query log, and it is heavily biased toward NAME lookups —
+71.4% of its entries are not conjunctions, `!"Exact Card Name"` is common, and `format:` appears in
+**9 of 14,473** entries. A corpus of crawled card links is close to the least filter-heavy population
+imaginable, so it systematically understates every composable path. An earlier version of this note
+ranked the queue by it AND called it "real weighted query time" — wrong twice over. Its remaining use is
+narrow: a sanity check that a fix is not a pure no-op for anything anyone links to.
 
-| `count_source` | wild (crawled URLs) | `--mode realistic` | `--mode uniform` |
+**And `--mode realistic` is not a proxy for anything.** Measured `printing_compose` share: crawl
+**0.5%**, `--mode realistic` **28.2%** (56x over), `--mode uniform` **53.0%** (106x over). Realistic sits
+closer to uniform than to the crawl, so its NAME invites exactly the wrong inference — do not reach for
+it expecting production fidelity. Separately, no harness can read the crawl at all (`bench_regret_matrix`,
+`bench_cost_error_*`, `bench_feature_accuracy` accept only the synthetic `--mode`), which is a second
+reason the crawl could not rank this list even if one wanted it to.
+
+**Nothing here measures actual user traffic**, so the honest statement is that this queue optimizes
+worst-case correctness rather than measured latency. The one real-usage signal that exists is the user's
+own stated habits — `f:modern` plus other filters, which is composable and lands squarely in the path the
+crawl understates — and that is a stronger signal for this repo than the crawl
+([[project-format-filter-usage]] recorded this before the crawl was mistaken for a log). Re-derive
+anything that turned on the crawl if a real log appears; the general-partition-search deletion below is
+the main such item.
+
+For reference only — the crawl corpus's acquire-route split over its 14,473 entries. Retained because the
+relative ordering between routes is probably directionally right, even though the absolute shares are a
+property of a crawl:
+
+| route | entries | mean | weighted TIME share |
 |---|---|---|---|
-| `candidates` | 99.1% | 67.3% | 40.3% |
-| `printing_compose` | **0.5%** | **28.2%** | **53.0%** |
-| `plane` | 0.4% | 3.3% | 2.8% |
-| n | 14,473 | 3,000 | 3,000 |
-
-**`--mode realistic` is NOT a proxy for the crawl corpus either** — it over-represents compose **56x**
-(28.2% against 0.5%), where uniform over-represents it 106x. It is closer to uniform than to the crawl.
-Do not read its name as "resembles production"; nothing here has been validated against production.
-**And no bench harness can express a crawl-corpus claim at all**: `bench_regret_matrix`,
-`bench_cost_error_attribution`, `bench_cost_error_percentiles` and `bench_feature_accuracy` accept only
-the synthetic sampler's `--mode`. Every cost-model number in this doc comes from a population where
-compose is 28-53% of queries rather than 0.5%. Treat them as WORST-CASE CORRECTNESS instruments, not
-latency ones, until someone builds a wild-corpus driver or gets a real log.
-
-The figures below are retained because they are still the best evidence available and the relative
-ordering between routes is probably directionally right — but the absolute shares are a property of a
-crawl, and the user has previously noted their own habitual usage (`f:modern` plus other filters) is a
-stronger signal for this repo than this corpus. Over that 14,473-entry crawl corpus, acquire routes
-split:
-
-| route | queries | mean | weighted TIME share |
-|---|---|---|---|
-| `candidates` | 14,338 | 6 us | **96.31%** |
-| `printing_compose` | 69 | 29 us | **1.95%** |
+| `candidates` | 14,338 | 6 us | 96.31% |
+| `printing_compose` | 69 | 29 us | 1.95% |
 | `plane` | 64 | 27 us | 1.69% |
 
-Only **39 of 14,473** real queries reach the `And` arm at all. 71.4% are not conjunctions; another
-28.3% ARE conjunctions (4,102 of them) that never reach this arm, because a name/text leaf or an `Or`
-makes them non-composable and they route through `candidates` instead. Compose queries are ~5x slower
-each, and there are still too few for that to matter.
+Only **39 of 14,473** crawl entries reach the `And` arm; 71.4% are not conjunctions and another 28.3%
+are conjunctions made non-composable by a name/text leaf or an `Or`. Under the uniform sampler that same
+arm is reached constantly — compose is **53.0%** of observations — which is precisely why uniform is the
+lens: the crawl cannot exercise what this queue is about.
 
 So: an item here needs a reason beyond "the estimate is inaccurate". A cheap fix with a measured
 payoff still clears the bar; a large build does not. Correctness and maintainability arguments are
