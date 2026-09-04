@@ -13,14 +13,25 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
 1. **Stop the two REMAINING reprint-ratio leaf arms undershooting.** Round 61 did the `Legality` arm
    (0.647-1.040x over all 23 formats; 14 of 14 outvoted rows recovered — see Completed below). Two of
    the three arms Round 59 demoted are still guessing `card_count * n_printings / n_cards`:
-   - **Broadcast/devotion** (`is_broadcast_leaf_shape`). Its card popcount is a real `eval_planes`
-     pass; devotion is synthesized from mana cost, so `ValueTotals` has no column for it and there may
-     be no cheap exact counterpart. Measure the error before scoping — the `Legality` arm's own error
-     turned out to be exactly `corpus_depth / that value's depth`, and the same identity applies here,
-     so a devotion bucket's reprint depth against the corpus's is the whole answer.
-   - **Bare cmc/power/toughness** (`bare_numeric_field_count`). The highest-traffic of the three. Its
-     defensive `arith_tuple_totals` fallback ALREADY carries an exact printing/artwork triple; the
-     question is whether the primary sorted-index path can reach the same numbers as cheaply.
+   - ~~**Broadcast/devotion**~~ — **measured 2026-09-04, and NOT worth doing.** 22 devotion queries
+     against ground truth: `scaled/true` spans **0.780x-1.304x**, and only 4 of 22 clear the
+     routing-relevance bar (>=200 absolute AND >=10% relative) — all 4 single-pip (`devotion:{w}` etc.),
+     all OVER-estimates, max absolute miss 1,849. No error anywhere near the numeric arm's 0.310x, and
+     the queue's own note stands: devotion is synthesized from mana cost, so `ValueTotals` has no column
+     and there is no cheap exact counterpart to reach for. Recorded so this doesn't get re-nominated.
+   - **Bare cmc/power/toughness** (`bare_numeric_field_count`) — **measured 2026-09-04, and it is the
+     largest leaf-arm error in this arc so far.** 117 bare numeric leaves against ground truth:
+     `scaled/true` spans **0.310x-1.274x** (median 1.013, p10 0.700), and **51 of 117 (44%)** clear the
+     routing-relevance bar. Worst absolute misses are all low-cmc, where lands sit: `cmc<=1` **8,425**
+     printings under, `cmc=0`/`cmc<=0` **8,249** under (3,699 reported against a true 11,948 — depth
+     9.96 against the corpus's 3.08), `cmc<=2` 6,778, `cmc<=3` 4,130. For comparison, Round 61's
+     legality arm — which was worth doing — spanned 0.647x-1.040x.
+   - The exact triple is already available two ways: the arm's own defensive `arith_tuple_totals`
+     fallback (~564-key scan, O(distinct tuples)), or a new per-field prefix-sum over distinct values
+     (~20-40 entries each, O(log n), Round 57's `LegalityDateTotals` shape). **Measure
+     `arith_tuple_totals`' cost on this path before choosing** — it is the cheaper change by far, and
+     only worth rejecting if it actually reads on `and_estimate_ns`. Whichever is taken must exclude
+     NULL fields (non-creature power/toughness) the way `eval_arith_tuple_tri` already does.
    - Reuse Round 61's method, both halves of it: read the leaf's own node out of `explain`'s
      `and_trace` tree (a bare leaf routes past the arm entirely and reads exact on any build — see the
      ledger's Round 61 section), and split the timing by a control subset of queries the change cannot
@@ -34,18 +45,29 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
    to +0.015). This is Round 56's finding recurring: an estimate-class combiner whose inputs became
    exact needs its own anchor. **Do not reach for a fudge factor** — Round 56 swept one on real data and
    rejected it.
-3. **Give `f:X <numeric>` shapes an exact card count, so the tightened branch stops guessing.** Round
-   62's own regression, and the same "a leaf-accuracy gap only shows once its consumer is honest"
-   pattern that produced item #2. `est.result.card` is `None` on these shapes, so when
-   `printing_tightened` is true `domain_cards_before_card` has nothing exact to fall back on and takes
-   `calibrated_balls_into_bins` instead. Measured cost, 3 queries, `eval_domain` against the realized
-   `cards_visited` it should equal: `cmc=0 f:premodern` 216 → 1,200 (truth 216), `f:penny cmc=0` 480 →
-   1,200 (truth 480), `f:oathbreaker pow=6` 625 → 626 (truth 625). Zero plan flips today, so this is
-   quality-of-estimate, not a routing bug. **The obvious repair is measured and wrong**: gating the
-   tightened branch on `&& exact_cards.is_none()` moves 894 rows and flips 877 plans, reintroducing the
-   `border:white border:black` mispricing `candidate` exists to prevent — the fix belongs at the leaf
-   (produce the card count), not at the consumer (dodge the branch). Overlaps item #1's
-   `bare_numeric_field_count` arm, which is where the card count would come from.
+3. **Fold `PairTotals`' exact CARD and ARTWORK counts, not just its printing count.** `pair_bounded_min`
+   calls `pt.get(x, y, Mode::Printing)` and returns one printing-space `usize`; the And arm then builds
+   `SpaceEstimate { printing, card: UNKNOWN, artwork: UNKNOWN }` (`lib.rs:10792`). The table holds all
+   three exactly, and `PairTotals::get_all` already returns the triple from the SAME hashmap lookup —
+   but it is called only by Round 60's trace instrumentation, never by the estimator. So on a
+   `PairTotals` hit the exact card/artwork counts are computed, reported in `explain`, and discarded.
+   - **This, not a missing leaf card count, is what Round 62's regression is made of.** Verified
+     directly on `cmc=0 f:premodern`: the trace's `considered` shows `PairTotals` hit with
+     `card_guaranteed: 216` (the true value) while the root reports `card: 1200` — `cmc=0`'s own solo
+     card count arriving via `narrow_floor`. `est.result.card` is **`Some(1200)`, not `None`** as this
+     item previously claimed. With the fold in place `domain_cards` becomes `min(216, ...) = 216` and
+     the regression is gone structurally, not by restoring the accident Round 62 removed.
+   - Population, measured over 4,200 sampled 2-4 predicate And queries (estimate path only): 2,118 And
+     rows, **75 `PairTotals` hits**, of which ~10 distinct queries carry a tighter discarded card or
+     artwork figure. Small, but the magnitude is large where it lands — `cmc=5 frame:1997` artwork
+     **721 against the root's 7,600**, card 643 against 3,788; `f:timeless border:black` artwork 21,985
+     against 25,908.
+   - Cheap by construction: `get_all` is the same lookup `get` already does, so this is a wider read of
+     data already fetched, not a new scan. Watch the two standing principles — an exact count folds into
+     `guaranteed` (first principle), and it must not be laundered through `best()`.
+   - **The obvious alternative repair is measured and wrong**: gating the tightened branch on
+     `&& exact_cards.is_none()` moves 894 rows and flips 877 plans, reintroducing the
+     `border:white border:black` mispricing `candidate` exists to prevent.
 4. **Seed every `SpaceEstimate` with the domain instead of `UNKNOWN`.** The domain size is a true upper
    bound, so a space can start `{ guaranteed: n_cards, estimate: n_cards }` and only ever tighten. That
    deletes every `Option`, makes `printing()` infallible by construction rather than by `expect`, and

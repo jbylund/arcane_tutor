@@ -247,13 +247,25 @@ are unchanged:
 | `f:penny cmc=0` | 480 → **1,200** | 3,699 → 1,200 | 480 |
 | `f:oathbreaker pow=6` | 625 → **626** | 1,930 → 626 | 625 |
 
-The mechanism: on `f:X <numeric>` shapes `est.result.card` is `None`, so the tightened branch has no
-exact card count to fall back on and takes `calibrated_balls_into_bins` instead. **The exactness
-being lost was preserved by accident** — a bound-only tightening left the retired numeric test
-`false`, which happened to route these to `est_cards`. Landing anyway is the deliberate call: relying
-on that accident is precisely the coupling this arc exists to remove, and the measured consequence
-today is nil (zero plan flips, `bench_pairwise_ordering` unchanged, `bench_feature_accuracy` with 0
-cells changing verdict). The real fix — `est.result.card` being `None` on these shapes — is queued.
+**The exactness being lost was preserved by accident** — a bound-only tightening left the retired
+numeric test `false`, which happened to route these to `est_cards`. Landing anyway is the deliberate
+call: relying on that accident is precisely the coupling this arc exists to remove, and the measured
+consequence today is nil (zero plan flips, `bench_pairwise_ordering` unchanged,
+`bench_feature_accuracy` with 0 cells changing verdict).
+
+**Correction (2026-09-04), on the mechanism this section originally gave.** It said `est.result.card`
+is `None` on these shapes, so the tightened branch had no exact card count to fall back on. That is
+wrong, and the real cause is more specific. Read directly off `explain`'s own trace for
+`cmc=0 f:premodern`: `considered` holds a `PairTotals` hit carrying `card_guaranteed: 216` — the true
+value — while the root reports `card: 1200`. `est.result.card` is `Some(1200)`, not `None`; 1,200 is
+`cmc=0`'s own solo card count arriving via `narrow_floor`. The exact 216 never reaches `result`
+because **`pair_bounded_min` folds printing space only** (`pt.get(x, y, Mode::Printing)`, one `usize`;
+the arm then builds `SpaceEstimate { printing, card: UNKNOWN, artwork: UNKNOWN }` at `lib.rs:10792`).
+`PairTotals::get_all` returns the exact triple from the same hashmap lookup, but its only caller is
+Round 60's trace instrumentation. So the exact card and artwork counts are computed, printed in
+`explain`, and thrown away. Round 60 reporting both channels in the trace is what made this visible at
+all. Requeued as item #3 with that framing, and it fixes these rows structurally rather than by
+restoring the accident.
 
 **The obvious repair is catastrophic, and was measured rather than assumed.** Gating the tightened
 branch on `&& exact_cards.is_none()` moves **894 rows and flips 877 plans**, reintroducing the
