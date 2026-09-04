@@ -294,6 +294,20 @@ symptoms. Re-open only with a fresh survey that contradicts the numbers.
   against a −12% control; Round 61's shared lookup was −5.7% where the naive two-call form was +9.3%.
   Always split by a control subset the change cannot touch — a same-build canary has now twice read
   clean while the build itself moved.
+- **For a CAPPED estimate, bounding the cap below the decision boundary beats improving the estimate.**
+  Round 65's whole payoff came from forcing `rest_max.printings` under `STREAM_MIN_MATCHES`, not from
+  better estimation: all 9 routing-relevant misses read the cap exactly rather than the independence
+  product, and the alternative that improved coverage instead (doubling the table) left the ratio
+  distribution flat while fixing the same 9 rows. Corollary for reading this arc's own history: a
+  mechanism whose cap already sits far below the boundary — `set` at 28x, `colors` at 9.6x — cannot
+  affect routing however inaccurate it is, so accuracy work on it is cosmetic by construction. Check
+  the cap before scoping the estimate.
+- **A safety argument must name the SPACE it holds in, and be asserted where it is established.** The
+  claim "`rest_max` lands far below the count where a wrong estimate flips a routing decision" sat in
+  the build for 31 rounds and was false for one of three dimensions the whole time: it was verified in
+  card space (identity's card `rest_max` is 377) while the boundary applies to the space the estimate
+  is compared in (printing, where it was 1,060 against 1,024). A comment cannot notice that it has
+  drifted; a `debug_assert` at the point the invariant is created can.
 - **Answer a structural question with a structural signal recorded where the structure happens, never
   by comparing two numbers downstream.** Round 62's retired test asked "did any mechanism tighten
   this?" by comparing `candidate` and `result`, which cannot see a tightening that moved only
@@ -410,6 +424,15 @@ symptoms. Re-open only with a fresh survey that contradicts the numbers.
   flagged cells 62 → 60, the two that cleared being exactly the `eval_domain … / card` pair this round
   targets. Its apparent side effect — `Independence`'s under-truth count up 172 → 180 — was later shown to be
   a MISREAD of a row-level diagnostic, and re-measuring is what demoted the anchoring item entirely.
+- Round 65: an inclusion FLOOR on every top-N pair table — any pair at or above
+  `STREAM_MIN_MATCHES / 2` printings is kept regardless of rank — which turns "the fallback estimate
+  cannot flip a routing decision" from a corpus observation into a proven invariant, `debug_assert`ed
+  where it is established. Fixed a real hole: `identity`'s `rest_max.printings` was **1,060** against a
+  **1,024** boundary, so the CAP itself was on the wrong side, and all 9 of that dimension's
+  routing-relevant misses read the cap exactly. After: cap **509**, routing-relevant misses across all
+  dimensions **1 -> 0**, `set`/`colors` byte-identical, **+8 KB** of archive. The Round 34 comment that
+  had asserted this was already safe was verified in CARD space while the boundary applies to printing
+  space — see the ledger's Round 65 section, and the standing principle it generalizes.
 - Round 64: backported Round 55's union-of-3-spaces cutoff and per-space `rest_max` triple to
   `SetSubtypeTable`/`ColorSubtypeTable`, and made `SubtypePairEstimate` printing-space-native — the last
   `card-space * n_printings / n_cards` scaling in this arm, after Rounds 61 and 63 removed the other two.
