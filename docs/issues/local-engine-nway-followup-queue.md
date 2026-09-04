@@ -59,23 +59,29 @@ well, and that will inform what else gets done here. Treat this ordering as prov
    `compose_scan_printings = printing_matches * COMPOSE_GATHER_SPAN_PER_MATCH`, and that constant is
    **1.47** — so the 1.47 seen at p50 and p70 in `bench_feature_accuracy` is the constant showing
    through, not a coincidence. Not a bug. The real finding is what the constant is standing in for.
-   - **Measured its own realized value per query** (`printings_examined / printing_matches`, which is
-     exactly what the constant should equal), over Gather-paging `PrintingCompose` rows:
+   - **CORRECTED 2026-09-05 — an earlier version of this item reported a "realized value of the
+     constant" and that measurement divided by the wrong quantity.** `feats.matches`, which is what
+     `acquire["matches"]` reports, is `result_total` — the MODE-APPROPRIATE estimate. The feature uses
+     `printing_matches` (printing space, whatever the mode). So `printings_examined / acquire["matches"]`
+     in card mode is *printings examined per matching CARD*, not the constant's own realized value, and
+     the apparent bullseye (median 1.48 against a declared 1.47) was a coincidence between two
+     different quantities. `printing_matches` is not exposed, so the constant's centring is UNMEASURED
+     and needs the instrumented build below.
+   - **What that measurement does establish**, over Gather-paging `PrintingCompose` rows — printings
+     examined per matching card/artwork, which the cost model does need and which no current feature
+     carries:
 
      | unique | n | p10 | median | p90 | max | p90/p10 |
      |---|---|---|---|---|---|---|
-     | card | 87 | 0.19 | **1.48** | 15.67 | 1,367 | **84.6** |
-     | artwork | 92 | 0.33 | **2.31** | 15.53 | 1,035 | **47.7** |
+     | card | 87 | 0.19 | 1.48 | 15.67 | 1,367 | **84.6** |
+     | artwork | 92 | 0.33 | 2.31 | 15.53 | 1,035 | **47.7** |
 
-     The constant is a **bullseye at the card median** (1.48 against a declared 1.47) and spans nearly
-     two orders of magnitude around it. That is the signature of a single-dimension fit: a scalar can
-     only match the median, and it did. The 84.6x spread is the information a scalar cannot carry.
-   - **Card and artwork have different medians** (1.48 vs 2.31), so even a correct scalar would need to
-     be two. Artwork is systematically ~1.6x under-served by the shared one.
+     An 84x spread in a per-query quantity is the finding: whatever scalar sits in its place can only
+     match a median. Card and artwork also differ (1.48 vs 2.31), so one scalar for both is wrong
+     independently of where it is centred.
    - **The error is population-dependent enough to CHANGE SIGN.** The `bench_feature_accuracy`
-     population reads the feature over-counting 1.47x; the population measured here reads ~0.99. Same
-     constant, opposite verdicts — which is what an 84x spread does to any summary statistic. Treat any
-     single-number verdict on this feature as an artifact of its sample.
+     population reads this feature over-counting 1.47x; the population measured here reads ~0.99. Treat
+     any single-number verdict on it as an artifact of its sample.
    - **The quantity being approximated is the MATCHING SET'S OWN REPRINT DEPTH** — printings the gather
      bit-tests per matching printing. A single global constant was the only option available when the
      estimator produced ONE number; Round 58's `SpaceEstimate` triple is what makes a per-query answer
@@ -88,11 +94,19 @@ well, and that will inform what else gets done here. Treat this ordering as prov
    - **Next step, and it is a measurement not a commitment:** surface the true estimated depth
      (`est.result.printing / est.result.card`) as a diagnostic field on an instrumented build and
      re-run this correlation. Only if it predicts the realized factor is replacing the constant with a
-     per-query term justified. Also check the `Prefer::Default` card arm separately: the constant's own
-     doc carves it out ("except in its card/default-prefer arm it iterates `start..end`"), the sibling
-     `gather_group_printings` five lines below DOES gate on exactly that condition
-     (`Mode::Card => !matches!(prefer, Prefer::Default)`), and this feature does not — a single probe
-     showed that arm examining 62 printings against a `printing_span` of 191, i.e. one per card.
+     per-query term justified. **Separable and independently verifiable: the `Prefer::Default` card arm is
+     mis-gated.** `gather_composed_page` has three per-card arms — `Mode::Printing` and the
+     grouping arm (`Mode::Artwork`, or `Mode::Card` under a non-default prefer) each add
+     `end - start`, the full span, while `Mode::Card` + `Prefer::Default` uses
+     `(start..end).find(|pid| is_set(pid))` and adds only `pid - start + 1`, typically 1, because
+     printings are stored prefer-descending so the first set printing is already the chosen
+     representative. The constant's own doc names this carve-out ("except in its card/default-prefer
+     arm it iterates `start..end`"), and the sibling feature five lines below gates on exactly that
+     predicate (`Mode::Artwork => true, Mode::Card => !matches!(prefer, Prefer::Default),
+     Mode::Printing => false`) — but `compose_scan_printings` is assigned unconditionally, so it
+     charges a span walk in the one arm that provably does not do one. Probe: 62 examined against a
+     `printing_span` of 191, one per card. In that arm the right magnitude is the candidate-CARD count,
+     which the engine already has as `eval_domain`.
 2. **`scan_units [printing_compose]` under-counts ~3x.** The highest-n miscalibration in the report
    (32,833 `printing_compose` rows of 51,767 pooled): p50 **0.32-0.38** depending on distinct-on, p10
    **0.05**, spread 20.0-32.5. `scan_units` prices the MATERIALIZING alternatives when they compete
