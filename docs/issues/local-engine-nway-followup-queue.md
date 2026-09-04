@@ -10,39 +10,56 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
 
 ## Active queue (in order)
 
-Reordered 2026-09-04, after Rounds 61-63 closed the first three items. The order now leads with the
-one item that can REMOVE work from this list rather than add to it, then the item with an
-already-measured payoff, then the structural cleanups. Closed and demoted items have moved to
-"Completed" and to the measured-and-not-scheduled bullets below — don't re-add them here.
+**Scope note, measured 2026-09-04 — read this before scheduling anything here.** This arm governs
+about **2% of real weighted query time**. Over the 14,473-query weighted real-traffic corpus
+(`benchmarks/wild-queries/wild-corpus.jsonl`), acquire routes split:
 
-1. **Measure the residual-size distribution for real 5+-leaf queries.** Still unmeasured since before
-   this session started, and first now because it is the only item here that could DELETE another one.
-   It is the actual answer to "is the general bounded partition search (#5) worth building at all" — if
-   real residuals rarely exceed 2-3 leaves, the "notice one bad case, build one validated mechanism"
-   pattern (8 real gaps closed this way so far: Rounds 34, 40, 42, 44, 45, 48, 51, 52) may just *be*
-   the right architecture, not a placeholder for a general one. Cheap: a survey pass, no engine change.
-   Use real query logs where possible, not only the sampler — the sampler's own shape templates decide
-   residual sizes, so measuring it against the sampler partly measures the sampler.
-2. **Backport the `rest_max` triple + space-native independence to `SetSubtypeTable` /
-   `ColorSubtypeTable`.** The best payoff-to-risk ratio left: the payoff is already measured and the
-   work is mostly wiring. Round 55 shipped both ideas for the new `(subtype, subtype)` table but
-   deliberately left these three untouched, so they still rank their top-256 by CARD count alone and
-   still scale one card-space `rest_max` into printing space by a global reprint ratio. Round 55's own
-   measurement says what that costs: printing-space-native independence+cap beat
-   card-space-x-global-ratio at every percentile on the same excluded population (median 0.42x vs
-   0.64x, p90 3.27x vs 4.45x, max 21x vs 24.67x). `top_n_union_and_rest_max` already exists and is
-   generic over `K` — this is mostly switching the three `top_n_and_rest_max` call sites and teaching
-   `SubtypePairEstimate` to read the triple natively instead of scaling. Watch the ordering constraint
-   Round 55 surfaced (the fourth standing principle below): `SubtypePairEstimate` is already positioned
-   after its own exact scan, but re-check rather than assume.
-3. **Seed every `SpaceEstimate` with the domain instead of `UNKNOWN`.** The domain size is a true upper
-   bound, so a space can start `{ guaranteed: n_cards, estimate: n_cards }` and only ever tighten. That
-   deletes every `Option`, makes `printing()` infallible by construction rather than by `expect`, and
-   removes the "absence means unknown, never zero" footgun that caused BOTH laundering bugs found so far
-   (Round 59's `And` seed, and `narrow_floor`'s still-live read). Round 60 measured how normal absence
-   currently is: **41,838 of 147,660** tree nodes have `printing_guaranteed` absent while `printing` is
-   present. Delivers no accuracy win of its own — it is footgun removal, and worth it only because this
-   arc has now produced two laundering bugs and three misread proxies from exactly this ambiguity.
+| route | queries | mean | weighted TIME share |
+|---|---|---|---|
+| `candidates` | 14,338 | 6 us | **96.31%** |
+| `printing_compose` | 69 | 29 us | **1.95%** |
+| `plane` | 64 | 27 us | 1.69% |
+
+Only **39 of 14,473** real queries reach the `And` arm at all. 71.4% are not conjunctions; another
+28.3% ARE conjunctions (4,102 of them) that never reach this arm, because a name/text leaf or an `Or`
+makes them non-composable and they route through `candidates` instead. Compose queries are ~5x slower
+each, and there are still too few for that to matter.
+
+So: an item here needs a reason beyond "the estimate is inaccurate". A cheap fix with a measured
+payoff still clears the bar; a large build does not. Correctness and maintainability arguments are
+fine — say so explicitly rather than implying a latency win.
+
+Two caveats. The corpus is one sample (2026-08-02) in which bare name lookups dominate by design, and
+a power-user profile skews composable (`f:modern` plus other filters lands squarely in that 0.27%) —
+representativeness is the load-bearing assumption of the whole note. And a mean time share misses
+TAIL risk: a mis-routed compose query can be pathologically slow (Round 63 hit a 0.2us-priced plan
+against a measured 199.3us), which is a cost-model correctness concern that this table cannot see.
+
+**Planned revisit:** estimates and query planning are to be re-examined over the UNIFORM sampler as
+well, and that will inform what else gets done here. Treat this ordering as provisional until then.
+
+1. **Backport the `rest_max` triple + space-native independence to `SetSubtypeTable` /
+   `ColorSubtypeTable`.** The one item that clears the scope note on its own terms: the payoff is
+   already measured and the work is mostly wiring. Round 55 shipped both ideas for the new
+   `(subtype, subtype)` table but deliberately left these three untouched, so they still rank their
+   top-256 by CARD count alone and still scale one card-space `rest_max` into printing space by a
+   global reprint ratio. Round 55's own measurement says what that costs: printing-space-native
+   independence+cap beat card-space-x-global-ratio at every percentile on the same excluded population
+   (median 0.42x vs 0.64x, p90 3.27x vs 4.45x, max 21x vs 24.67x). `top_n_union_and_rest_max` already
+   exists and is generic over `K` — this is mostly switching the three `top_n_and_rest_max` call sites
+   and teaching `SubtypePairEstimate` to read the triple natively instead of scaling. Watch the
+   ordering constraint Round 55 surfaced (the fourth standing principle below):
+   `SubtypePairEstimate` is already positioned after its own exact scan, but re-check rather than
+   assume.
+2. **Seed every `SpaceEstimate` with the domain instead of `UNKNOWN`.** **A correctness and
+   maintainability item, not a performance one** — it delivers no accuracy win and no latency win, and
+   should be judged on that basis. The domain size is a true upper bound, so a space can start
+   `{ guaranteed: n_cards, estimate: n_cards }` and only ever tighten. That deletes every `Option`,
+   makes `printing()` infallible by construction rather than by `expect`, and removes the "absence
+   means unknown, never zero" footgun. The case for doing it is the defect history: that one ambiguity
+   has now produced **two laundering bugs** (Round 59's `And` seed, `narrow_floor`'s still-live read)
+   and **three misread proxies** (Round 62's three sites), and Round 60 measured how normal absence is
+   — **41,838 of 147,660** tree nodes have `printing_guaranteed` absent while `printing` is present.
    - **Scope this item does NOT already have covered.** Round 62 replaced the tightening proxy with an
      explicit flag, which survives seeding — but its own plan claimed the two CARD gates were unblocked
      too, and that was wrong. Seeding makes `card.guaranteed` unconditionally `Some`, so
@@ -50,32 +67,30 @@ already-measured payoff, then the structural cleanups. Closed and demoted items 
      gates therefore need a second explicit signal — an "exact card source" flag parallel to
      `printing_tightened`, set where a trusted card count is written — and that work is part of THIS
      item. See the ledger's Round 62 section.
-4. **Untangle `narrow_floor`.** It reads `s.card.best()` and writes `result_space.card.lower_guaranteed(f)`
-   — a child's GUESS becoming the query's BOUND, the same laundering Round 59 fixed in the `And` seed.
-   Still latent, and Round 63 is why it stayed that way: the arm that might have unmasked it now writes
-   an exact triple into BOTH channels rather than an estimate-only card figure, so nothing yet writes a
-   card-space estimate the floor could launder. It is also doing two jobs: its stated purpose is to give
-   card/artwork the free per-leaf min-fold printing already has, but its breadth filter is justified by
-   what `narrow_rec` will actually narrow to — a plan-cost concern, not an answer-cardinality one.
-   Mathematically a broad leaf's count IS a sound bound (`|A n B| <= |A|`), so the filter makes it
-   deliberately weaker than the tightest sound bound, for a reason belonging to a different question. It
-   also computes a `min` (an upper bound) while being named a floor. Round 60 left a candidate set —
-   **4,317 root nodes** with `card_guaranteed` tighter than any child's — but that set also contains
-   legitimate `Candidate::Exact` joints, so separating them is the round's actual work. Easiest after
-   #3, when bounds are always present. The joint-witness frame in
+3. **Untangle `narrow_floor`.** Also a correctness item rather than a performance one. It reads
+   `s.card.best()` and writes `result_space.card.lower_guaranteed(f)` — a child's GUESS becoming the
+   query's BOUND, the same laundering Round 59 fixed in the `And` seed. Still latent, and Round 63 is
+   why it stayed that way: the arm that might have unmasked it now writes an exact triple into BOTH
+   channels rather than an estimate-only card figure, so nothing yet writes a card-space estimate the
+   floor could launder. It is also doing two jobs: its stated purpose is to give card/artwork the free
+   per-leaf min-fold printing already has, but its breadth filter is justified by what `narrow_rec`
+   will actually narrow to — a plan-cost concern, not an answer-cardinality one. Mathematically a broad
+   leaf's count IS a sound bound (`|A n B| <= |A|`), so the filter makes it deliberately weaker than
+   the tightest sound bound, for a reason belonging to a different question. It also computes a `min`
+   (an upper bound) while being named a floor. Round 60 left a candidate set — **4,317 root nodes**
+   with `card_guaranteed` tighter than any child's — but that set also contains legitimate
+   `Candidate::Exact` joints, so separating them is the round's actual work. Easiest after #2, when
+   bounds are always present. The joint-witness frame in
    [local-engine-joint-witness-and-empty-short-circuit.md](local-engine-joint-witness-and-empty-short-circuit.md)
    may be the honest replacement for its breadth filter rather than a repair of it.
-5. **Decide on / scope the actual general bounded partition search**, informed by #1's findings and
-   built on Round 49's own subset-tracking primitive (`CoveredState`'s `subsets: Vec<u64>`, already
-   shipped). Not attempted until the above are in, and possibly deleted outright by #1.
-6. **Generalize "anchored independence" further.** Demoted to last, because the evidence for it got
-   weaker rather than stronger: the concrete instance this item used to point at (anchoring
-   `legality x price`) was measured on 2026-09-04 and demoted, and the one shape checked closely turned
-   out to be near-independent already with the min-fold handling it (see the `Independence` bullet
-   below). Rounds 50 and 56 shipped two anchors (`SubtypeArithBox`, `ColorCmcTable`), both with a single
-   residual `IndepClass::Price` leaf, sharing one `anchored_price_residual` helper. Three directions
-   remain, each its own future round (validate independently, don't bundle) — and each now needs to
-   clear a higher bar: show a routing-relevant miss that the min-fold does NOT already clamp.
+4. **Generalize "anchored independence" further.** Last, because the evidence for it got weaker rather
+   than stronger: the concrete instance this item used to point at (anchoring `legality x price`) was
+   measured on 2026-09-04 and demoted, and the one shape checked closely turned out to be
+   near-independent already with the min-fold handling it (see the `Independence` bullet below). Rounds
+   50 and 56 shipped two anchors (`SubtypeArithBox`, `ColorCmcTable`), both with a single residual
+   `IndepClass::Price` leaf, sharing one `anchored_price_residual` helper. Three directions remain,
+   each its own future round (validate independently, don't bundle) — and each now needs to clear a
+   higher bar: show a routing-relevant miss that the min-fold does NOT already clamp.
    - **More residual classes.** Only `Price` has a validated real-data example; other classes
      (`ColorId`, `Cmc`, `Type`, etc., wherever the anchor's own residual isn't itself the anchored
      dimension) need their own before/after check before being added, mirroring how
@@ -96,6 +111,17 @@ already-measured payoff, then the structural cleanups. Closed and demoted items 
 Measured and deliberately NOT scheduled. These were active queue items; each was removed by a
 measurement rather than by being built, and each is recorded here so it isn't re-nominated from raw
 symptoms. Re-open only with a fresh survey that contradicts the numbers.
+
+- ~~**The general bounded partition search**~~ — **DELETED 2026-09-04: the population it needs does not
+  exist in real traffic.** This was the arc's long-standing "eventually we should do the general
+  version" item, built on Round 49's `CoveredState.subsets` primitive and blocked on measuring the
+  residual-size distribution. That measurement is now done (see Completed), and it is decisive: of
+  14,473 real weighted queries, **39** reach the `And` arm at all, and an uncovered residual of **>=3
+  leaves occurs on 4 of them**. A general partition search would be built to serve four queries. The
+  "notice one bad case, build one validated mechanism" pattern — 8 real gaps closed that way across
+  Rounds 34, 40, 42, 44, 45, 48, 51, 52 — is therefore the architecture, not a placeholder for one.
+  Revisit only if a future population (the planned uniform-sampler pass, or a traffic corpus that
+  better reflects power users) shows many-leaf composable conjunctions actually occurring.
 
 - ~~**Stop the devotion/broadcast leaf arm undershooting**~~ — **measured 2026-09-04, not worth doing.**
   22 devotion queries against ground truth: `scaled/true` spans **0.780x-1.304x**, and only 4 of 22
@@ -271,7 +297,7 @@ symptoms. Re-open only with a fresh survey that contradicts the numbers.
   this?" by comparing `candidate` and `result`, which cannot see a tightening that moved only
   `guaranteed` — and Round 59 had made those routine. Two corollaries worth applying before the next
   proxy gets written: an `Option`'s PRESENCE is not a structural signal if any future round might seed
-  the field (domain-seeding makes both card gates vacuous either way — see item #3), and a flag derived
+  the field (domain-seeding makes both card gates vacuous either way — see item #2), and a flag derived
   as `!=` against a field's own earlier value is safer than one threaded through every mutation site,
   because monotone mutators make the comparison exact while a threaded flag goes stale silently when
   someone adds a write.
@@ -300,7 +326,7 @@ symptoms. Re-open only with a fresh survey that contradicts the numbers.
 - Round 49: `covered` loosened from leaf-occupancy to subset-identity tracking (`CoveredState`) for the
   independence registry — recovers Round 48's own regression and improves the sweep overall.
 - Round 50: "anchored independence" for `SubtypeArithBox` — exact joint × single residual `Price` rate,
-  narrowly scoped (see item #6 above for what's left to generalize).
+  narrowly scoped (see item #4 above for what's left to generalize).
 - Round 51: exact `arith_tuple` (printing, card, artwork) triples, precomputed at build time
   (`ArithTupleIndex.totals`) — closes Round 46's census gap; surfaced the `unique=artwork` acquire-path
   gap, closed by Round 52.
@@ -320,7 +346,7 @@ symptoms. Re-open only with a fresh survey that contradicts the numbers.
 - Round 55: `(subtype, subtype)` exact top-256 table (`SubtypePairTable`) + a printing-space-native
   capped-independence fallback — closes `same_family:type+type_realistic`/`_disjoint`'s 0% mechanism
   coverage (100% after; `t:cleric t:spirit` 628 vs true 19 → exact in all three spaces). First use of
-  the union-of-3-spaces top-N cutoff and a real per-space `rest_max` triple (item #2 above is the
+  the union-of-3-spaces top-N cutoff and a real per-space `rest_max` triple (item #1 above is the
   backport of both to the three older tables). Surfaced the estimate-placement ordering constraint now
   recorded as the fourth standing principle above.
 - Round 56: anchored independence for `ColorCmcTable` (second anchor after Round 50's), sharing one
@@ -369,7 +395,7 @@ symptoms. Re-open only with a fresh survey that contradicts the numbers.
   est.result.printing()`. The flag disagrees with the retired test on 0.3-0.45% of rows, **every one
   `old=False → new=True`** — it only ever finds a bound-only tightening the number comparison was blind
   to. Zero plan flips; `bench_pairwise_ordering` unchanged, `bench_feature_accuracy` 0 cells changed
-  verdict. Two caveats, both live: it does NOT unblock the card half of item #3 (its own plan claimed
+  verdict. Two caveats, both live: it does NOT unblock the card half of item #2 (its own plan claimed
   otherwise and was wrong), and it cost 6 rows on 3 queries, which Round 63 Part 2 then closed.
 - Round 63: two exact numbers that existed and were being discarded. **Part 1** retires the last
   reprint-ratio leaf arm — `NumericSpanTotals`, a per-distinct-value prefix sum over each numeric
@@ -383,6 +409,18 @@ symptoms. Re-open only with a fresh survey that contradicts the numbers.
   flagged cells 62 → 60, the two that cleared being exactly the `eval_domain … / card` pair this round
   targets. Its apparent side effect — `Independence`'s under-truth count up 172 → 180 — was later shown to be
   a MISREAD of a row-level diagnostic, and re-measuring is what demoted the anchoring item entirely.
+- Measurement, no round number (2026-09-04): **the residual-size distribution, and the route share
+  that reframes this whole doc.** Measured over real weighted traffic (14,473 queries) rather than the
+  sampler, deliberately — the sampler's shape templates decide residual sizes, so measuring against it
+  would partly measure the sampler. Results: **39 of 14,473** queries reach the `And` arm; uncovered
+  residual >=3 leaves on **4**; `printing_compose` is **1.95% of weighted query time** against
+  `candidates`' 96.31%. Deleted the general partition search outright (above) and forced every
+  remaining item to state its justification. Two methodology notes worth keeping, because the first
+  attempt got both wrong: `and_trace.tree.children` is **not** a leaf count (a plane-absorbed leaf
+  collapses into one child with a `None` expr, and the arm's real leaf view is the union of trace
+  children with every `considered` group's `leaves`), and "no `and_trace`" means "not composable",
+  **not** "not a conjunction" — 4,102 real conjunctions route through `candidates` because a name/text
+  leaf or an `Or` makes them non-composable.
 - Harness fix (no round number, a Python-only fix outside the engine): `client/query_sampler.py`'s
   `_count_row` folded oracle/flavor words via `Counter.update(set(...))` — bare-set iteration is
   hash-seed-randomized per process, so tied-frequency co-occurring words could swap `most_common()`'s
