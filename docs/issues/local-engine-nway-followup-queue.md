@@ -153,17 +153,23 @@ coefficient territory, not the walk's.
 **Why this order (2026-09-05).** Ranked by the evidence each item actually has, not by which branch is
 biggest:
 
-- **Free measurements first.** Item 1 changes no code and decides whether item 5 is "split a constant"
-  or "add a missing term" — two very different rounds. Doing the walk work before it risks building on a
-  term we are about to replace.
-- **Then the cheap independent win.** Item 2 is a COEFFICIENT fix on a different plan, so it does not
-  queue behind the walk at all, and `StreamedSelect -> GatheredScan` is the **#2 transition under
-  realistic** (26% of regret, n=1,664, 60% miss) — up from 17% under uniform, i.e. it looks better on the
-  value lens than on the weakness lens.
-- **Then the walk** (items 3-5), whose branch is 75-78% of regret under BOTH lenses — the only ranking
-  here the two lenses agree on. It is not first because its lead item has an **unmeasured size** and
-  needs a signature change to thread a card-invariance flag into `walk_grouped_page`: biggest branch,
-  weakest sizing.
+- **The cheap independent win first.** Item 1 is a COEFFICIENT fix on a DIFFERENT plan, so it does not
+  queue behind the walk chain at all, and `StreamedSelect -> GatheredScan` is the **#2 transition under
+  realistic** (26% of regret, n=1,664, 60% miss) — up from 17% under uniform, i.e. one of the few items
+  that looks better on the value lens than on the weakness lens.
+- **Then the walk chain, EXECUTOR BEFORE MEASUREMENT (2-3-4-5), and the order within it is a real
+  dependency rather than a preference.** Item 2 changes `walk_grouped_page`'s loop, which changes both
+  `printings_examined` and `ns_loop` — the exact quantities item 3 regresses. A measurement taken before
+  item 2 describes a loop that no longer exists.
+  An earlier version of this note put the measurement first, arguing that item 5 should not be scoped
+  before knowing whether a per-orderby split is even the right fix. That argument is real but weaker:
+  measuring first only risks MIS-SCOPING item 5, while measuring before item 2 makes item 3's result
+  INVALID. Invalid beats mis-scoped. (Round 68 is the precedent — it moved `printings_examined` by
+  changing its definition, and any before/after of that counter across it is meaningless.)
+- The walk's branch is 75-78% of regret under BOTH lenses, the only ranking here the two lenses agree
+  on. Its lead item still has an **unmeasured size** and needs a signature change to thread a
+  card-invariance flag into `walk_grouped_page` — so measure the non-matching share on live `Perm`
+  traffic as step one of that round, not as a separate item.
 - **Estimator hygiene (7-8) ABOVE `scan_units` (9)** — a deliberate demotion. Attribution measured that
   substituting realized counters for EVERY estimated feature buys only **+0.021 to +0.099** of log
   error, so item 9 pairs a large ratio with a measured-negligible effect. Items 7-8 at least have a
@@ -173,29 +179,16 @@ biggest:
 realistic (37% of regret against 32% under), the reverse of uniform. Anything that makes compose look
 cheaper must be verified in BOTH modes, with plan flips dispatch-priced rather than assumed good.
 
-1. **Regress realized walk cost against `span` versus `set-printings` — is `printings_walked` even
-   measuring the right variable?** Deferred behind item 1 because that fix changes the loop this would
-   measure. The suspicion: `printings_examined` counts bit tests, but the expensive work in the walk is
-   `prefer_score` plus the push, done only on SET printings. If so the feature tracks a cheap quantity
-   while cost is driven by an expensive one, and the two diverge by exactly the filter's selectivity —
-   which would present as a MISSING TERM rather than a bias. That matches what attribution actually
-   found: a `model form` floor of 0.235-0.862 dominating a features share of only +0.021-0.099. No
-   per-orderby constant and no variance term fixes a missing term.
-   - The counters needed already exist: `printings_examined`, `matches_pushed`, `set_printings`,
-     `ns_loop`. Regress `ns_loop` on each candidate on the same rows.
-   - **This decides what item 5 actually is.** If `set-printings` wins, item 5 is a feature change (or a
-     second cost term) and the per-orderby table is secondary. If `span` wins, item 5 is the
-     per-orderby split. They are very different rounds and the queue should not guess between them.
-2. **`StreamedSelect` is over-costed ~57% at the median, uniformly.** p50 **1.57** — and it reads 1.57
+1. **`StreamedSelect` is over-costed ~57% at the median, uniformly.** p50 **1.57** — and it reads 1.57
    at EVERY orderby slice (name, toughness, cmc, power, cubecobra, edhrec) and every distinct-on
    (1.59/1.57/1.57), n=60,165. That flatness across slices with a wide percentile spread (p90/p10 7.0)
    is the signature of a stale rate or a spurious fixed term, and attribution agrees: `COEFFS` is the
    dominant cause on `candidates` (**+0.791**) and worth +0.511 overall. The fit wants
    `fixed = 0.00` against a shipped **233.00**, plus `emit` 0.00/0.12 and `small_total_floor` 0.16/0.81
    — i.e. remove the fixed floor. A coefficient change, not a feature change; cheap to try and easy to
-   measure. Kept independent of items 3-5: it is a coefficient change on a different plan, so it need not queue
-   behind the walk work.
-3. **Exploit card-invariance in the walk: ONE bit test per card instead of a full span.** Round 68
+   measure. Kept ahead of the walk chain: it is a coefficient change on a different plan, so it need not queue
+   behind it.
+2. **Exploit card-invariance in the walk: ONE bit test per card instead of a full span.** Round 68
    took the card/default early break (see the ledger); this is the half it deliberately left out. All printings of a card share their `pbits` value when the
    composed filter is card-invariant, so one test decides the card. The asymmetry with the gather is
    what makes it valuable here: the gather iterates `candidate_cards`, every one of which has a set
@@ -242,6 +235,19 @@ cheaper must be verified in BOTH modes, with plan flips dispatch-priced rather t
    - Same gate as Round 68: returned row IDENTITY, with the count of rows that actually hit the
      changed path reported — a differential over 8,008 cells proved nothing there because 0 of them
      were `Perm`-paged.
+3. **Regress realized walk cost against `span` versus `set-printings` — is `printings_walked` even
+   measuring the right variable?** Deferred behind item 2 because that fix changes the loop this would
+   measure. The suspicion: `printings_examined` counts bit tests, but the expensive work in the walk is
+   `prefer_score` plus the push, done only on SET printings. If so the feature tracks a cheap quantity
+   while cost is driven by an expensive one, and the two diverge by exactly the filter's selectivity —
+   which would present as a MISSING TERM rather than a bias. That matches what attribution actually
+   found: a `model form` floor of 0.235-0.862 dominating a features share of only +0.021-0.099. No
+   per-orderby constant and no variance term fixes a missing term.
+   - The counters needed already exist: `printings_examined`, `matches_pushed`, `set_printings`,
+     `ns_loop`. Regress `ns_loop` on each candidate on the same rows.
+   - **This decides what item 5 actually is.** If `set-printings` wins, item 5 is a feature change (or a
+     second cost term) and the per-orderby table is secondary. If `span` wins, item 5 is the
+     per-orderby split. **Run it AFTER item 2**, whose executor change alters the loop this measures. They are very different rounds and the queue should not guess between them.
 4. **`printings_walked` now over-counts the walk it prices, because Round 68 made the walk faster.**
    The feature is unchanged while the realized counter fell 2,092,874 → 1,828,715 on real `Perm`
    traffic, so `<compose Perm> / card` feature/counter rose p50 **1.01 → 1.09** and nothing else moved.
@@ -249,7 +255,7 @@ cheaper must be verified in BOTH modes, with plan flips dispatch-priced rather t
    separately, since both change the same term — and it is the concrete instance of the sequencing this
    queue's header note argues for: executor, then features, then refit, because each step moves the
    target of the next.
-5. **`printings_walked`'s bias constant is pooled across sort columns — but item 1 decides whether
+5. **`printings_walked`'s bias constant is pooled across sort columns — but item 3 decides whether
    this is even the right fix.** The 78%-of-regret branch, and the clump data below is a real
    finding either way; it is sequenced third because if the walk cost is missing a TERM (item 2)
    then splitting a scalar is fitting a better constant to the wrong variable. These two branches carry 57% + 21% of lost time and have the worst miss rates (8% and
@@ -557,7 +563,7 @@ symptoms. Re-open only with a fresh survey that contradicts the numbers.
     of ~3.07 to card-level repetition. It is not waste — it is genuine printing-level work on cards that
     passed `card_pass` and have a printing-dependent residual, plus printing mode legitimately needing
     every printing.
-  - **What is NOT covered, and is active item #3:** compose's `Perm`/`OrderbyWalk` walks test the
+  - **What is NOT covered, and is active item #2:** compose's `Perm`/`OrderbyWalk` walks test the
     composed BITMAP (`pbits`), not a residual, and have no `card_pass` equivalent — they bit-test a
     card's whole span unconditionally. That opportunity is real and separate; only the residual-loop
     version is closed here.
