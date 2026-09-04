@@ -10,23 +10,31 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
 
 ## Active queue (in order)
 
-1. **Stop the `Legality` leaf (and its two siblings) undershooting — the real fix Round 59 identified.**
-   Round 59 demoted three leaf arms out of `guaranteed`, which made the channel honest but recovered
-   **0 of the 25** exactly-right-but-outvoted rows, because `best()` is `min(guaranteed, estimate)` and
-   the undershoot is still the smallest number in the fold. Reclassification cannot fix these; the leaf
-   has to stop being wrong.
-   - **The fix is nearly in hand.** The `Legality` arm already calls
-     `exact_result_total(filter, indexes, Mode::Artwork)`; the same function answers `Mode::Printing`
-     exactly from `value_totals.legality`. Measured across all 16 formats in the survey catalog,
-     leaf-scaled vs that exact number: **0.647-0.955, median 0.850, 16/16 under truth** — a 4.5-35.3%
-     undershoot, worse than the 5-13% previously on record.
-   - Do the same audit for the other two demoted arms (broadcast/devotion, and the bare
-     cmc/pow/tou `bare_numeric_field_count` branch) — all three use `card_count * n_printings / n_cards`
-     and each may have an exact counterpart available.
-   - This IS a behaviour change (unlike Round 59), so it needs the full straddle-by-direction-and-unique
-     treatment, and watch for shapes that relied on the undershoot being load-bearing.
+1. **Stop the two REMAINING reprint-ratio leaf arms undershooting.** Round 61 did the `Legality` arm
+   (0.647-1.040x over all 23 formats; 14 of 14 outvoted rows recovered — see Completed below). Two of
+   the three arms Round 59 demoted are still guessing `card_count * n_printings / n_cards`:
+   - **Broadcast/devotion** (`is_broadcast_leaf_shape`). Its card popcount is a real `eval_planes`
+     pass; devotion is synthesized from mana cost, so `ValueTotals` has no column for it and there may
+     be no cheap exact counterpart. Measure the error before scoping — the `Legality` arm's own error
+     turned out to be exactly `corpus_depth / that value's depth`, and the same identity applies here,
+     so a devotion bucket's reprint depth against the corpus's is the whole answer.
+   - **Bare cmc/power/toughness** (`bare_numeric_field_count`). The highest-traffic of the three. Its
+     defensive `arith_tuple_totals` fallback ALREADY carries an exact printing/artwork triple; the
+     question is whether the primary sorted-index path can reach the same numbers as cheaply.
+   - Reuse Round 61's method, both halves of it: read the leaf's own node out of `explain`'s
+     `and_trace` tree (a bare leaf routes past the arm entirely and reads exact on any build — see the
+     ledger's Round 61 section), and split the timing by a control subset of queries the change cannot
+     touch, not by a same-binary canary.
    - `scripts/check_bound_class_soundness.py` should stay green throughout.
-2. **Replace the three presence/equality proxies with explicit structural signals.** Each reads a
+2. **Anchor `Independence` and the `Or` arm now that their legality input is exact.** Round 61's only
+   regressions were structural and predictable: `Independence`'s `round(a * b / n)` already over-predicts
+   on correlated pairs and a too-small `a` had been cancelling part of that, so `star:legality+*+usd`
+   worsened (+0.009 to +0.023 mean abs-log-ratio) and every newly-broken straddle is one of those rows
+   crossing 1,024 upward. The `Or` arm's `add` has the same shape one level up (`OR:legality+*`, +0.008
+   to +0.015). This is Round 56's finding recurring: an estimate-class combiner whose inputs became
+   exact needs its own anchor. **Do not reach for a fudge factor** — Round 56 swept one on real data and
+   rejected it.
+3. **Replace the three presence/equality proxies with explicit structural signals.** Each reads a
    VALUE to answer a STRUCTURAL question, which is the same anti-pattern in three places:
    - `est.candidate.printing() == est.result.printing()` — "did any mechanism tighten this?" `result <=
      candidate` always holds, so inequality does imply tightening, but equality conflates "nothing
@@ -38,14 +46,14 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
    which mechanisms hit. **They must be fixed together and before domain-seeding**, which makes all
    three vacuous. Touches plan-cost features, so it needs the pairwise-ordering and feature-accuracy
    guards, not just the estimate survey.
-3. **Seed every `SpaceEstimate` with the domain instead of `UNKNOWN`.** The domain size is a true upper
+4. **Seed every `SpaceEstimate` with the domain instead of `UNKNOWN`.** The domain size is a true upper
    bound, so a space can start `{ guaranteed: n_cards, estimate: n_cards }` and only ever tighten. That
    deletes every `Option`, makes `printing()` infallible by construction rather than by `expect`, and
    removes the "absence means unknown, never zero" footgun that caused BOTH laundering bugs found so far
    (Round 59's `And` seed, and `narrow_floor`'s still-live read). Round 60 measured how normal absence
    currently is: **41,838 of 147,660** tree nodes have `printing_guaranteed` absent while `printing` is
-   present. Blocked on #2.
-4. **Untangle `narrow_floor`.** It reads `s.card.best()` and writes `result_space.card.lower_guaranteed(f)`
+   present. Blocked on #3.
+5. **Untangle `narrow_floor`.** It reads `s.card.best()` and writes `result_space.card.lower_guaranteed(f)`
    — a child's GUESS becoming the query's BOUND, the same laundering Round 59 fixed in the `And` seed.
    Latent today (nothing writes a card-space estimate-only value yet); item #1 could unmask it. It is
    also doing two jobs: its stated purpose is to give card/artwork the free per-leaf min-fold printing
@@ -55,8 +63,8 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
    for a reason belonging to a different question. It also computes a `min` (an upper bound) while being
    named a floor. Round 60 left a candidate set — **4,317 root nodes** with `card_guaranteed` tighter
    than any child's — but that set also contains legitimate `Candidate::Exact` joints, so separating
-   them is the round's actual work. Easiest after #3, when bounds are always present.
-5. **Backport the `rest_max` triple + space-native independence to `SetSubtypeTable` /
+   them is the round's actual work. Easiest after #4, when bounds are always present.
+6. **Backport the `rest_max` triple + space-native independence to `SetSubtypeTable` /
    `ColorSubtypeTable`.** Round 55 shipped both ideas for the new `(subtype, subtype)` table but
    deliberately left these three untouched, so they still rank their top-256 by CARD count alone and
    still scale one card-space `rest_max` into printing space by a global reprint ratio. Round 55's own
@@ -68,7 +76,8 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
    ordering constraint Round 55 surfaced (the fourth standing principle below):
    `SubtypePairEstimate` is already positioned after its own exact scan, but re-check rather than
    assume.
-6. **Generalize "anchored independence" further.** Rounds 50 and 56 shipped two anchors
+7. **Generalize "anchored independence" further** (item #2 is one concrete instance of this, promoted
+   ahead of the general work because Round 61 created it). Rounds 50 and 56 shipped two anchors
    (`SubtypeArithBox`, `ColorCmcTable`), both with a single residual `IndepClass::Price` leaf, sharing
    one `anchored_price_residual` helper. Three directions remain, each its own future round (validate
    independently, don't bundle):
@@ -86,12 +95,12 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
      entirely when no `Price`-classified source exists anywhere, worth ~21% of `and_estimate_ns` on
      `(color, cmc)`-with-no-price queries) was deliberately NOT applied to Round 50's own site, which
      measured unregressed as-is. The same guard would help it too.
-7. **Measure the residual-size distribution for real 5+-leaf queries.** Still unmeasured since before
+8. **Measure the residual-size distribution for real 5+-leaf queries.** Still unmeasured since before
    this session started. This is the actual answer to "is the general bounded partition search worth
    building at all" — if real residuals rarely exceed 2-3 leaves, the "notice one bad case, build one
    validated mechanism" pattern (8 real gaps closed this way so far: Rounds 34, 40, 42, 44, 45, 48, 51,
    52) may just *be* the right architecture, not a placeholder for a general one.
-8. **Decide on / scope the actual general bounded partition search**, informed by #7's findings and
+9. **Decide on / scope the actual general bounded partition search**, informed by #8's findings and
    built on Round 49's own subset-tracking primitive (`CoveredState`'s `subsets: Vec<u64>`, already
    shipped). Not attempted until the above are in.
 
@@ -144,19 +153,22 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
   `explain_analyze` never forces a trial for it — but indirect evidence, `GatheredScan` beating
   `StreamedSelect` 3-6x in every one of those rows, points toward a win there too, not measured.)
 
-- **The `Legality` leaf's own solo printing estimate undershoots by 5-13%**, and `min()` only lowers,
-  so an exactly-correct joint can lose the fold to it. Measured on Round 57's target shape: of 300
-  printing rows, 29 get the exact value from `LegalityDateTotals` and still lose, because the leaf's
-  `legal_cards * n_printings / n_cards` is smaller than the truth. All are 35k-53k, far above the 1,024
-  boundary, so routing is unaffected today — but it is the same idiom item #1 targets, and fixing that
-  would also unblock these.
+- ~~**The `Legality` leaf's own solo printing estimate undershoots**~~ — **fixed by Round 61.** The
+  recorded error was "5-13%"; the full 23-format measurement was 0.647-1.040x, and `banned:`/
+  `restricted:` were 0.40x/0.24x. The rows this bullet describes (an exact `LegalityDateTotals` value
+  losing the `.min()` fold) are gone: 14 of 14 recovered at seed 0, 13 of 13 at seed 61, 0 newly
+  outvoted. Kept here, struck through rather than deleted, because the underlying idiom survives in the
+  two sibling leaf arms — active item #1.
 - **The query sampler never generates `banned:`/`restricted:`.** `client/query_sampler.py` hardcodes
   the legality family to the `f:` operator (line ~246) and builds its vocabulary only from formats whose
   status is `legal` (line ~591), so **no survey in this arc has ever exercised those queries** — despite
   the engine handling them correctly (`banned:modern` returns exactly 403, matching the corpus) and the
   corpus holding 7,066 such rows. Any pruning argument about banned/restricted (including Round 57's
   selectivity floor) therefore rests on population size, not on measured routing impact. Worth teaching
-  the sampler before more legality estimator work.
+  the sampler before more legality estimator work. Round 61 is a live example of the gap: those two
+  statuses had the WORST leaf error of any legality query (0.40x / 0.24x, against 0.647x for the worst
+  `f:`) and no survey row would ever have shown it — it took a hand-written spot check and a dedicated
+  Rust test.
 - **`not_legal` legality keys are unreachable by construction.** `filter.rs`'s binding maps only
   `f`/`format`/`legal` -> `LEGALITY_LEGAL`, `banned` -> `LEGALITY_BANNED`, `restricted` ->
   `LEGALITY_RESTRICTED`; negation is a `Not` wrapper, not a `not_legal` status. Round 57 hit this twice
@@ -232,7 +244,7 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
 - Round 49: `covered` loosened from leaf-occupancy to subset-identity tracking (`CoveredState`) for the
   independence registry — recovers Round 48's own regression and improves the sweep overall.
 - Round 50: "anchored independence" for `SubtypeArithBox` — exact joint × single residual `Price` rate,
-  narrowly scoped (see item #2 above for what's left to generalize).
+  narrowly scoped (see item #7 above for what's left to generalize).
 - Round 51: exact `arith_tuple` (printing, card, artwork) triples, precomputed at build time
   (`ArithTupleIndex.totals`) — closes Round 46's census gap; surfaced the `unique=artwork` acquire-path
   gap, closed by Round 52.
@@ -252,7 +264,7 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
 - Round 55: `(subtype, subtype)` exact top-256 table (`SubtypePairTable`) + a printing-space-native
   capped-independence fallback — closes `same_family:type+type_realistic`/`_disjoint`'s 0% mechanism
   coverage (100% after; `t:cleric t:spirit` 628 vs true 19 → exact in all three spaces). First use of
-  the union-of-3-spaces top-N cutoff and a real per-space `rest_max` triple (item #1 above is the
+  the union-of-3-spaces top-N cutoff and a real per-space `rest_max` triple (item #6 above is the
   backport of both to the three older tables). Surfaced the estimate-placement ordering constraint now
   recorded as the fourth standing principle above.
 - Round 56: anchored independence for `ColorCmcTable` (second anchor after Round 50's), sharing one
@@ -263,26 +275,35 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
 - Round 57: `LegalityDateTotals`, an exact per-`(format, status)` prefix sum over the `released_at`
   axis — closes `unsafe:legality+released` (0/900 -> 813/900 coverage; printing median 1.02x -> 1.00x,
   p90 3.64x -> 1.00x, max 16.81x -> 1.00x) at +148.8 KB. Retracted the design doc's own "legality is
-  date-DEFINED" justification for the registry exclusion, and surfaced the card/artwork under-bias that
-  is now item #1.
+  date-DEFINED" justification for the registry exclusion, and surfaced both the card/artwork under-bias
+  and the exactly-right-but-outvoted rows that Rounds 59-61 chased (Round 61 closed the latter).
 - Round 58 (phase 1 only): `SpaceMeasure { guaranteed, estimate }` per space, so a proven bound and a
   best guess stop competing for one `.min()` slot. Byte-identical at three independent seeds. Phase 2
   (the `COMPOSE_CARD_ESTIMATE_BIAS` skip) was measured to fail and deliberately not taken — preserved
   unmerged on `r58-phase2-measured-bad` (`e1d4fba7`, `e5f75f45`). Makes the five workarounds listed in
-  the ledger's Round 58 section retirable, and item #1 above is the first of them.
+  the ledger's Round 58 section retirable; Round 61 retired the first of them.
 - Round 59: `guaranteed` made honest — three leaf arms demoted to estimate-only, `LegalityDateTotals`
   and `PriceJointTable` promoted via a new `Candidate::PrintingBound`, and the `And` arm's seed fixed so
   it no longer launders a `best()`-derived number into `guaranteed`. Byte-identical at two independent
   seeds. Shipped `scripts/check_bound_class_soundness.py` (a standing check that no bound-class
   mechanism predicts below truth) and finally fixed the `ARITH_TUPLE_BLOWUP_CARDS` release-clippy error
-  — **both clippy profiles are clean for the first time in this arc**. Recovered 0 rows by design; item
-  #1 above is the fix it identified.
+  — **both clippy profiles are clean for the first time in this arc**. Recovered 0 rows by design;
+  Round 61 shipped the fix it identified.
 - Round 60: `and_trace` reports both channels — `SpaceEstimate` embedded in every trace struct,
   channels derived once at the fold from `Candidate::spaces()`, Python keys flattened and strictly
   additive. Behaviour-neutral (15 semantic fields x 54,279 rows, 0 differing; 673,776 space-slots, 0
   fidelity violations). Made `check_bound_class_soundness.py` read the engine's own channels with its
   name map kept as a cross-check. Costs ~12% on the DIAGNOSTIC path only (six extra `PyDict::set_item`
   per dict, isolated by a probe); production untouched.
+- Round 61: the `Legality` leaf reports `ValueTotals::legality`'s exact printing count instead of the
+  reprint-ratio guess (0.647-1.040x over all 23 formats, 16 under truth; `banned:`/`restricted:` worse
+  still at 0.40x/0.24x). Recovers **14 of 14** exactly-right-but-outvoted `unsafe:legality+released`
+  rows at seed 0 (13 of 13 at seed 61) — the rows Round 59 could not reach. One shared
+  `legality_space_totals` lookup answers printings and artworks together, which makes the arm **5.7%
+  faster** than trunk rather than 9.3% slower; the two-call form's cost was found only by a control
+  subset, not by the same-binary canary (see the ledger's Round 61 section). Left the two sibling
+  reprint-ratio arms (devotion, bare cmc/pow/tou) alone — active item #1 is what remains of them. Its
+  only regressions are structural and are now active item #2.
 - Harness fix (no round number, a Python-only fix outside the engine): `client/query_sampler.py`'s
   `_count_row` folded oracle/flavor words via `Counter.update(set(...))` — bare-set iteration is
   hash-seed-randomized per process, so tied-frequency co-occurring words could swap `most_common()`'s

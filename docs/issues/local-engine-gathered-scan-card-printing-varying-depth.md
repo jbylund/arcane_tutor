@@ -213,6 +213,72 @@ total regret by 0.0 ms).
 | 58 | Splits every space into two independent channels — `SpaceMeasure { guaranteed, estimate }` — so a PROVEN bound and a BEST GUESS stop competing for one `.min()` slot. `Candidate::Exact` feeds `guaranteed`, `Candidate::Estimate` feeds `estimate`; consumers needing soundness read `guaranteed`, consumers needing accuracy read `estimate.min(guaranteed)`. `exact_domain` retained as its own `ExactDomain` type (a stronger cross-space same-set claim, not a synonym). **Phase 2 (the planned `COMPOSE_CARD_ESTIMATE_BIAS` skip) was measured to FAIL and deliberately NOT taken** | phase 1 kept, phase 2 rejected | n/a (not this doc's own metric) | **Byte-identical, verified at three independent seeds**: the agent at 64,581 (seed 20260958) and 64,563 (20260903) rows, and me at 54,336 shared rows (seed 4242) — zero differences on `predicted_matches`, `picked_plan`, `and_mechanism`, and additionally `count_source`/`true_total`/`n_plans_ran` in my run. Row sets matched exactly. So every straddle count and plan choice is unchanged by construction. `cargo test` 290 debug / 287 release (+6 tests). Timing: a flat **+25 to +110 ns** per `compose_printing_estimate` call (~1% on queries with real work, +8.9% bare leaves, +13.7% `Or`), measured interleaved A/B/A/B rather than by canary | see "Round 58" narrative below — the phasing caught a real `Or`-arm fold bug that would have been invisible in a blended round, and phase 2's rejection corrected a false premise **in my own plan** |
 | 59 | Makes `guaranteed` honest, enforcing "a source may claim a bound only if its number is a real count of a real set". **Three** leaf arms demoted to estimate-only (`FilterExpr::Legality`, the broadcast/devotion arm, and — found by auditing every arm rather than the two the plan named — the bare cmc/pow/tou `bare_numeric_field_count` branch), all three reporting `card_count * n_printings / n_cards`. Two mechanisms promoted via a new `Candidate::PrintingBound` variant: `LegalityDateTotals` (exact prefix-sum subtraction) and `PriceJointTable` (any overlap counted in full, hence a structural over-count). Plus the `And` arm's seed fixed — see below, without it the round does nothing above a single leaf. Plus a standing soundness check and the long-standing release-clippy error | kept | n/a (not this doc's own metric) | **Byte-identical**, independently verified by me at seed 777 over 54,321 shared rows: zero differences on `predicted_matches`/`picked_plan`/`and_mechanism`/`count_source`/`n_plans_ran`/`true_total`/`ratio`/`abs_log_ratio` **and on the entire `and_trace` dict**; agent's own run agrees at 64,605 keys. So the straddle table is empty in both directions and all three `unique` values. `cargo test` 299 debug / 296 release (+9). **`clippy --all-targets -- -D warnings` clean in BOTH profiles for the first time in this arc.** New `scripts/check_bound_class_soundness.py`: 5,553 bound-class candidates over 12 mechanisms in my run, none below truth | see "Round 59" narrative below — **two of this round's plan's claims were wrong and are corrected there**, plus the `best()`-laundering rule that generalizes beyond this round |
 | 60 | `and_trace` reports BOTH channels. `AndTraceLeaf`/`AndTraceNode::{Leaf,Op}` carry a bare `SpaceEstimate`, `AndTraceGroup` an `Option<SpaceEstimate>` (`Some` exactly when `hit`, so `hit == spaces.is_some()` holds by construction). Channels derived once at the fold via a new `Candidate::spaces()` matched arm-for-arm against `fold_candidate`, not hand-written at ~17 trace sites. Python boundary flattened and strictly additive: `card`/`printing`/`artwork` keep today's `best()` values, `{space}_guaranteed`/`{space}_estimate` added beside them, absence always `None` and never `0` | kept | n/a (not this doc's own metric) | **Behaviour-neutral, verified by me at seed 6060**: 15 semantic scalar fields over 54,279 shared rows, **0 differing**; `and_trace` with the six added keys stripped, **0 differing** (the whole-dict comparison Rounds 58/59 used now differs by design, since keys were added — not a regression). Fidelity across the whole run: **673,776 space-slots, 0 violations** of `{space} == min(guaranteed, estimate)`. `cargo test` 302 debug / 299 release, clippy clean both profiles. `check_bound_class_soundness.py` reports 5,480 bound-class candidates none below truth, and reports the **identical** count whether reading the new channels or falling back to its name map — the cross-check passing | see "Round 60" narrative below — one deviation (Independence's card/artwork estimates), a real diagnostic-path cost with the probe that isolated it, and the first direct look at what the channels actually contain |
+| 61 | The `Legality` leaf stops guessing: `compose_printing_estimate`'s bare `FilterExpr::Legality` arm reads `ValueTotals::legality`'s exact `.printings` instead of `legal_cards * n_printings / n_cards`. Both columns come off ONE `HashMap` row via a new `legality_space_totals` helper shared with `exact_result_total`'s own `Legality` arm, rather than two walks of that function's shape-dispatch prelude. All four statuses are stored (unlike `PairTotals`, which keeps only legal/not_legal), so `banned:`/`restricted:` become exact too. `broadcast` deliberately keeps the scaled figure — a cost bucket, not a cardinality | kept | n/a (not this doc's own metric) | **The acceptance criterion, met in full**: at the checked-in seed 0, `unsafe:legality+released` rows where `LegalityDateTotals` was exactly right and lost the `.min()` fold go **14 → 0** (14/14 recovered, 0 newly outvoted); the shape's exactly-right rows 299 → 314. At seed 61: 13 → 0. Straddles (>1,024, >=200 abs, >=10% rel) are a near-wash and seed-dependent: seed 0 **1,189 → 1,186** (6 fixed / 3 broken), seed 61 **1,253 → 1,260** (4 fixed / 11 broken). 28 plan flips at seed 0 (0.04%), all in legality shapes. Ratio diagnostic +0.000 (seed 0) / +0.001 (seed 61) — nominally "less accurate", and the per-shape split says why (see narrative). `cargo test` 303 debug / 300 release (+1 test), clippy clean both profiles, `check_bound_class_soundness.py` green (6,655 candidates, none below truth). Timing **−5.7%**: `and_estimate_ns` p50 on 8,247 legality-bearing queries 3,625 → 3,417 ns, against a 31,104-query no-legality control subset flat at 1,917 ns in both builds | see "Round 61" narrative below — the leaf-level error table for all 23 formats, the measurement trap that nearly hid a +9.3% regression, and the shapes that got worse for a structural reason worth queueing |
+
+### Round 61
+
+**The fix is one line, and the whole round is the measurement around it.** `ValueTotals::legality`
+already held the exact per-`(format, status)` printing count, and the arm was already reading that
+same row for its artwork column. Nothing had to be built.
+
+**The error, all 23 formats.** The old scale spread a format's legal cards at the corpus-wide reprint
+depth (97,812 / 31,724 = **3.083**), so its error is exactly `3.083 / that format's own depth`:
+
+| | format | cards | true printings | scaled | scaled/true | format depth |
+|---|---|---|---|---|---|---|
+| worst under | `oldschool` | 961 | 4,579 | 2,962 | **0.647** | 4.765 |
+| | `premodern` | 5,375 | 24,343 | 16,572 | 0.681 | 4.529 |
+| | `modern` | 22,450 | 74,305 | 69,218 | 0.932 | 3.310 |
+| ~exact | `vintage` | 31,646 | 97,106 | 97,571 | 1.005 | 3.069 |
+| worst over | `pauper` | 10,767 | 31,920 | 33,197 | **1.040** | 2.965 |
+
+16 of 23 under truth. The formats that looked correct (`vintage`, `commander`, `legacy`, `duel`,
+`oathbreaker`) are the ones covering nearly the whole corpus — their population's depth simply IS the
+corpus depth, so the scale was right by tautology, not by working. `banned:`/`restricted:` were worse
+than any `f:` (`banned:modern` 160 against 403, `restricted:vintage` 160 against 657) for the same
+reason inverted: tiny curated sets sitting on the most-reprinted cards.
+
+**A bare `f:X` query does NOT show this, and that nearly wasted the round.** The obvious spot check —
+`explain('f:oldschool')['acquire']['matches']` — reads **exact on both builds**, because a bare
+legality leaf routes through `Prep::Plane`, whose count comes straight from `exact_result_total` and
+never touches the arm being changed. The arm is only reached from inside an `And`. The check that
+works is to put the leaf in a two-leaf `And` with an all-matching partner and read the LEGALITY LEAF'S
+OWN node out of `explain`'s `and_trace` tree — the arm's output before any fold. Every future round
+touching a leaf arm should reach for that, not for `acquire.matches`.
+
+**A +9.3% regression the canary could not see, and the control subset that caught it.** The patch as
+first written reached printings and artworks through two `exact_result_total` calls. A same-binary
+canary (two runs of the baseline wheel) read 1.000, and a run of the changed wheel read +11% — but
+that +11% appeared **equally on the 31,055 queries with no legality leaf at all**, which the change
+cannot touch. That control subset is what separated ~10% of run-to-run drift from the real effect.
+Re-measured with the control flat at exactly 1.000, the two-call form cost **+9.3%** of
+`and_estimate_ns` p50 on legality-bearing queries (3,584 → 3,916 ns); collapsing it to the single
+shared `legality_space_totals` lookup turned that into **−5.7%** against trunk (3,625 → 3,417 ns),
+because it also skips the prelude the surviving `exact_result_total(.., Mode::Artwork)` call used to
+walk. The two forms are byte-identical in behaviour — 64,428 shared rows, zero differences on
+`predicted_matches`/`picked_plan`/`count_source`/`and_mechanism` **and the entire `and_trace` dict** —
+so every correctness number above holds for both.
+
+**The shapes that got worse, and why it is structural rather than a defect.** The ratio diagnostic
+reads "B is LESS accurate" by +0.000/+0.001, which is a wash overall but not uniform:
+
+| shape | seed 0 Δ | seed 61 Δ | mechanism |
+|---|---|---|---|
+| `safe:legality+cn` | **−0.074** | +0.002 | min-fold / `Independence` |
+| `safe:legality+usd` | **−0.016** | **−0.014** | `Independence` |
+| `star:legality+cmc+usd` | +0.018 | +0.023 | `Independence` |
+| `OR:legality+usd` / `+cn` / `+set` / `+released` | +0.008…+0.015 | +0.010…+0.015 | `Or` arm's `add` |
+| `star:legality+identity+usd` | +0.009 | +0.009 | `Independence` |
+
+Both regressing families are the undershoot having been load-bearing, in two different arms.
+`Independence` computes `round(a * b / n)`, a product that already over-predicts on correlated pairs;
+a too-small `a` was cancelling part of that, and every newly-broken straddle is one of these rows
+crossing 1,024 upward (`usd<=0.28 f:oldschool` [printing]: 1,018 → 1,574 against a true 607 — both
+builds badly over, one happened to land on the benign side). The `Or` arm sums children, so a larger —
+and now genuinely bounded — legality child makes a union over-count larger. Neither is fixable by
+making the leaf wrong again; both are the same finding as Round 56's, one level up: **an estimate-class
+combiner whose inputs just got exact needs its own anchor.** Queued rather than patched here, because
+a fudge factor on `Independence` is exactly what Round 56 measured and rejected.
 
 ### Round 60
 
