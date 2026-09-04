@@ -16554,6 +16554,16 @@ const COMPOSE_SAME_RANGE_BROAD_SCAN_SCALE: f64 = 0.52;
 /// old comment claimed. Measured ceiling for that: bit tests on non-set printings are 11% of the
 /// gather's modelled page cost (`card_pass` is 60%, `push` 26%), so it is a constant-factor
 /// optimisation of one branch, not a model change. Left as a separate question.
+///
+/// Round 66: the carve-out this doc names is now honoured at the call site -- the card/default-prefer
+/// arm is charged `eval_domain` (one printing per candidate card) instead of this multiplier, since
+/// that arm provably breaks at the first set printing. This constant therefore applies only to the two
+/// arms that really do iterate `start..end`. Its 1.47 was fit on a population blending both regimes,
+/// which leaves it calibrated against the wrong one -- measured on the card/non-default-prefer arm
+/// alone (105 compose-Gather rows, `prefer=newest`), the feature/`printings_examined` ratio reads a
+/// median of exactly 1.47, i.e. bare `printing_matches` is already ~exact there and the multiplier is
+/// pure over-charge. Artwork and printing mode were too thin to grade in that run. Refitting is a
+/// separate change and deliberately not folded in here.
 const COMPOSE_GATHER_SPAN_PER_MATCH: f64 = 1.47;
 
 /// How much bigger the candidate cards on a compose acquire are than an average card.
@@ -17899,7 +17909,37 @@ fn acquire_plan_features(
         feats.collection_broadcast_printings = collection_broadcast as u32;
         feats.project_printings = project as u32;
         feats.popcount_words = popcount_words as u32;
-        feats.compose_scan_printings = (printing_matches as f64 * COMPOSE_GATHER_SPAN_PER_MATCH) as u32;
+        // `gather_composed_page` takes exactly ONE of three per-card arms, and only two of them walk
+        // the candidate's `start..end` span: printing mode pushes every set printing, and the grouping
+        // arm (artwork always, card under a non-default prefer) must score every printing to find each
+        // group's best. `COMPOSE_GATHER_SPAN_PER_MATCH` prices that span walk -- see its own doc, which
+        // already NAMES this carve-out ("except in its card/default-prefer arm") without the call site
+        // ever honouring it.
+        //
+        // The card/default-prefer arm does not walk the span. Printings are stored prefer-descending
+        // within a card, so the first *set* printing IS the chosen representative and the loop breaks
+        // there (`(start..end).find(is_set)`, charging `pid - start + 1`); a candidate card has at least
+        // one set printing by construction, so the else-branch that falls back to the span is
+        // unreachable. The realized quantity is therefore the CANDIDATE CARD count -- which is what
+        // `gather_composed_page` publishes as `cards_visited` (`candidate_cards.len()`) and what this
+        // branch already holds as `eval_domain` -- not `printing_matches` scaled by a span multiplier.
+        //
+        // Measured, 93 `unique=card`/`prefer=default` compose-Gather rows graded against the realized
+        // `printings_examined`: the old value read p10 0.79 / p50 5.04 / p90 10.84 (mean 7.38);
+        // `eval_domain` reads p10 0.16 / p50 1.00 / p90 3.11 (mean 1.48). Single rows are exact --
+        // `f:gladiator`/card: `eval_domain` 15,131 against `printings_examined` 15,131 and
+        // `cards_visited` 15,131, where the old feature charged 80,654.
+        //
+        // NOT the sibling `groups` predicate just below, even though the two agree on card mode:
+        // printing mode really does iterate the span, so it keeps the multiplier while it never groups.
+        // The remaining tail is the arm's own, not this feature's -- `find` charges `pid - start + 1`,
+        // so a card whose first matching printing sits deep costs more than one, and that is the shape
+        // `eval_domain` cannot express (p90 3.11 above). It is the right SHAPE regardless: one term per
+        // candidate card rather than per matching printing.
+        feats.compose_scan_printings = match mode {
+            Mode::Card if matches!(prefer, Prefer::Default) => eval_domain as u32,
+            Mode::Card | Mode::Artwork | Mode::Printing => (printing_matches as f64 * COMPOSE_GATHER_SPAN_PER_MATCH) as u32,
+        };
         // The gather's grouping arm runs for artwork always, and for card only under a non-default
         // prefer -- card/default takes the early-break arm and never groups. Printing mode gets 0
         // because its push term already rides the printing count. Driven by the PRE-dedup printing

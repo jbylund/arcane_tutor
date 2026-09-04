@@ -64,8 +64,9 @@ LIMIT = 10
 # Every space the "shared witness" AND semantics can diverge in (Round 34's Ge/Le asymmetry, Round
 # 35's "exact in all three modes" finding) -- every query is measured in all three, not one sampled.
 UNIQUES = ("card", "printing", "artwork")
-# Same floor `bench_feature_accuracy.py` uses and justifies (`MIN_COUNTER = 100`,
-# bench_feature_accuracy.py:59): "Below this the counter is too small for a ratio to mean anything --
+# Same floor `bench_feature_accuracy.py` uses and justifies (its `MIN_COUNTER = 100` -- named rather
+# than cited by line number, which went stale the first time that file grew a CLI flag): "Below this
+# the counter is too small for a ratio to mean anything --
 # a feature of 3 against a counter of 1 is a 3x error that costs nanoseconds." Reused verbatim, not
 # reinvented -- rows below this are still written to the JSONL, just excluded from ratio tables.
 MIN_TRUE_FOR_RATIO = 100

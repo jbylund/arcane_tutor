@@ -24,6 +24,12 @@ and slicing by distinct-on matters because a feature can be exact in one mode an
 while the pooled median looks fine.
 
     .venv/bin/python scripts/bench_feature_accuracy.py --seconds 60
+
+For a PAIRED before/after read, bound the run by query COUNT rather than by time -- see
+`--n-queries`. Two time-boxed runs of the same seed do not grade the same rows, and these cells are
+small enough that the truncation alone moves them.
+
+    PYTHONPATH=<wheel> .venv/bin/python scripts/bench_feature_accuracy.py --n-queries 40000
 """
 
 from __future__ import annotations
@@ -50,6 +56,8 @@ from scripts.costbench import load_engine  # noqa: E402
 # only to make each plan run once. Extra rounds buy nothing and cost sample breadth.
 NUM_WARMUPS = 1
 NUM_TRIALS = 2
+# The time box a bare invocation gets, unchanged from when `--seconds` was the only bound.
+DEFAULT_SECONDS = 60.0
 MIN_ROWS = costbench.MIN_ROWS
 # A cell's median must land inside this to be considered calibrated, matching the agreement bar in
 # bench_cost_model_agreement.py so the two tools grade on the same scale.
@@ -133,10 +141,9 @@ def scan_feature(plan: str, paging: str, tier_ns100: int) -> str | None:
 percentile = costbench.percentile
 
 
-def collect(engine: object, sampler: QuerySampler, rng: random.Random, seconds: float) -> list[dict]:
+def collect(engine: object, sampler: QuerySampler, rng: random.Random, budget: costbench.Budget) -> list[dict]:
     """One row per (query, plan, feature) where the plan reported the matching counter."""
     rows: list[dict] = []
-    budget = costbench.Budget(seconds=seconds, warmups=NUM_WARMUPS, trials=NUM_TRIALS)
     # `prefer` is sampled, not pinned: it decides whether the card-mode kernels stop at the first
     # qualifying printing or must score every one, which is the single largest per-card work
     # difference any sampled parameter reaches -- and the cost model cannot see it, since
@@ -211,17 +218,33 @@ def table(rows: list[dict], key: Callable[[dict], object], label: str, *, limit:
 def main() -> None:
     """Sample, then show which features disagree with the counters that realize them."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--seconds", type=float, default=60.0)
+    parser.add_argument("--seconds", type=float, default=None, help=f"time-boxed run (the default, {DEFAULT_SECONDS:g}s)")
+    # A time-boxed run is the WRONG bound for a paired before/after read of these cells, and not
+    # merely a noisy one. Both runs walk the same seeded query stream, so the slower build simply
+    # stops earlier and its population is a shorter PREFIX of the other's -- 88,663 against 86,723
+    # queries on one 300s pair here. The cells this tool exists to grade are small (the compose
+    # `card` cell is a few hundred rows of a hundred thousand), so a couple of percent of truncation
+    # moves a cell's composition by more than the feature change being measured, and the delta then
+    # reads as a result. `Budget(sample=N)` fixes the query COUNT instead, which makes the two runs
+    # grade the identical row set -- confirmed by comparing row counts, which must match exactly.
+    parser.add_argument("--n-queries", type=int, default=None, help="fixed query count instead of a time box; use for a PAIRED A/B")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--mode", choices=MODES, default="uniform")
     parser.add_argument("--corpus", type=pathlib.Path, default=REPO_ROOT / "benchmarks/bitplanes/corpus.jsonl")
     parser.add_argument("--shm-path", type=pathlib.Path, default=None)
     args = parser.parse_args()
 
+    # Neither bound given means the historical default; both given is rejected by `Budget` itself,
+    # which already refuses "a budget with no bound, or two that could disagree" -- re-checking it
+    # here would be a second copy of that rule, free to drift from it.
+    seconds = DEFAULT_SECONDS if args.seconds is None and args.n_queries is None else args.seconds
+    budget = costbench.Budget(seconds=seconds, sample=args.n_queries, warmups=NUM_WARMUPS, trials=NUM_TRIALS)
+
     engine = load_engine(args.corpus, args.shm_path or args.corpus.with_suffix(".featacc.store"))
     sampler = QuerySampler(args.corpus, args.mode)
-    rows = collect(engine, sampler, random.Random(args.seed), args.seconds)
-    print(f"\n{len(rows):,} feature-rows, mode={args.mode}.  ratio = FEATURE / COUNTER, so >1 is OVER-counted.")
+    rows = collect(engine, sampler, random.Random(args.seed), budget)
+    bound = f"{budget.sample:,} queries" if budget.sample is not None else f"{budget.seconds:g}s"
+    print(f"\n{len(rows):,} feature-rows, mode={args.mode}, bound={bound}.  ratio = FEATURE / COUNTER, so >1 is OVER-counted.")
     table(rows, lambda r: r["feature"], "feature (pooled -- hides per-cell errors that cancel)")
     table(rows, lambda r: f"{r['feature']} [{r['acquire']}]", "feature [acquire]")
     # The slice that catches mode-dependent features. A count taken in printing space is exact in
