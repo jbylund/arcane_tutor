@@ -153,10 +153,24 @@ coefficient territory, not the walk's.
 **Why this order (2026-09-05).** Ranked by the evidence each item actually has, not by which branch is
 biggest:
 
-- **The cheap independent win first.** Item 1 is a COEFFICIENT fix on a DIFFERENT plan, so it does not
-  queue behind the walk chain at all, and `StreamedSelect -> GatheredScan` is the **#2 transition under
-  realistic** (26% of regret, n=1,664, 60% miss) — up from 17% under uniform, i.e. one of the few items
-  that looks better on the value lens than on the weakness lens.
+- **The cheap win first.** Item 1 is a COEFFICIENT fix, and `StreamedSelect -> GatheredScan` is the
+  **#2 transition under realistic** (26% of regret, n=1,664, 60% miss) — up from 17% under uniform, i.e.
+  one of the few items that looks better on the value lens than on the weakness lens.
+- **A coupling that is NOT visible in the feature lists, and an earlier version of this note denied it.**
+  It said item 1 "does not queue behind the walk chain at all" because it touches a different plan. That
+  is true FEATURE-side and false ROUTING-side. Verified in `cost.rs`: `printings_walked` (items 4-5) is
+  read only by `PrintingRangeScan` and `PrintingCompose`'s `Perm`/`OrderbyWalk` arms;
+  `compose_scan_printings` (item 6) only by `PrintingCompose`'s `Gather` arm; `scan_units` (item 9) by
+  `GatheredScan`; `StreamedSelect` reads `stream_scan_units`, a DIFFERENT feature; `eval_domain` is
+  shared. So none of items 4-6 appears in `StreamedSelect`'s cost formula.
+  **But plan choice is an argmin**, so changing `PrintingCompose`'s cost changes whether
+  `StreamedSelect` wins — and that pair is **39% of realistic regret**
+  (`PrintingCompose -> StreamedSelect` 27% plus `StreamedSelect -> PrintingCompose` 12%). Practical
+  consequence: items 1 and 4-6 move the SAME argmin boundary, so **whichever lands first invalidates the
+  regret baseline the other was ranked against.** They need not be serialized — unlike item 2 -> 3,
+  neither invalidates the other's measurement — but the second one must be verified against a FRESHLY
+  measured baseline, not against Round 67/69's shares. Re-run `bench_regret_matrix` in both modes
+  between them.
 - **Then the walk chain, EXECUTOR BEFORE MEASUREMENT (2-3-4-5), and the order within it is a real
   dependency rather than a preference.** Item 2 changes `walk_grouped_page`'s loop, which changes both
   `printings_examined` and `ns_loop` — the exact quantities item 3 regresses. A measurement taken before
