@@ -17963,9 +17963,30 @@ fn acquire_plan_features(
         // so a card whose first matching printing sits deep costs more than one, and that is the shape
         // `eval_domain` cannot express (p90 3.11 above). It is the right SHAPE regardless: one term per
         // candidate card rather than per matching printing.
+        // Round 70: the GROUPING arm's multiplier is a pure over-charge and comes off. That arm
+        // charges `printings_examined += (end - start)` -- the candidate span -- and graded against it
+        // the shipped feature reads a median of **exactly 1.47**, the constant itself, on every slice:
+        // 622 rows in `bench_feature_accuracy` (artwork 305 p50 1.47, card 301 p50 1.47, both orderby
+        // slices 1.47, p70 also 1.47), and 87 prefer-matched rows in a standalone check (span-walk arm
+        // p50 1.470, artwork 1.470, card 1.462). A median at the constant means bare `printing_matches`
+        // reads 1.000, which is arithmetic rather than a second fit -- and `within 25%` improves
+        // 22% -> 30% while the spread is unchanged by construction (scaling every row by a constant
+        // cannot move p90/p10). This is Round 66's own finding one arm over: that round diagnosed the
+        // constant as "pooling two regimes produced a value that is pure over-charge on one of them",
+        // fixed the early-break regime, and left the multiplier on the grouping regime where it is
+        // equally unearned.
+        //
+        // Two candidates that looked better on paper and measured WORSE, both rejected: `scan_units`
+        // (p50 0.499) despite being the engine's own candidate-span estimate and grading 1.00 on
+        // GatheredScan, which walks the same quantity; and `eval_domain` (p50 0.364).
+        //
+        // `Mode::Printing` KEEPS the multiplier: it walks the same span, so the same argument probably
+        // applies, but it produced no gradeable rows here (below `MIN_ROWS` in every slice) and Round 66
+        // left it alone for the same reason. Unmeasured, so unchanged.
         feats.compose_scan_printings = match mode {
             Mode::Card if matches!(prefer, Prefer::Default) => eval_domain as u32,
-            Mode::Card | Mode::Artwork | Mode::Printing => (printing_matches as f64 * COMPOSE_GATHER_SPAN_PER_MATCH) as u32,
+            Mode::Card | Mode::Artwork => printing_matches as u32,
+            Mode::Printing => (printing_matches as f64 * COMPOSE_GATHER_SPAN_PER_MATCH) as u32,
         };
         // The gather's grouping arm runs for artwork always, and for card only under a non-default
         // prefer -- card/default takes the early-break arm and never groups. Printing mode gets 0

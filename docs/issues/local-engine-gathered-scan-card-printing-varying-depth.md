@@ -222,6 +222,66 @@ total regret by 0.0 ms).
 | 68 | **First EXECUTOR round in this arc — removes real work rather than improving a prediction.** `walk_grouped_page` stepped the permutation and, per card, bit-tested the card's WHOLE printing span and called `prefer_score` on every set printing. But printings are stored prefer-DESCENDING within a card (`from_rows`' load-time sort, ties by illustration_id then scryfall_id), so under `Mode::Card` + `Prefer::Default` the FIRST set printing already IS the chosen representative — every later `prefer_score`, the `touched`/`group_best` bookkeeping and the post-loop group emit were waste. Now takes the same `(start..end).find(is_set)` early break `gather_composed_page` and `push_card_matches` already used. `printings_examined` moved off its unconditional pre-match `(end - start)` to the EXIT POSITION, per arm, with no per-iteration add (the project's hot-path instrumentation rule). Scoped to the only LIVE walk: `walk_card_page_via_popcount_skip` sits behind `COMPOSE_SIGMA_ENABLED` (defaults 0) and the printing/artwork popcount-skip walks have zero production call sites | kept | n/a (not this doc's own metric) | **Row identity is the gate and it passed twice independently.** Agent: 7,776 cells / 374,712 rows byte-identical (3 distinct-ons x 4 prefers x 3 sort cols x both directions x 6 page points x 6 densities), debug AND release, plus 9,000 cells / 235,692 rows matching by sha256 from routed dumps. Me, separately: **21,912 compose cells including 5,920 `Perm`-paging, 750,580 rows, identical sha256** over printing identity — my first attempt used `orderby=rarity` and hit **0 Perm cells**, so it proved nothing until the orderby was varied. **Realized time**: `PrintingCompose` `ns_loop` p50 **0.707** (3,896 → 1,979 ns), interleaved over 6 block pairs, with GatheredScan/StreamedSelect/PlanePopcountOrder/CardRangePopcount controls all reading p50 **1.000**. Plan choice unaffected: **0 changes over 66,414** survey observations, and 0 `paging_taken`/`picked`/`result_total` flips over 595 exact-population paired compose cells. `cargo test` 305 debug / 302 release, clippy clean both profiles (verified by me) | see "Round 68" narrative below — why the end-to-end number is much smaller than the loop number, a density regime the router never reaches, and a cost-feature consequence that is now a queue item |
 | 69 | **Measurement only.** Grades StreamedSelect's two never-graded cost drivers (`perm_walk_span` via the walk term, `stream_scan_units`) against realized counters, answers whether the permutation-less sort columns need their own cost branch, and re-measures the compose walk's per-orderby clump after Round 68 invalidated it | n/a | n/a | **No instrumentation round was needed — item 1's stated blocker was wrong.** Both realized counters (`perm_steps`, `printings_examined`) already exist and are already published. Walk term: pooled median **1.023**, spread 9.6x, split by sort column into **1.9x** (`name`) to **38.8x** (`cmc`) at flat medians (0.918-1.183) — so a per-orderby scalar cannot help in CARD space, and no existing feature predicts the residual (max \|r\| 0.12). `stream_scan_units` is **bimodal**: p25/p50 exactly 1.000, p90 **11.8** (printing 16.7x, artwork 14.0x). Both cost GATES are correct — all 83 walk-gate disagreements (2.79%) are the estimate crossing `STREAM_MIN_MATCHES`, and 720 of 778 scan-gate ones (92.5%) are the plan returning before any loop. `rarity`/`usd` need **no** cost branch: they have no permutation and `streamed_select_applicable` drops the plan from the argmin (offered 0/12 vs 12/12 for `name`/`cmc`). Compose's `Perm`/`OrderbyWalk` shared arm is likewise **correct** (residual medians 1.277 vs 1.449) — but its per-column medians span **0.925-3.579** against one shipped `WALK_LENGTH_BIAS` of 1.45, which CONFIRMS item 5 | see "Round 69" narrative below — a blocker that was already unblocked, and a stale table that validated its own replacement |
 
+### Round 72
+
+Compose's feature pass, which is queue items 4-6's territory. At n=178,731 feature-rows the pooled
+`printings_walked` 1.24 and `matches` 0.80 that `fit_cost_model` flags turn out to be **three
+separable defects**, only one of which is fixable, and the biggest one is not.
+
+**Shipped: `compose_scan_printings` loses its multiplier on the grouping arm.** `gather_composed_page`
+charges `printings_examined += (end - start)` — the candidate span — in the grouping arm (artwork
+always, card under a scoring prefer). Graded against that, the shipped feature read a median of
+**exactly 1.47**, the constant `COMPOSE_GATHER_SPAN_PER_MATCH` itself, on every slice: 622
+`bench_feature_accuracy` rows (artwork 305, card 301, both orderby slices, p70 also 1.47) and 87
+prefer-matched rows standalone. A median sitting on the constant means bare `printing_matches` reads
+**1.000** — arithmetic, not a second fit. This is Round 66's own finding one arm over: that round
+diagnosed the constant as pooling two regimes and being pure over-charge on one, fixed the
+early-break regime, and left the multiplier on the grouping regime where it is equally unearned.
+
+Paired at an identical population (**178,731 rows and 622 compose cells on both sides**): pooled p50
+**1.47 -> 1.00**, artwork 1.47 -> 1.00, card 1.47 -> 1.00, and the tail improved too (artwork p90
+5.76 -> 3.92, card 4.66 -> 3.58) because the multiplier was inflating it. **0 plan flips over 3,600
+prefer-varied survey rows**; `predicted_ns` moved on 50 rows, all `PrintingCompose`, no other plan
+touched; every other feature byte-identical. `cargo test` 306 debug / 303 release, clippy clean both.
+`Mode::Printing` keeps the multiplier — it walks the same span and the argument probably applies, but
+it produced no gradeable rows (below `MIN_ROWS` in every slice), so it stays unmeasured and unchanged.
+
+Two candidates that were better on paper and measured **worse**, both rejected: `scan_units` (p50
+0.499) despite being the engine's own candidate-span estimate and grading 1.00 on `GatheredScan`,
+which walks the identical quantity; and `eval_domain` (p50 0.364).
+
+**NOT fixed, and the attempt is the useful part: compose's `OrderbyWalk` under-counts ~4x in grouped
+modes and a second term does not close it.** The cells are unambiguous — `/artwork` p50 **0.24**
+(n=1,305), `/card` **0.27** (n=1,274), against `/printing` **1.14** (n=2,150) and `Perm` **1.10** in
+all three modes. The mechanism is visible in the source: `walk_value_orderby_page` accumulates
+`printings_examined` from two places, `examined += 1` per index entry stepped (what
+`printings_walked` models, correctly) plus `group_representative(.., &mut examined)` per MATCHING
+entry in grouped modes only, which scans the card's span to pick the group representative. So the
+model omits a whole term that exists exactly where the feature fails.
+
+Adding it does not work. `cards_visited` on this walk IS the resolution count, so the residue is
+measurable per row rather than inferred, and it is not stable: `residue / resolutions` has median
+19.2 with p10 **-1.9** and p90 91.1, and **160 of 1,050 rows have a negative residue** — the shipped
+term already exceeds realized there. Sweeping a per-resolution depth from 1.0 to 6.0 moves the
+two-term model's median only 0.314 -> 0.478 against a target of 1.0 and `within 25%` from 10% to 14%,
+against a shipped baseline of 0.268 / 9%. The resolution COUNT is not predictable either
+(`resolutions / (page_span * pmatches / matches)` p10 0.65 -> p90 2.84, and `orderby=rarity` 1.59
+against `usd` 0.85). **So this is the same dispersion problem, not a missing term** — recorded so the
+obvious fix is not attempted a second time.
+
+Left for items 4-6 with numbers attached: `eval_domain <compose Gather> / card` **1.29** (n=246,
+artwork 1.09), and the `OrderbyWalk` grouped bias above.
+
+**One methodology trap, which cost a wrong reading before it was caught.** `costbench`'s comment said
+`PlanFeatures` does not carry `prefer`, "so the features and every `predicted_ns` come back identical
+whatever is passed". That stopped being true in Round 66, when `compose_scan_printings` gained a
+`Mode::Card if Prefer::Default` arm — the acquire reads `prefer` even though the struct does not store
+it. A first pass at the comparison above passed `prefer` only to `explain_analyze`, graded a
+default-prefer feature vector against a scoring-prefer execution, and read the shipped feature as
+**0.508** where a prefer-matched run reads **1.470**. A 2.9x error that looks exactly like a finding.
+The comment is corrected, and `costbench`'s `perm_steps` doc (which still cited the pre-Round-32
+`n_cards` walk formula) with it.
+
 ### Round 69 (measurement only, no code change)
 
 Grades StreamedSelect's two never-graded cost drivers, `perm_walk_span` and `stream_scan_units`, which
