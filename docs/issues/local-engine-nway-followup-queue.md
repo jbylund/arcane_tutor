@@ -53,7 +53,7 @@ against a measured 199.3us), which is a cost-model correctness concern that this
 **Planned revisit:** estimates and query planning are to be re-examined over the UNIFORM sampler as
 well, and that will inform what else gets done here. Treat this ordering as provisional until then.
 
-1. **`compose_scan_printings` needs a SECOND DIMENSION, not a better constant** — investigated
+1. **`compose_scan_printings`: the mis-gating is FIXED (Round 66); a per-arm REFIT remains** — investigated
    2026-09-05, and the original framing of this item ("looks like a discrete arithmetic relationship,
    maybe a bug") was wrong. The feature is
    `compose_scan_printings = printing_matches * COMPOSE_GATHER_SPAN_PER_MATCH`, and that constant is
@@ -94,19 +94,28 @@ well, and that will inform what else gets done here. Treat this ordering as prov
    - **Next step, and it is a measurement not a commitment:** surface the true estimated depth
      (`est.result.printing / est.result.card`) as a diagnostic field on an instrumented build and
      re-run this correlation. Only if it predicts the realized factor is replacing the constant with a
-     per-query term justified. **Separable and independently verifiable: the `Prefer::Default` card arm is
-     mis-gated.** `gather_composed_page` has three per-card arms — `Mode::Printing` and the
-     grouping arm (`Mode::Artwork`, or `Mode::Card` under a non-default prefer) each add
-     `end - start`, the full span, while `Mode::Card` + `Prefer::Default` uses
-     `(start..end).find(|pid| is_set(pid))` and adds only `pid - start + 1`, typically 1, because
-     printings are stored prefer-descending so the first set printing is already the chosen
-     representative. The constant's own doc names this carve-out ("except in its card/default-prefer
-     arm it iterates `start..end`"), and the sibling feature five lines below gates on exactly that
-     predicate (`Mode::Artwork => true, Mode::Card => !matches!(prefer, Prefer::Default),
-     Mode::Printing => false`) — but `compose_scan_printings` is assigned unconditionally, so it
-     charges a span walk in the one arm that provably does not do one. Probe: 62 examined against a
-     `printing_span` of 191, one per card. In that arm the right magnitude is the candidate-CARD count,
-     which the engine already has as `eval_domain`.
+     per-query term justified.
+   - ~~**the `Prefer::Default` card arm is mis-gated**~~ — **fixed by Round 66.** That arm is now
+     charged `eval_domain` (the candidate-card count) instead of the span multiplier: the direct
+     property moved p50 **5.040 -> 1.000** over 93 identical-population rows, `f:gladiator`/card went
+     from charging 80,654 against a realized 15,131 to exactly 15,131, and the control arms are
+     byte-identical. See the ledger's Round 66 section, including why the pooled cell median stays
+     pinned at 1.47 (uniform mode draws `prefer` FLAT, so ~80% of that cell is the untouched arm —
+     slice to `prefer=default` and it reads 4.369 -> 1.000).
+   - **What remains is the REFIT, and Round 66 sharpened the case for it.** Carving out the default
+     arm leaves `COMPOSE_GATHER_SPAN_PER_MATCH` = 1.47 calibrated on a population that blended both
+     regimes. Measured on the card/non-default arm ALONE (n=105, `prefer=newest`), the
+     feature/`printings_examined` ratio reads a median of **exactly 1.47** — bare `printing_matches`
+     is already ~exact on that arm and the multiplier is pure over-charge. Artwork (n=209) and
+     printing (n=37) were too thin to grade. Open questions:
+     - Is the right value ~1.0 for card/non-default, and does artwork differ? Grade each arm on its
+       OWN population — pooling them is what produced 1.47 in the first place.
+     - Is `residual_card_invariant` the discriminator? For a card-invariant composed filter every
+       printing of a matching card matches, so the candidate span EQUALS the match count and the
+       multiplier should be 1.0 by construction. That feature already exists on `PlanFeatures`.
+     - Only if per-arm constants still leave a wide spread does the per-query depth term become
+       necessary — and that still needs `printing_matches` and `est.result.printing`/`.card` exposed
+       together on an instrumented build, which remains unmeasured (see the retraction above).
 2. **`scan_units [printing_compose]` under-counts ~3x.** The highest-n miscalibration in the report
    (32,833 `printing_compose` rows of 51,767 pooled): p50 **0.32-0.38** depending on distinct-on, p10
    **0.05**, spread 20.0-32.5. `scan_units` prices the MATERIALIZING alternatives when they compete
