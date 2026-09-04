@@ -1515,6 +1515,73 @@ fn build_numeric_index(cards: &[OracleCard], get_val: impl Fn(&OracleCard) -> Op
     idx
 }
 
+/// Per-distinct-value cumulative `SpaceTotals` over a `NumericIndex`'s own sorted value order, so a
+/// bare cmc/power/toughness comparison can be answered EXACTLY in all three spaces by one
+/// subtraction (Round 63).
+///
+/// `NumericIndex` is card space only, which left `compose_printing_estimate`'s bare numeric leaf arm
+/// scaling its card count into printing space by the corpus-average reprint ratio -- measured at
+/// **0.310x-1.274x** of truth over 117 leaves, with 44% missing by >=200 printings AND >=10%. The
+/// worst are low-cmc, where the lands sit: `cmc=0` reported 3,699 against a true 11,948, its own
+/// reprint depth being 9.96 against the corpus's 3.08. `exact_result_total`'s own arith arm has the
+/// same hole and says so ("the index has no printing/artwork aggregate ... no cheap exact conversion
+/// from a card-space index to those spaces"); this is that aggregate.
+///
+/// Deliberately per-DISTINCT-VALUE rather than per-entry. Both are exact and both are O(log n), but
+/// cmc/power/toughness have only ~20-40 distinct values each against up to 31,724 entries, so this
+/// is ~570 bytes per field where a per-entry prefix would be ~250 KB. Round 57's `LegalityDateTotals`
+/// is the same shape one dimension over (a prefix sum along a value axis, answering any range by
+/// subtraction).
+///
+/// The alternative considered and REJECTED on measurement: reuse the existing `arith_tuple_totals`,
+/// which already returns the exact triple for a single bound. It is an O(distinct tuples) scan (~564
+/// keys, four `f64` conversions and an `eval_arith_tuple_tri` each) where this is two
+/// `partition_point`s, and it measured **+186% on `and_estimate_ns` p50** for queries carrying a
+/// numeric leaf against +7% drift on a control subset that cannot reach the arm -- about +3.8us on
+/// the highest-traffic leaf arm. Preserved unmerged on `r63p1-arith-tuple-reuse-measured-slow`.
+///
+/// `values` holds the distinct values ascending; `prefix` is an EXCLUSIVE prefix sum with
+/// `prefix.len() == values.len() + 1`, so the totals for the value range `[s, e)` are
+/// `prefix[e] - prefix[s]`. Empty `values` means unbuilt (a test fixture) or a field no card carries,
+/// both of which decline rather than answer 0 -- the same convention every other index here uses.
+#[derive(Archive, Serialize, Deserialize, Default)]
+struct NumericSpanTotals {
+    values: Vec<i16>,
+    prefix: Vec<SpaceTotals>,
+}
+
+/// `NumericSpanTotals` for one already-built `NumericIndex`.
+///
+/// Relies on `build_numeric_index` sorting by `(value, card_id)`, which makes every entry sharing a
+/// value contiguous -- so distinct values come out of one pass with no separate grouping structure.
+/// Per-card printings/artworks come from the same `offsets`/`artwork_base` spans
+/// `build_arith_tuple_index` sums, so the two indices cannot disagree about a card's own footprint.
+fn build_numeric_span_totals(idx: &NumericIndex, offsets: &[u32], artwork_base: &[u32]) -> NumericSpanTotals {
+    let mut values: Vec<i16> = Vec::new();
+    let mut per_value: Vec<SpaceTotals> = Vec::new();
+    for &(v, id) in idx {
+        if values.last() != Some(&v) {
+            values.push(v);
+            per_value.push(SpaceTotals::default());
+        }
+        let id = id as usize;
+        let t = per_value.last_mut().expect("pushed on the branch above");
+        t.printings += offsets[id + 1] - offsets[id];
+        t.artworks += artwork_base[id + 1] - artwork_base[id];
+        t.cards += 1;
+    }
+    let mut prefix: Vec<SpaceTotals> = Vec::with_capacity(per_value.len() + 1);
+    let mut running = SpaceTotals::default();
+    prefix.push(running);
+    for t in &per_value {
+        running.printings += t.printings;
+        running.cards += t.cards;
+        running.artworks += t.artworks;
+        prefix.push(running);
+    }
+    NumericSpanTotals { values, prefix }
+}
+
 fn flip_op(op: CmpOp) -> CmpOp {
     match op {
         CmpOp::Lt => CmpOp::Gt,
@@ -5442,6 +5509,11 @@ struct CardIndexes {
     cmc:            NumericIndex,    // card space
     power:          NumericIndex,    // card space
     toughness:      NumericIndex,    // card space
+    // Round 63: the three-space aggregate the `NumericIndex`es above lack, one per field. See
+    // `NumericSpanTotals` for why this exists and why it is per-distinct-value.
+    cmc_spans:       NumericSpanTotals,
+    power_spans:     NumericSpanTotals,
+    toughness_spans: NumericSpanTotals,
     rarity:         RarityIndex,     // card space (any-printing-at-rarity)
     // All five are HYBRID, joining `frame_data` below: a value above the 1/32 density crossover is
     // stored as a bitmap instead of a posting list, which is smaller for exactly the values that
@@ -9601,6 +9673,68 @@ fn numeric_range_count(idx: &Archived<NumericIndex>, op: CmpOp, val: f64) -> Opt
     Some(end - start)
 }
 
+/// `field`'s `NumericSpanTotals` (Round 63), the three-space sibling of `card_numeric_index`.
+fn card_numeric_spans(field: NumField, indexes: &Archived<CardIndexes>) -> Option<&Archived<NumericSpanTotals>> {
+    match field {
+        NumField::Cmc => Some(&indexes.cmc_spans),
+        NumField::Power => Some(&indexes.power_spans),
+        NumField::Toughness => Some(&indexes.toughness_spans),
+        _ => None,
+    }
+}
+
+/// Exact (printings, cards, artworks) for ONE bare cmc/power/toughness comparison, by subtracting two
+/// entries of `NumericSpanTotals::prefix`. O(log distinct values) — two `partition_point`s over the
+/// ~20-40 distinct values a field has, against `arith_tuple_totals`' ~564-key scan for the same
+/// answer (measured at +186% on `and_estimate_ns` p50; see `NumericSpanTotals`' own doc).
+///
+/// The op match MIRRORS `numeric_range_count`'s exactly, including `Ne` declining (not a range) and a
+/// non-integer `Eq` being an exact all-zero triple rather than `None` — an integer-valued axis holds
+/// no fractional value, so the answer is genuinely 0 and not "unknown". The two functions must agree
+/// on which shapes they answer, since the caller falls back from one to the other; the mirror is why
+/// they sit adjacent.
+///
+/// `None` when the table is unbuilt or the field is absent from every card (empty `values`), matching
+/// `card_numeric_index`'s own decline rather than claiming an exact 0.
+fn numeric_range_span_totals(t: &Archived<NumericSpanTotals>, op: CmpOp, val: f64) -> Option<(usize, usize, usize)> {
+    if t.values.is_empty() {
+        return None;
+    }
+    let below = |v: f64| t.values.partition_point(|p| (i16::from(*p) as f64) < v);
+    let at_or_below = |v: f64| t.values.partition_point(|p| (i16::from(*p) as f64) <= v);
+    let (start, end) = match op {
+        CmpOp::Ne => return None,
+        CmpOp::Eq => {
+            if val.fract() != 0.0 {
+                return Some((0, 0, 0));
+            }
+            (below(val), at_or_below(val))
+        }
+        CmpOp::Lt => (0, below(val)),
+        CmpOp::Le => (0, at_or_below(val)),
+        CmpOp::Gt => (at_or_below(val), t.values.len()),
+        CmpOp::Ge => (below(val), t.values.len()),
+    };
+    let (lo, hi) = (&t.prefix[start], &t.prefix[end]);
+    Some((
+        (u32::from(hi.printings) - u32::from(lo.printings)) as usize,
+        (u32::from(hi.cards) - u32::from(lo.cards)) as usize,
+        (u32::from(hi.artworks) - u32::from(lo.artworks)) as usize,
+    ))
+}
+
+/// `numeric_range_span_totals` for a whole bare `field op const` filter, the three-space sibling of
+/// `bare_numeric_field_count` — same shape recognition (either operand order), same `flip_op` on the
+/// reversed form.
+fn bare_numeric_field_spans(filter: &FilterExpr, indexes: &Archived<CardIndexes>) -> Option<(usize, usize, usize)> {
+    let (field, op, val) = match filter {
+        FilterExpr::NumericCmp { lhs: NumExpr::Field(f), op, rhs: NumExpr::Const(v) } => (*f, *op, *v),
+        FilterExpr::NumericCmp { lhs: NumExpr::Const(v), op, rhs: NumExpr::Field(f) } => (*f, flip_op(*op), *v),
+        _ => return None,
+    };
+    numeric_range_span_totals(card_numeric_spans(field, indexes)?, op, val)
+}
+
 /// The same range `numeric_range_count` bounds, but returning the actual card ids in it rather than
 /// just its length -- for the smaller-side merge in `compose_printing_estimate`'s `And` arm, which
 /// needs to probe each one against another leaf's bitmap rather than just know how many there are.
@@ -12669,37 +12803,51 @@ fn compose_printing_estimate(
             let artwork = color_cmp_value_total(*field, *op, *mask, true, indexes, Mode::Artwork);
             ComposeEstimate::leaf_spaces(k, k, 0, Some(card), Some(artwork))
         }
-        // cmc/power/toughness: exact via the dedicated per-field sorted index (O(log n)) — no
-        // `eval_planes`, and cheaper than the joint #743 index's O(distinct tuples) scan, which this
-        // single-bound case doesn't need (`arith_tuple_totals`'s doc covers the multi-bound `And`-level
-        // case above). Falls back to `arith_tuple_totals` only if the dedicated lookup somehow declines
-        // (defensive — `is_printing_composable` already restricts this arm to shapes both accept).
-        // Round 51: the fallback now carries its own exact printing/artwork numbers straight from
-        // `arith_tuple_totals`'s `totals` rather than scaling/`None` -- a free improvement on this
-        // low-frequency defensive path, since the data already exists. The primary
-        // `bare_numeric_field_count` path still scales its card count into printing space and reports
-        // no artwork, exactly as before.
+        // cmc/power/toughness: the exact (printings, cards, artworks) triple, in three tiers.
         //
-        // Round 59: the two branches now differ in CHANNEL, not just in value. The primary
-        // (`bare_numeric_field_count`) branch is the same `card_count * n_printings / n_cards`
-        // reprint-ratio approximation the legality and devotion arms use -- an average-case guess that
-        // can land below the true printing count, so it fills `estimate` only. The defensive
-        // `arith_tuple_totals` fallback is a real precomputed triple and keeps both channels. This arm
-        // is NOT named in the round's own plan (whose leaf audit found the legality and devotion arms):
-        // it is the same idiom, found by applying `SpaceMeasure`'s admission rule to every leaf arm
-        // rather than to the two the plan listed, and it is the highest-traffic instance of the three.
+        // Round 63 makes this arm exact. It used to lead with `bare_numeric_field_count`, whose
+        // dedicated per-field sorted index is card space ONLY, and scale that count into printing
+        // space by the corpus-average reprint ratio -- the same `card_count * n_printings / n_cards`
+        // idiom Round 61 deleted from the legality arm, and measurably the worse of the two: over 117
+        // bare numeric leaves against ground truth it spanned **0.310x-1.274x**, with **51 of 117
+        // (44%)** missing by >=200 printings AND >=10%, against legality's 0.647x-1.040x. The misses
+        // concentrate at low cmc, where the lands are and reprint depth is nothing like the corpus
+        // average -- `cmc=0` reported 3,699 against a true 11,948 (own depth 9.96, corpus 3.08),
+        // `cmc<=1` 13,159 against 21,584.
+        //
+        // 1. `bare_numeric_field_spans` -- `NumericSpanTotals`, two `partition_point`s over the field's
+        //    ~20-40 distinct values and one subtraction. Exact in all three spaces, so BOTH channels.
+        // 2. `arith_tuple_totals` -- also exact, but an O(distinct tuples) scan. Kept for the shapes
+        //    tier 1 cannot recognize, which is the reason this arm's guard is wider than
+        //    `bare_numeric_field_spans`' own: cross-field arithmetic like `cmc+1<power` is admitted
+        //    here and evaluated properly by `eval_arith_tuple_tri`.
+        // 3. `bare_numeric_field_count` scaled -- the old primary, now the last resort, reached only
+        //    when neither table is built for this store (a test fixture). Still estimate-only channel,
+        //    since a reprint-ratio guess is not a bound (Round 59's admission rule).
+        //
+        // Tier 1 is deliberately FIRST rather than tier 2, and that ordering is measured, not
+        // stylistic: leading with `arith_tuple_totals` gets the identical exact numbers but cost
+        // **+186% on `and_estimate_ns` p50** for queries carrying a numeric leaf, against +7% drift on
+        // a control subset that cannot reach this arm at all -- roughly +3.8us on what the queue calls
+        // the highest-traffic of the three reprint-ratio arms. That version is preserved unmerged on
+        // `r63p1-arith-tuple-reuse-measured-slow`.
+        //
+        // `broadcast` takes the exact `printings` rather than the old `scaled`, which is what the
+        // Round 51 fallback branch already did -- so the arm now has one convention instead of two.
+        // It is a cost bucket rather than a cardinality, and here the exact number is also the more
+        // accurate cost: this leaf is card-invariant, so the broadcast-down pass touches every printing
+        // of every matching card, which is exactly `printings`. (Round 61 kept `broadcast` scaled for
+        // legality, where the broadcast figure is NOT the leaf's own printing count; here it is.)
         FilterExpr::NumericCmp { lhs: NumExpr::Field(f), .. } | FilterExpr::NumericCmp { rhs: NumExpr::Field(f), .. }
             if matches!(f, NumField::Cmc | NumField::Power | NumField::Toughness) =>
         {
-            let n_cards = offsets.len() - 1;
-            match bare_numeric_field_count(filter, indexes) {
-                Some(cc) => {
+            match bare_numeric_field_spans(filter, indexes).or_else(|| arith_tuple_totals(&[filter], indexes)) {
+                Some((printings, cards, artworks)) => ComposeEstimate::leaf_spaces(printings, printings, 0, Some(cards), Some(artworks)),
+                None => {
+                    let n_cards = offsets.len() - 1;
+                    let cc = bare_numeric_field_count(filter, indexes).expect("gated by is_printing_composable");
                     let scaled = (cc * n_printings).checked_div(n_cards).unwrap_or(0);
                     ComposeEstimate::leaf_spaces_approx_printing(scaled, scaled, 0, Some(cc), None)
-                }
-                None => {
-                    let (printings, cards, artworks) = arith_tuple_totals(&[filter], indexes).expect("gated by is_printing_composable");
-                    ComposeEstimate::leaf_spaces(printings, printings, 0, Some(cards), Some(artworks))
                 }
             }
         }
@@ -18953,7 +19101,7 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 // 2026090303 — Round 57: new `CardIndexes` field `legality_date` (`LegalityDateTotals`, one exact
 // per-`(format, status)` printing prefix sum along the `released_at` value axis). Same blind spot
 // again: entirely inside `CardIndexes`.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026090303;
+const ARCHIVE_FORMAT_VERSION: u32 = 2026090401;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
@@ -19707,12 +19855,23 @@ impl QueryEngine {
             |p| p.price_eur,
             |p| p.price_tix,
         );
+        // Round 63: built as locals so each field's `NumericSpanTotals` can be summed from the very
+        // index it describes, rather than re-deriving the sort in a second pass.
+        let cmc_index = build_numeric_index(&cards, |c| c.cmc.map(|v| v as i16));
+        let power_index = build_numeric_index(&cards, |c| c.creature_power.map(|v| v as i16));
+        let toughness_index = build_numeric_index(&cards, |c| c.creature_toughness.map(|v| v as i16));
+        let cmc_spans = build_numeric_span_totals(&cmc_index, &offsets, &artwork_base);
+        let power_spans = build_numeric_span_totals(&power_index, &offsets, &artwork_base);
+        let toughness_spans = build_numeric_span_totals(&toughness_index, &offsets, &artwork_base);
         let indexes = CardIndexes {
             name_trigram:   build_trigram_index(&cards, |c| c.card_name_folded.as_str()),
             oracle_trigram: build_oracle_text_index(&cards, &strings),
-            cmc:            build_numeric_index(&cards, |c| c.cmc.map(|v| v as i16)),
-            power:          build_numeric_index(&cards, |c| c.creature_power.map(|v| v as i16)),
-            toughness:      build_numeric_index(&cards, |c| c.creature_toughness.map(|v| v as i16)),
+            cmc:            cmc_index,
+            power:          power_index,
+            toughness:      toughness_index,
+            cmc_spans,
+            power_spans,
+            toughness_spans,
             rarity:         build_rarity_index(&printings, &offsets),
             subtypes:       build_hybrid_tag_index(&cards, &coll_vocab, |c| &c.card_subtypes),
             keywords:       build_hybrid_tag_index(&cards, &coll_vocab, |c| &c.card_keywords),

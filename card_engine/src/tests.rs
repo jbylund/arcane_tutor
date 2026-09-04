@@ -1,6 +1,6 @@
 use super::{
     and_child_rank, assign_name_ranks,
-    build_numeric_index, build_oracle_text_index, build_trigram_index,
+    build_numeric_index, build_numeric_span_totals, build_oracle_text_index, build_trigram_index,
     build_rarity_index, build_flavor_index, build_hybrid_tag_index, build_layout_hybrid_index, bitmap_beats_postings, HybridTagIndex, build_sort_permutations,
     assign_artwork_groups, build_artwork_base_from, build_bit_planes, build_border_printing_planes, build_rarity_printing_planes, build_divergent_ids, build_name_bigram_index, build_name_unigram_index, build_printing_to_card, flavor_fingerprint, flavor_match_sets,
     cards_of_printings, count_common_keywords, count_common_types,
@@ -6689,15 +6689,27 @@ fn bench_checked_vs_unchecked_access() {
     let printing_to_card = build_printing_to_card(&offsets);
     // Computed here, before `artwork_base`/`offsets` are moved/borrowed into the literal below.
     let arith_tuple = build_arith_tuple_index(&cards, &offsets, &artwork_base);
+    // Round 63: built for the fixture too, deliberately -- an empty `NumericSpanTotals` would make
+    // every test fall through the bare numeric leaf arm's tier 1 into the `arith_tuple_totals` tier,
+    // i.e. exercise a path production never takes and leave the new one untested.
+    let cmc_index = build_numeric_index(&cards, |c| c.cmc.map(|v| v as i16));
+    let power_index = build_numeric_index(&cards, |c| c.creature_power.map(|v| v as i16));
+    let toughness_index = build_numeric_index(&cards, |c| c.creature_toughness.map(|v| v as i16));
+    let cmc_spans = build_numeric_span_totals(&cmc_index, &offsets, &artwork_base);
+    let power_spans = build_numeric_span_totals(&power_index, &offsets, &artwork_base);
+    let toughness_spans = build_numeric_span_totals(&toughness_index, &offsets, &artwork_base);
 
     let indexes = CardIndexes {
         artwork_base,
         name_trigram:   build_trigram_index(&cards, |c| c.card_name_folded.as_str()),
         name_unigrams:  build_name_unigram_index(&cards),
         oracle_trigram: build_oracle_text_index(&cards, &strings),
-        cmc:            build_numeric_index(&cards, |c| c.cmc.map(|v| v as i16)),
-        power:          build_numeric_index(&cards, |c| c.creature_power.map(|v| v as i16)),
-        toughness:      build_numeric_index(&cards, |c| c.creature_toughness.map(|v| v as i16)),
+        cmc:            cmc_index,
+        power:          power_index,
+        toughness:      toughness_index,
+        cmc_spans,
+        power_spans,
+        toughness_spans,
         rarity:         build_rarity_index(&printings, &offsets),
         subtypes:       build_hybrid_tag_index(&cards, &vocab.strings, |c| &c.card_subtypes),
         keywords:       build_hybrid_tag_index(&cards, &vocab.strings, |c| &c.card_keywords),
