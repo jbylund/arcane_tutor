@@ -17014,7 +17014,8 @@ fn acquire_plan_features(
         // that guard exists to catch, and without this exemption it clobbers the correct answer computed
         // below back to the full corpus.
         //
-        // Gated on `est.result.card.best() == Some(domain_cards)`, not `composed_card_invariant` alone: the
+        // Gated on `est.result.card.guaranteed == Some(domain_cards)`, not `composed_card_invariant`
+        // alone: the
         // "one printing settles it" argument only holds when `domain_cards` carries ZERO false
         // positives, since a false-positive candidate's residual is false on every printing and the
         // `Prefer::Default` loop has no way to know that in advance -- it still walks every printing
@@ -17029,7 +17030,22 @@ fn acquire_plan_features(
         // over (== `printings_per_card` exactly) across their WHOLE bucket, not just the near-universal
         // queries -- the gap is structural, not a selectivity artifact, because card-invariance makes
         // depth-1 true regardless of how selective the predicate is.
-        let card_invariant_domain_exact = composed_card_invariant && est.result.card.best() == Some(domain_cards);
+        //
+        // Round 62: that property is `guaranteed`, so the gate says so directly instead of asking
+        // `best()` and relying on the two coinciding. "Came from a trusted exact source" is
+        // `SpaceMeasure::guaranteed`'s definition post-Round-59; `best()` is the ACCURACY read and is
+        // free to resolve from the estimate channel, which would answer a different question.
+        // Byte-identical today, provably and not just by measurement: NOTHING writes `result.card`'s
+        // estimate channel anywhere in `compose_printing_estimate` (`Candidate::Estimate`/
+        // `PrintingBound` touch printing only; the `And` arm seeds card UNKNOWN and reaches it only
+        // via `lower_guaranteed`; every leaf constructor fills both channels with the same number;
+        // `Or`'s `add` needs both children's `guaranteed` and its `estimate` sums the same `best()`s),
+        // so `card.best()` and `card.guaranteed` are the SAME `Option<usize>` at every node. Confirmed
+        // by a full survey diff before this swap landed: zero rows moved. The swap matters because the
+        // queued domain-seeding round makes `card.best()` unconditionally `Some`, at which point the
+        // `best()` spelling silently becomes vacuous while the `guaranteed` spelling keeps meaning what
+        // this doc says.
+        let card_invariant_domain_exact = composed_card_invariant && est.result.card.guaranteed == Some(domain_cards);
         // What the MATERIALIZING alternatives scan if compose loses. Every mode narrows -- a
         // composable filter has an index for every leaf -- so all three are the NARROWED counts.
         // Printing mode took the unnarrowed universe while card/artwork took a narrowed count; only
@@ -17248,7 +17264,8 @@ fn acquire_plan_features(
         // exemption for every query combining it with one of these fields. `plane_leaves_nothing_to_verify`
         // reaches the `pow<=2` case through `filter == True` instead, without disturbing that one.
         //
-        // A third exemption, `is_and && est.card.is_some()`: the same failure mode again, this time for
+        // A third exemption, `is_and && est.result.card.guaranteed.is_some()`: the same failure mode
+        // again, this time for
         // an `And` whose EXACT card intersection this session's `compose_printing_estimate` work now
         // knows (`f:timeless r>=rare`, card mode: `domain_cards` a correct, verified 5,854 against
         // `est.result`/`printing_matches` of 36,623 -- 37% of the corpus, over `MAX_NARROW_FRACTION`, so
@@ -17258,6 +17275,11 @@ fn acquire_plan_features(
         // fabricated one, the same non-regression argument the other two exemptions already rely on.
         // NOT extended to bare leaves -- see `is_and`'s own doc for the 809-query regression that
         // surfaced when this was tried unscoped.
+        //
+        // Round 62: reads `guaranteed` rather than `best()`, for the same reason and with the same
+        // proof as `card_invariant_domain_exact` above -- the question here is "did the `And` arm
+        // produce a TRUSTED card number", which is `guaranteed`'s definition, not `best()`'s. Same
+        // `Option<usize>` today; not the same question once domain-seeding lands.
         // A fourth exemption, `card_invariant_domain_exact` (computed alongside `domain_cards` above --
         // see its own doc): the same failure mode again, this time for a BARE card-invariant leaf whose
         // exact card count this session's `compose_printing_estimate` work now knows (`cmc>=0`, card
@@ -17269,7 +17291,7 @@ fn acquire_plan_features(
         // card-invariance) -- never a value this guard would improve on by falling back to `n_printings`.
         let (eval_domain, scan_units) = if !(compose_leaf_nothing_to_verify(filter)
             || plane_leaves_nothing_to_verify(filter, mode, plane, indexes)
-            || (is_and && est.result.card.best().is_some())
+            || (is_and && est.result.card.guaranteed.is_some())
             || card_invariant_domain_exact)
             && range_too_broad_to_narrow(printing_matches, n_printings as usize)
         {
