@@ -119,6 +119,37 @@ fixing the features would bury the remaining error in that rate, which is exactl
 `bench_cost_error_attribution.py`'s own doc warns about ("a fit will quietly bury the error in
 whichever term correlates with it"). Fix features first, then refit.
 
+**Ranked under BOTH lenses, 2026-09-05** (`bench_regret_matrix.py`, seed 66 uniform / seed 69
+realistic, raw outputs in [measurements/](measurements/)). The paging ranking is stable; one direction
+is not.
+
+| | uniform | realistic |
+|---|---|---|
+| compose paging `Perm` share of regret | 57% | **57%** |
+| `Perm` + `OrderbyWalk` | 78% | **75%** |
+| `printing_compose` acquire | 97% | 87% |
+| `candidates` acquire | 3% | 12% |
+| mean regret | 1.35 us | **0.51 us** |
+| `unique` split | artwork 45 / printing 31 / card 24 | **card 65** / printing 26 / artwork 9 |
+
+**Items 1-4 are correctly ranked under both** — `Perm` is 57% either way, which is the strongest
+evidence they have had.
+
+**But compose's mis-picking DIRECTION reverses, and that governs how items 1-4 must be verified.**
+Under uniform, compose is UNDER-picked: `-> PrintingCompose` transitions are 67% of regret against 14%
+for `PrintingCompose ->`. Under realistic it is the other way: 32% under against **37% over**, with
+`PrintingCompose -> StreamedSelect` alone at 27% and a 98% miss rate. So Round 67's "compose is
+under-picked" does NOT hold on the user-behaviour lens, and **any change that makes compose look cheaper
+carries a risk under realistic that uniform hides.** Verify walk-cost changes in BOTH modes, and treat a
+flip toward compose as needing dispatch-pricing rather than as self-evidently good.
+
+**Round 68 looks better in hindsight than the lens it was chosen under suggested.** It fixed CARD mode
+specifically, which is **65%** of realistic regret and only 24% of uniform's.
+
+**And item 5 should probably be promoted.** `StreamedSelect -> GatheredScan` is the #2 transition under
+realistic (26% of regret, n=1,664, 60% miss), up from 17% under uniform — which is item 5's
+coefficient territory, not the walk's.
+
 1. **Exploit card-invariance in the walk: ONE bit test per card instead of a full span.** Round 68
    took the card/default early break (see the ledger); this is the half it deliberately left out, and
    it is now the larger remaining win. All printings of a card share their `pbits` value when the
