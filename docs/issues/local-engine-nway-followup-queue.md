@@ -96,11 +96,39 @@ whichever term correlates with it"). Fix features first, then refit.
      predicate and it is already computed at plan time as `composed_card_invariant` /
      `feats.residual_card_invariant`, but it is never threaded into an executor. Decide where the flag
      originates before writing anything.
-   - **Temper the expectation with Round 68's surprise.** I expected its early break to be small
-     because most stepped cards should not match; measured, the live `Perm` population's density is p0
-     0.013 / p50 0.205 / p90 0.701, because compose DECLINES on sparse totals and only dense traffic
-     survives to `Perm`. So non-matching cards are a smaller share than the "steps the whole
-     permutation" argument suggests. Measure the non-matching share on live `Perm` traffic FIRST.
+   - **The non-matching share is now MEASURED, and it is the majority — an earlier version of this
+     bullet claimed the opposite and was wrong.** It read "non-matching cards are a smaller share than
+     the 'steps the whole permutation' argument suggests", reasoning from the live `Perm` composed-bitmap
+     DENSITY (p50 0.205) as though dense printings meant mostly-matching cards. That is the wrong
+     quantity: density 0.205 means ~80% of printings are UNSET, and for a card-invariant filter that is
+     ~80% of cards non-matching. `t:creature` is the intuition pump — "dense" at ~1/3 of cards still
+     leaves 2/3 of stepped cards producing nothing.
+     Measured directly from executor counters, `pushed / cards_visited`:
+
+     | population | p10 | p25 | median | p75 |
+     |---|---|---|---|---|
+     | `PrintingCompose/Perm` | **0.027** | 0.074 | **0.317** | 0.822 |
+     | `PrintingCompose/OrderbyWalk` | 0.164 | 0.335 | 0.500 | 0.698 |
+     | `GatheredScan` | 0.518 | 1.000 | 1.031 | 1.579 |
+     | `StreamedSelect` | 0.300 | 0.783 | 1.000 | 1.336 |
+
+     For `Perm`, **~68% of stepped cards produce no row** at the median and 97% at p10.
+   - **And the size of the prize, `printings_examined / cards_visited`** — the quantity a card-invariance
+     hoist drives to 1.0:
+
+     | population | p10 | median | p75 | p90 |
+     |---|---|---|---|---|
+     | `GatheredScan` | 1.000 | **3.069** | 4.560 | 8.559 |
+     | `StreamedSelect` | 1.450 | **3.083** | 5.587 | 11.859 |
+     | `PrintingCompose/Perm` | 2.162 | **3.350** | 9.169 | 18.821 |
+     | `PrintingCompose/OrderbyWalk` | 2.301 | **13.853** | 51.908 | **202.4** |
+
+     `GatheredScan` 3.069 and `StreamedSelect` 3.083 sit exactly on the corpus reprint depth (3.083) —
+     the signature of touching every printing of every visited card. So the hoist is worth **~67% fewer
+     printing touches** where it applies. Rows per printing touched says the same from the other side:
+     `GatheredScan` 0.460, `Perm` 0.064, `OrderbyWalk` 0.020 (~50 printings touched per row emitted).
+     Caveat: `OrderbyWalk` walks a value index rather than cards, so `cards_visited` may not be its
+     natural denominator — do not lean on its 13.9/202 without checking that counter's semantics.
    - Same gate as Round 68: returned row IDENTITY, with the count of rows that actually hit the
      changed path reported — a differential over 8,008 cells proved nothing there because 0 of them
      were `Perm`-paged.
