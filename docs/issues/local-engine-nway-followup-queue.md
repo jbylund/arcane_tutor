@@ -153,9 +153,13 @@ coefficient territory, not the walk's.
 **Why this order (2026-09-05).** Ranked by the evidence each item actually has, not by which branch is
 biggest:
 
-- **The cheap win first.** Item 1 is a COEFFICIENT fix, and `StreamedSelect -> GatheredScan` is the
-  **#2 transition under realistic** (26% of regret, n=1,664, 60% miss) — up from 17% under uniform, i.e.
-  one of the few items that looks better on the value lens than on the weakness lens.
+- **Instrumentation first, because two of StreamedSelect's cost drivers are graded by nothing.** Item 1
+  was queued as a coefficient fix; investigating it found `perm_walk_span` and `stream_scan_units` absent
+  from every instrument, and `perm_walk_span` equal to `n_cards` on 97.8% of observations — so
+  StreamedSelect's walk term is a uniform-density formula with no clumping correction, and its 57%
+  over-cost is likely a SHAPE error that a coefficient refit would bury in a rate. The motivation stands
+  (`StreamedSelect -> GatheredScan` is the #2 realistic transition at 26%), but the work is now "grade
+  the features", with only the standalone `fixed` term safe to change before that.
 - **A coupling that is NOT visible in the feature lists, and an earlier version of this note denied it.**
   It said item 1 "does not queue behind the walk chain at all" because it touches a different plan. That
   is true FEATURE-side and false ROUTING-side. Verified in `cost.rs`: `printings_walked` (items 4-5) is
@@ -193,15 +197,40 @@ biggest:
 realistic (37% of regret against 32% under), the reverse of uniform. Anything that makes compose look
 cheaper must be verified in BOTH modes, with plan flips dispatch-priced rather than assumed good.
 
-1. **`StreamedSelect` is over-costed ~57% at the median, uniformly.** p50 **1.57** — and it reads 1.57
-   at EVERY orderby slice (name, toughness, cmc, power, cubecobra, edhrec) and every distinct-on
-   (1.59/1.57/1.57), n=60,165. That flatness across slices with a wide percentile spread (p90/p10 7.0)
-   is the signature of a stale rate or a spurious fixed term, and attribution agrees: `COEFFS` is the
-   dominant cause on `candidates` (**+0.791**) and worth +0.511 overall. The fit wants
-   `fixed = 0.00` against a shipped **233.00**, plus `emit` 0.00/0.12 and `small_total_floor` 0.16/0.81
-   — i.e. remove the fixed floor. A coefficient change, not a feature change; cheap to try and easy to
-   measure. Kept ahead of the walk chain: it is a coefficient change on a different plan, so it need not queue
-   behind it.
+1. **Grade `perm_walk_span` and `stream_scan_units` — StreamedSelect's own cost drivers, currently
+   measured by NOTHING.** Investigated 2026-09-05, and it re-scoped what was a coefficient item.
+   - **The shipped arm reads features no instrument covers.** `cost.rs`'s `StreamedSelect` arm uses
+     `matches`, `offset`, `limit`, `perm_walk_span`, `eval_domain`, `stream_scan_units` and
+     `residual_tier_ns100`. `bench_feature_accuracy` grades exactly five features — `scan_units`,
+     `compose_scan_printings`, `printings_walked`, `matches`, `eval_domain` — so `perm_walk_span` and
+     `stream_scan_units` are graded by nothing. `bench_cost_error_attribution`'s StreamedSelect design
+     matrix is `[eval_domain, scan_units*residual, eval_domain*residual, matches, floor, n_cards, 1]`,
+     which does not contain them either. So attribution's StreamedSelect **`model form` floor of 0.538
+     may be partly "features attribution does not model"**, and its `COEFFS` share of +0.511 is the
+     gain from refitting ITS model, not the shipped one.
+   - **`perm_walk_span` is `n_cards` on 97.8% of observations** (both modes; 93.8% of the queries where
+     StreamedSelect is actually PICKED under realistic, 92.4% under uniform). So the shipped walk term
+     `(page_span * perm_walk_span / matches).min(perm_walk_span)` collapses to
+     `page_span * n_cards / matches` almost always — the **same uniform-density waiting-time formula as
+     `printings_walked`**, in card space, and with **no clumping correction at all** (`printings_walked`
+     at least divides out `WALK_LENGTH_BIAS` = 1.45).
+   - **Which means the 57% over-cost is probably a SHAPE error, not a stale rate**, and recalibrating
+     coefficients would absorb it into a rate — exactly what this queue's header note warns against.
+     The clump measurement is the reason to believe it: the analogous printing-space error ranges
+     **0.951x to 4.931x by orderby**, which is how a pooled p50 of 1.57 can look like a uniform shift
+     while being wildly wrong per slice.
+   - **Do this first: add both features to `bench_feature_accuracy`.** They need a realized counter to
+     grade against — `perm_walk_span` against whatever the streamed walk actually steps, and
+     `stream_scan_units` against its own scanned-row count. Until then, nothing about StreamedSelect's
+     calibration can be attributed.
+   - **The one safe fragment of the old coefficient item**, separable and still worth doing: the fit
+     wants `fixed = 0.00` against a shipped **233.00** (plus `emit` 0.00/0.12, `small_total_floor`
+     0.16/0.81). A standalone constant cannot absorb a shape error, so that piece is safe to change on
+     its own. Everything touching the WALK RATE waits for the grading above.
+   - Motivation is unchanged and still strong: `StreamedSelect -> GatheredScan` is the **#2 transition
+     under realistic** (26% of regret, n=1,664, 60% miss), up from 17% under uniform. **But note the
+     likely fix now converges with item 5** — a per-orderby clump term, in card space instead of
+     printing space — rather than being an independent coefficient round.
 2. **Exploit card-invariance in the walk: ONE bit test per card instead of a full span.** Round 68
    took the card/default early break (see the ledger); this is the half it deliberately left out. All printings of a card share their `pbits` value when the
    composed filter is card-invariant, so one test decides the card. The asymmetry with the gather is
