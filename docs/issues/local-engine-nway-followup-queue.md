@@ -100,6 +100,37 @@ whichever term correlates with it"). Fix features first, then refit.
      loses — 67% of regret. Round 66 is a small precedent: its 3 flips were all
      `GatheredScan -> PrintingCompose`, 2 of 3 measurably faster.
    - Verify with `bench_regret_matrix.py` (does the share actually move), not only feature accuracy.
+   - **`printings_walked` IS `uniform_mean` already — verified 2026-09-05.** `cost::printings_walked`
+     computes `page_span / match_rate * WALK_LENGTH_BIAS` = `page_span * n_printings / matches * 1.45`,
+     and `sigma_bound::uniform_mean(n, m, k)` = `k * (n+1) / (m+1)`. Numerically the ratio is **1.450**
+     at every point checked (matches 50-60,000, page 60/660). The cost model is already computing the
+     order-statistic mean of the k-th match position and multiplying by a scalar.
+   - **The sigma / NHG machinery CANNOT fix it — measured, and this is a dead end worth recording.**
+     `card_engine/src/sigma_bound.rs` already ships `uniform_mean`, `nhg_variance` (negative
+     hypergeometric, closed form) and `sigma_bound = mean + knob*sd`, validated against a Python
+     fixture and swept for the knob (PRs #1058-#1065). Reusing it here looks obvious and does not work:
+     **sd/mean is 0.02-0.12** across the range, so `mean + 2*sd` is only 1.04-1.24x the mean, against a
+     realized `printings_walked` spread of **p90/p10 ~10-18**. Three orders of magnitude short. Not a
+     defect in that work — `nhg_variance` is the variance of the position UNDER RANDOM PLACEMENT, and
+     the entire problem is that placement is NOT random: the permutation orders cards by the sort
+     column and matches clump within it. `WALK_LENGTH_BIAS`'s doc says a density ratio cannot see
+     clumping; this extends it — nor can the no-clumping variance, which models precisely the absence
+     of the thing causing the spread.
+   - **Direction matters even if a spread term were available.** `sigma_bound` is deliberately
+     safe-biased ("never wrong to over-estimate"). Applied to compose's walk cost that makes compose
+     look MORE expensive, and 67% of regret is already compose being UNDER-picked — a conservative
+     margin would worsen the dominant failure. Whatever replaces 1.45 must be better CENTRED, not more
+     pessimistic.
+   - **Also note the sigma decision rule is gated `matches!(mode, Mode::Card)`**, while regret splits
+     artwork 45% / printing 31% / card 24%. That work covers the smallest slice, which is part of why
+     the Perm residual survived it.
+   - **The shape that could work is a joint (filter-dimension, sort-column) term**, since walk length
+     depends on how matches clump along the sort order rather than on the marginal density —
+     `f:modern` ordered by `rarity` walks differently than the same filter ordered by `name`. That is
+     the same "marginal product cannot see a correlation" problem `PriceJointTable` and
+     `ColorCmcTable` were built for, one level over. **Measure whether a computable clumping proxy
+     predicts the realized walk length BEFORE designing anything** — `printings_walked` is already
+     graded per-orderby, so the slice needed to test it exists.
 2. **`StreamedSelect` is over-costed ~57% at the median, uniformly.** p50 **1.57** — and it reads 1.57
    at EVERY orderby slice (name, toughness, cmc, power, cubecobra, edhrec) and every distinct-on
    (1.59/1.57/1.57), n=60,165. That flatness across slices with a wide percentile spread (p90/p10 7.0)
