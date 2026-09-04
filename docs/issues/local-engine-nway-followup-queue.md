@@ -7,7 +7,8 @@ intend to tackle it.
 arc existed to unblock a joint refit of the COST MODEL, which had been blocked on bad cardinality
 estimates. Measured against realized counters, that block is gone: `matches` and `eval_domain` now read
 **1.00 at the median on every acquire route**, with a p90/p10 spread of 1.0 on `plane` and `candidates`
-— the route carrying 96.31% of the crawl corpus's weighted time (see the population warning). What the refit is now blocked on is a
+— the route carrying 55.7% of query time under `realistic`, the user-behaviour proxy (96.31% of the
+CRAWL's weighted time, which models link-sharing rather than users). What the refit is now blocked on is a
 DIFFERENT quantity: how many printings a plan actually walks. Those features were never a function of
 result cardinality, and four rounds of estimator work moved them barely at all (`scan_units` pooled p50
 0.67 -> 0.65, spread 12.4 -> 12.1 across Rounds 62-64). Items 1-2 are cost-feature calibration; items
@@ -20,39 +21,36 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
 
 ## Active queue (in order)
 
-**Which population this queue is ranked by, decided 2026-09-05.** The **UNIFORM sampler is the primary
-lens**, used deliberately as a WEAKNESS-FINDER rather than as a traffic model — its own help says it
-"reaches the rare tails where ordering errors hide". So `bench_regret_matrix`,
-`bench_cost_error_attribution` and `bench_cost_error_percentiles` at `--mode uniform` are what rank this
-list, and the objective is **"where is the engine most wrong"**, not "what is most frequent". That is a
-correctness objective; argue items on it.
+**Three populations, three different questions — settled 2026-09-05, and an earlier version of this
+note got it badly wrong.** They are not competing estimates of one thing:
 
-**Do NOT rank by `benchmarks/wild-queries/wild-corpus.jsonl`, and do not call it real traffic.** It is
-URLs discovered in a **web crawl**, not a query log, and it is heavily biased toward NAME lookups —
-71.4% of its entries are not conjunctions, `!"Exact Card Name"` is common, and `format:` appears in
-**9 of 14,473** entries. A corpus of crawled card links is close to the least filter-heavy population
-imaginable, so it systematically understates every composable path. An earlier version of this note
-ranked the queue by it AND called it "real weighted query time" — wrong twice over. Its remaining use is
-narrow: a sanity check that a fix is not a pure no-op for anything anyone links to.
+| population | models | compose share | use it for |
+|---|---|---|---|
+| `--mode realistic` | **how USERS query** | 29.4% of queries, **40.8% of TIME** | **value** — is a fix worth anything |
+| `--mode uniform` | **engine coverage** ("reaches the rare tails where ordering errors hide") | 53.0% | **weakness-finding** — where is the engine most wrong |
+| `wild-corpus.jsonl` | **how people SHARE LINKS** (crawled URLs, not a query log) | 0.5% | narrow: is a fix a no-op for linked queries |
 
-**And `--mode realistic` is not a proxy for anything.** Measured `printing_compose` share: crawl
-**0.5%**, `--mode realistic` **28.2%** (56x over), `--mode uniform` **53.0%** (106x over). Realistic sits
-closer to uniform than to the crawl, so its NAME invites exactly the wrong inference — do not reach for
-it expecting production fidelity. Separately, no harness can read the crawl at all (`bench_regret_matrix`,
-`bench_cost_error_*`, `bench_feature_accuracy` accept only the synthetic `--mode`), which is a second
-reason the crawl could not rank this list even if one wanted it to.
+**So: RANK by uniform, VALUE by realistic, and do not scope by the crawl.** Uniform finds where the
+engine is weakest; realistic says whether fixing it matters to users; the crawl describes link-sharing,
+a different behaviour, and is heavily biased toward NAME lookups (71.4% of its entries are not
+conjunctions, `format:` appears in 9 of 14,473).
 
-**Nothing here measures actual user traffic**, so the honest statement is that this queue optimizes
-worst-case correctness rather than measured latency. The one real-usage signal that exists is the user's
-own stated habits — `f:modern` plus other filters, which is composable and lands squarely in the path the
-crawl understates — and that is a stronger signal for this repo than the crawl
-([[project-format-filter-usage]] recorded this before the crawl was mistaken for a log). Re-derive
-anything that turned on the crawl if a real log appears; the general-partition-search deletion below is
-the main such item.
+**The correction that matters most.** An earlier scope note said "this arm governs about **2% of real
+weighted query time**" and gated items on it. That figure came from the CRAWL and was wrong twice over —
+wrong to call a link corpus real traffic, and wrong to treat it as the value lens. Measured under
+`realistic`, the user-behaviour proxy: `printing_compose` is **29.4% of queries and 40.8% of query
+time** (mean 76.6 us against `candidates`' 46.8 us), with paging splitting `Decline` 48% / `Perm` 28% /
+`OrderbyWalk` 21% / `Gather` 3% — so the two walk branches alone are ~14% of all user queries. Items on
+compose are therefore worth roughly **twenty times** what the retired scope note implied, and nothing
+here needs a "correctness not latency" apology.
 
-For reference only — the crawl corpus's acquire-route split over its 14,473 entries. Retained because the
-relative ordering between routes is probably directionally right, even though the absolute shares are a
-property of a crawl:
+**And `--mode realistic` is NOT mis-named.** A previous version of this note called it "not a proxy for
+anything" because it sits 56x from the crawl on compose share. That inference silently treated the crawl
+as ground truth for user behaviour; the crawl models link-sharing. Realistic differing from it is
+realistic being right.
+
+For reference, the crawl corpus's own acquire-route split over its 14,473 entries — retained only to
+show how far a link corpus diverges from user behaviour, NOT as a value signal:
 
 | route | entries | mean | weighted TIME share |
 |---|---|---|---|
@@ -60,10 +58,17 @@ property of a crawl:
 | `printing_compose` | 69 | 29 us | 1.95% |
 | `plane` | 64 | 27 us | 1.69% |
 
-Only **39 of 14,473** crawl entries reach the `And` arm; 71.4% are not conjunctions and another 28.3%
-are conjunctions made non-composable by a name/text leaf or an `Or`. Under the uniform sampler that same
-arm is reached constantly — compose is **53.0%** of observations — which is precisely why uniform is the
-lens: the crawl cannot exercise what this queue is about.
+Only **39 of 14,473** crawl entries reach the `And` arm, because 71.4% are not conjunctions and another
+28.3% are conjunctions made non-composable by a name/text leaf or an `Or`. Under `realistic` that arm is
+reached constantly. No bench harness can read the crawl at all (`bench_regret_matrix`,
+`bench_cost_error_*` and `bench_feature_accuracy` accept only the synthetic `--mode`), which is a second
+reason it cannot rank or value this list.
+
+**Still true: nothing here is a production measurement.** `realistic` is a model of user behaviour, not
+a log. The one direct signal is the user's own stated habits — `f:modern` plus other filters, composable,
+squarely in the path the crawl understates ([[project-format-filter-usage]]). Re-derive anything that
+turned on the crawl if a real log appears; the general-partition-search deletion below is the main such
+item, and it is now doubly suspect since it was argued from the population least able to exercise it.
 
 So: an item here needs a reason beyond "the estimate is inaccurate". A cheap fix with a measured
 payoff still clears the bar; a large build does not. Correctness and maintainability arguments are
@@ -335,7 +340,7 @@ whichever term correlates with it"). Fix features first, then refit.
    against compose (see its own doc: "What the MATERIALIZING alternatives see"), so under-counting it
    prices those alternatives too cheap and biases the argmin AGAINST `PrintingCompose`.
    `scan_units [card_range_popcount] / card` has the same defect at p50 0.43 (spread 8.0).
-   - **Scope it honestly: this is a tail-correctness item, not a latency item.** Measured
+   - **Scope it honestly.** Measured
      2026-09-05 over the 14,473-query weighted real corpus, `PrintingCompose` was an OPTION on only
      **86 queries (0.6%)**, won 7, and when it lost it lost by a **median 130x** — with just **2**
      losses inside 1.5x and 3 inside 3x. So correcting a ~1.5x bias could flip at most 2-3 real
@@ -344,7 +349,7 @@ whichever term correlates with it"). Fix features first, then refit.
      population measured here.
    - **`bench_feature_accuracy` runs `--mode uniform` and is NOT traffic-weighted** (171,915
      feature-rows; its own help says uniform "reaches the rare tails where ordering errors hide"). Its
-     "57 flagged cells outside [0.8, 1.25]" therefore overstates crawl-corpus impact and understates
+     "57 flagged cells outside [0.8, 1.25]" therefore overstates frequency and understates
      nothing — read it as a correctness instrument, not a latency one. Every flagged cell is
      `printing_compose` or `card_range_popcount`; nothing on `candidates`/`plane` is flagged at all.
 8. **Seed every `SpaceEstimate` with the domain instead of `UNKNOWN`.** **A correctness and
