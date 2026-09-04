@@ -28,7 +28,10 @@ each, and there are still too few for that to matter.
 So: an item here needs a reason beyond "the estimate is inaccurate". A cheap fix with a measured
 payoff still clears the bar; a large build does not. Correctness and maintainability arguments are
 fine — say so explicitly rather than implying a latency win. Round 64 was the last item whose case
-rested on a measured accuracy payoff; **everything left is correctness or maintainability work.**
+rested on a measured accuracy payoff, and a 2026-09-05 sweep of every estimate-class mechanism found
+the whole lot contributes **9 routing-relevant errors in 9,777 survey rows (0.09%)** — see the
+anchored-independence bullet below for the table. **Everything left in this queue is correctness or
+maintainability work, and there is no known accuracy headroom to chase.**
 
 Two caveats. The corpus is one sample (2026-08-02) in which bare name lookups dominate by design, and
 a power-user profile skews composable (`f:modern` plus other filters lands squarely in that 0.27%) —
@@ -71,34 +74,56 @@ well, and that will inform what else gets done here. Treat this ordering as prov
    bounds are always present. The joint-witness frame in
    [local-engine-joint-witness-and-empty-short-circuit.md](local-engine-joint-witness-and-empty-short-circuit.md)
    may be the honest replacement for its breadth filter rather than a repair of it.
-3. **Generalize "anchored independence" further.** Last, because the evidence for it got weaker rather
-   than stronger: the concrete instance this item used to point at (anchoring `legality x price`) was
-   measured on 2026-09-04 and demoted, and the one shape checked closely turned out to be
-   near-independent already with the min-fold handling it (see the `Independence` bullet below). Rounds
-   50 and 56 shipped two anchors (`SubtypeArithBox`, `ColorCmcTable`), both with a single residual
-   `IndepClass::Price` leaf, sharing one `anchored_price_residual` helper. Three directions remain,
-   each its own future round (validate independently, don't bundle) — and each now needs to clear a
-   higher bar: show a routing-relevant miss that the min-fold does NOT already clamp.
-   - **More residual classes.** Only `Price` has a validated real-data example; other classes
-     (`ColorId`, `Cmc`, `Type`, etc., wherever the anchor's own residual isn't itself the anchored
-     dimension) need their own before/after check before being added, mirroring how
-     `independence_safe_pair`'s own registry grew one validated class at a time (Round 38 -> Round 40).
-   - **`SubtypePairIndexes` as a third anchor** — the one remaining candidate named in the original
-     item, still without a validated example. Adding it is now mostly wiring, since Round 56 hoisted
-     the shared helper both existing anchors call.
-   - **Combining multiple safe residual classes into one product**, not just one — needs the same
-     order-statistics-bias care already documented in the design doc (never try residuals separately
-     and pick the smallest) once 2+ classes are each independently validated as safe to anchor.
-   - Also cheap and already measured: Round 56's `any_price_source` precheck (skip the anchor loop
-     entirely when no `Price`-classified source exists anywhere, worth ~21% of `and_estimate_ns` on
-     `(color, cmc)`-with-no-price queries) was deliberately NOT applied to Round 50's own site, which
-     measured unregressed as-is. The same guard would help it too.
-
 ## Lower priority, no urgency
 
 Measured and deliberately NOT scheduled. These were active queue items; each was removed by a
 measurement rather than by being built, and each is recorded here so it isn't re-nominated from raw
 symptoms. Re-open only with a fresh survey that contradicts the numbers.
+
+- ~~**Generalize "anchored independence" further**~~ — **DELETED 2026-09-05: measured, and there is no
+  headroom left to generalize into.** This item's own bar was "show a routing-relevant miss the
+  min-fold does NOT already clamp". That measurement now exists, over the seed-63 survey's 9,777 rows,
+  for EVERY estimate-class mechanism — claims made vs claims that survived the min-fold to become the
+  row's answer, and how many of those landed on the wrong side of `STREAM_MIN_MATCHES`:
+
+  | mechanism | claims | binds | median where it binds | wrong-side CLAIMS | wrong-side FINAL |
+  |---|---|---|---|---|---|
+  | `Independence` | 2,772 | 18.2% | 1.021 | 496 | **8** |
+  | `ColorCmcAnchoredIndependence` | 225 | 33.3% | 1.017 | 20 | **0** |
+  | `SetCollectorRange` | 105 | 35.2% | 1.000 | 0 | **0** |
+  | `SubtypePairEstimate` | 93 | 32.3% | 1.314 | 0 | **0** |
+  | `SubtypeArithAnchoredIndependence` | 75 | 36.0% | 0.943 | 1 | **1** |
+
+  **The whole estimate-class machinery contributes 9 routing-relevant errors in 9,777 rows (0.09%),**
+  and the claim -> final collapse is 517 -> 9 because the per-leaf min-fold absorbs 98% of the damage.
+  The two anchors this item wanted to generalize score **0** and **1**. Adding a third anchor, more
+  residual classes, or multi-class products would be building mechanisms with no measurable routing
+  headroom. The 8 `Independence` rows are the only estimate-class residue worth anything, and they
+  live in the two-sided `usd` bullet below. Round 56's `any_price_source` precheck (a ~21% cost saving
+  on `and_estimate_ns`, not an accuracy fix) is the one piece of the old item still worth doing if
+  anyone touches this area. Original description preserved below for its detail.
+  3. **Generalize "anchored independence" further.** Last, because the evidence for it got weaker rather
+     than stronger: the concrete instance this item used to point at (anchoring `legality x price`) was
+     measured on 2026-09-04 and demoted, and the one shape checked closely turned out to be
+     near-independent already with the min-fold handling it (see the `Independence` bullet below). Rounds
+     50 and 56 shipped two anchors (`SubtypeArithBox`, `ColorCmcTable`), both with a single residual
+     `IndepClass::Price` leaf, sharing one `anchored_price_residual` helper. Three directions remain,
+     each its own future round (validate independently, don't bundle) — and each now needs to clear a
+     higher bar: show a routing-relevant miss that the min-fold does NOT already clamp.
+     - **More residual classes.** Only `Price` has a validated real-data example; other classes
+       (`ColorId`, `Cmc`, `Type`, etc., wherever the anchor's own residual isn't itself the anchored
+       dimension) need their own before/after check before being added, mirroring how
+       `independence_safe_pair`'s own registry grew one validated class at a time (Round 38 -> Round 40).
+     - **`SubtypePairIndexes` as a third anchor** — the one remaining candidate named in the original
+       item, still without a validated example. Adding it is now mostly wiring, since Round 56 hoisted
+       the shared helper both existing anchors call.
+     - **Combining multiple safe residual classes into one product**, not just one — needs the same
+       order-statistics-bias care already documented in the design doc (never try residuals separately
+       and pick the smallest) once 2+ classes are each independently validated as safe to anchor.
+     - Also cheap and already measured: Round 56's `any_price_source` precheck (skip the anchor loop
+       entirely when no `Price`-classified source exists anywhere, worth ~21% of `and_estimate_ns` on
+       `(color, cmc)`-with-no-price queries) was deliberately NOT applied to Round 50's own site, which
+       measured unregressed as-is. The same guard would help it too.
 
 - ~~**The general bounded partition search**~~ — **DELETED 2026-09-04: the population it needs does not
   exist in real traffic.** This was the arc's long-standing "eventually we should do the general
@@ -342,7 +367,8 @@ symptoms. Re-open only with a fresh survey that contradicts the numbers.
 - Round 49: `covered` loosened from leaf-occupancy to subset-identity tracking (`CoveredState`) for the
   independence registry — recovers Round 48's own regression and improves the sweep overall.
 - Round 50: "anchored independence" for `SubtypeArithBox` — exact joint × single residual `Price` rate,
-  narrowly scoped (see item #3 above for what's left to generalize).
+  narrowly scoped; generalizing it further was measured and DELETED in 2026-09-05 — see the
+  anchored-independence bullet under "measured and deliberately NOT scheduled".
 - Round 51: exact `arith_tuple` (printing, card, artwork) triples, precomputed at build time
   (`ArithTupleIndex.totals`) — closes Round 46's census gap; surfaced the `unique=artwork` acquire-path
   gap, closed by Round 52.
