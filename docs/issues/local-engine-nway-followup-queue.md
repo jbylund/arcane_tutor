@@ -469,6 +469,43 @@ symptoms. Re-open only with a fresh survey that contradicts the numbers.
        `(color, cmc)`-with-no-price queries) was deliberately NOT applied to Round 50's own site, which
        measured unregressed as-is. The same guard would help it too.
 
+- ~~**Hoist card-level conjuncts out of the per-printing residual loop**~~ — **ALREADY IMPLEMENTED;
+  investigated and closed 2026-09-05.** The idea: for `t:creature border:white`, if the card is not a
+  creature then no printing can match, so one card-level test should skip the card without scanning any
+  printing. `FilterExpr::card_pass` (`filter.rs`) already does exactly this, and more generally than the
+  "whole residual is card-invariant" framing suggests — it is per-CONJUNCT:
+
+  ```rust
+  FilterExpr::And(children) => {
+      for (i, c) in children.iter().enumerate() {
+          if i < 64 && proven & (1 << i) != 0 { continue; }   // narrowing already proved it
+          match c.tri(card, None, strings) {                  // note: None for the printing
+              Tri::False | Tri::Null => return Tri::False,    // card ruled out, ZERO printings scanned
+              Tri::True => {}                                  // card-level conjunct satisfied, dropped
+              Tri::PrintingDep => residual.push(c),            // only these reach the per-printing loop
+          }
+      }
+  ```
+
+  A fourth ternary value, `Tri::PrintingDep`, IS the card-level/printing-level partition — determined at
+  evaluation time rather than by a static `touches_printing_field` walk. So the `residual` slice reaching
+  `residual_matches` contains only printing-dependent conjuncts, and a card failing a card-level conjunct
+  never enters `card_match_count` at all.
+  - **Confirmed against real data.** `t:creature border:white` in card mode reads `cards_visited` =
+    **1,011** = `result_total`, against ~17,437 creatures in the corpus — the non-creatures were
+    eliminated by `card_pass` and contributed **zero** to `printings_examined`. `t:creature` alone reads
+    `printings_examined` = **0** on StreamedSelect (card-level only, empty residual, no printing ever
+    read) and 1.00 per card on GatheredScan.
+  - **Two analysis errors this closed, worth remembering.** (a) I read `card_match_count`'s loop and
+    concluded the card-level test fires once per PRINTING; it fires once per CARD, because `residual` was
+    already filtered upstream. (b) I therefore attributed the `printings_examined / cards_visited` median
+    of ~3.07 to card-level repetition. It is not waste — it is genuine printing-level work on cards that
+    passed `card_pass` and have a printing-dependent residual, plus printing mode legitimately needing
+    every printing.
+  - **What is NOT covered, and is active item #1:** compose's `Perm`/`OrderbyWalk` walks test the
+    composed BITMAP (`pbits`), not a residual, and have no `card_pass` equivalent — they bit-test a
+    card's whole span unconditionally. That opportunity is real and separate; only the residual-loop
+    version is closed here.
 - ~~**The general bounded partition search**~~ — **DELETED 2026-09-04, but the evidence is weaker than
   the deletion implies — see the population warning in the scope note.** The deletion rested on "the
   population it needs does not exist in real traffic", where "real traffic" was the CRAWL corpus. A
