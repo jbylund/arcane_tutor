@@ -277,6 +277,14 @@ struct OracleCard {
     card_subtypes: Vec<u16>,
     card_keywords: Vec<u16>,
     card_oracle_tags: Vec<u16>,
+    // `in:` -- everything this CARD "has ever been printed in": set codes, set types, games,
+    // languages, rarities, frame years, foil/nonfoil, booster. Decided at IMPORT by
+    // `_sync_in_tags` (api/admin_resource.py), which writes the per-oracle_id union onto every
+    // row of the card, for the same reason `single_set` is decided before query time: `tri()`
+    // holds one card and one printing and can never ask "does SOME printing of this card". The
+    // loader takes it from the first row of the group (every row carries the same union).
+    // Card-space, id-sorted, read through `CollField::InTags` exactly as `card_subtypes` is.
+    card_in_tags: Vec<u16>,
     // 2 bits per format, positions from the FORMAT_SHIFTS registry. The word
     // shared by this card's printings; exact unless legality_divergent.
     card_legalities: u64,
@@ -386,6 +394,7 @@ struct CardRow {
     card_keywords: Vec<u16>,
     card_legalities: u64,
     card_oracle_tags: Vec<u16>,
+    card_in_tags: Vec<u16>,
     card_art_tags: Vec<u16>,
     card_is_tags: Vec<u16>,
     card_frame_data: Vec<u16>,
@@ -779,6 +788,9 @@ fn card_from_pydict(d: &Bound<PyDict>, it: &mut Interner, vocab: &mut VocabInter
         card_keywords: jsonb_obj_to_ids(d, "card_keywords", vocab)?,
         card_legalities: jsonb_obj_to_legality_bits(d, "card_legalities"),
         card_oracle_tags: jsonb_obj_to_ids(d, "card_oracle_tags", vocab)?,
+        // Absent on rows older than the column (and on hand-built test dicts): an empty union,
+        // which `jsonb_obj_to_ids` already returns for a missing key.
+        card_in_tags: jsonb_obj_to_ids(d, "card_in_tags", vocab)?,
         card_art_tags: jsonb_obj_to_ids(d, "card_art_tags", vocab)?,
         card_is_tags: jsonb_obj_to_ids(d, "card_is_tags", vocab)?,
         card_frame_data: jsonb_obj_to_ids(d, "card_frame_data", vocab)?,
@@ -2641,6 +2653,9 @@ struct ValueTotals {
     /// mis-routing was this gap's first symptom, closed there for the router's OWN cost features;
     /// this closes it for `compose_printing_estimate`'s answer too).
     subtypes: HashMap<String, SpaceTotals>,
+    /// `in:` -- card-space like the three around it; the union is on the card, so one entry per
+    /// distinct word of `card_in_tags`.
+    in_tags: HashMap<String, SpaceTotals>,
     keywords: HashMap<String, SpaceTotals>,
     oracle_tags: HashMap<String, SpaceTotals>,
     /// `art:`/`is:` — printing-space, the mirror gap: `bits`/`len_of` already give these an exact
@@ -2968,6 +2983,9 @@ fn build_all_value_totals(
         }),
         subtypes: totals!(|card: &OracleCard, _p: &Printing| {
             card.card_subtypes.iter().map(|v| coll_vocab[*v as usize].clone()).collect()
+        }),
+        in_tags: totals!(|card: &OracleCard, _p: &Printing| {
+            card.card_in_tags.iter().map(|v| coll_vocab[*v as usize].clone()).collect()
         }),
         keywords: totals!(|card: &OracleCard, _p: &Printing| {
             card.card_keywords.iter().map(|v| coll_vocab[*v as usize].clone()).collect()
@@ -3733,6 +3751,7 @@ struct CardIndexes {
     // densest oracle tags (47%, 30%, 25% of cards) behind MAX_NARROW_FRACTION, a guard card-space
     // narrowing deliberately does not have.
     subtypes:       HybridTagIndex,  // card space
+    in_tags:        HybridTagIndex,  // card space -- `in:`, the import-time union on OracleCard.card_in_tags
     keywords:       HybridTagIndex,  // card space
     oracle_tags:    HybridTagIndex,  // card space
     // Scalar, not a collection (every card has exactly one layout) -- narrow_rec's TextExact::Eq
@@ -4473,6 +4492,7 @@ fn probe_collection_k(filter: &FilterExpr, indexes: &Archived<CardIndexes>) -> O
     // never a `get` — same answer either way, which is what lets the caller stay unaware of storage.
     let idx = match field {
         CollField::Subtypes => &indexes.subtypes,
+        CollField::InTags => &indexes.in_tags,
         CollField::Keywords => &indexes.keywords,
         CollField::OracleTags => &indexes.oracle_tags,
         CollField::ArtTags => &indexes.art_tags,
@@ -5104,6 +5124,7 @@ fn narrow_rec(
             // dense values were dropped at build (#628).
             let (idx, card_space) = match field {
                 CollField::Subtypes   => (&indexes.subtypes,    true),
+                CollField::InTags     => (&indexes.in_tags,     true),
                 CollField::Keywords   => (&indexes.keywords,    true),
                 CollField::OracleTags => (&indexes.oracle_tags, true),
                 CollField::ArtTags    => (&indexes.art_tags,    false),
@@ -7091,6 +7112,7 @@ struct CollComposeSource<'i> {
 fn collection_compose_index(indexes: &Archived<CardIndexes>, field: CollField) -> Option<CollComposeSource<'_>> {
     Some(match field {
         CollField::Subtypes   => CollComposeSource { idx: &indexes.subtypes,    card_space: true },
+        CollField::InTags     => CollComposeSource { idx: &indexes.in_tags,     card_space: true },
         CollField::Keywords   => CollComposeSource { idx: &indexes.keywords,    card_space: true },
         CollField::OracleTags => CollComposeSource { idx: &indexes.oracle_tags, card_space: true },
         CollField::ArtTags    => CollComposeSource { idx: &indexes.art_tags,    card_space: false },
@@ -8459,6 +8481,9 @@ fn exact_result_total(composed: &FilterExpr, indexes: &Archived<CardIndexes>, mo
         FilterExpr::CollectionCmp { field: CollField::Subtypes, op: CmpOp::Ge, value, .. } => {
             return Some(vt.subtypes.get(value.as_str()).map_or(0, |t| t.get(mode)));
         }
+        FilterExpr::CollectionCmp { field: CollField::InTags, op: CmpOp::Ge, value, .. } => {
+            return Some(vt.in_tags.get(value.as_str()).map_or(0, |t| t.get(mode)));
+        }
         FilterExpr::CollectionCmp { field: CollField::Keywords, op: CmpOp::Ge, value, .. } => {
             return Some(vt.keywords.get(value.as_str()).map_or(0, |t| t.get(mode)));
         }
@@ -9369,7 +9394,7 @@ fn plane_leaves_nothing_to_verify(
 fn compose_leaf_nothing_to_verify(filter: &FilterExpr) -> bool {
     matches!(
         filter,
-        FilterExpr::CollectionCmp { field: CollField::Subtypes | CollField::Keywords | CollField::OracleTags, op: CmpOp::Ge, .. }
+        FilterExpr::CollectionCmp { field: CollField::Subtypes | CollField::InTags | CollField::Keywords | CollField::OracleTags, op: CmpOp::Ge, .. }
     )
 }
 
@@ -12938,6 +12963,7 @@ const FIELD_TABLE: &[(&str, FieldExtractor)] = &[
     }),
     ("card_keywords", |py, c, _p, _s, v| Ok(sorted_strs(v, &c.card_keywords).into_pyobject(py)?.into_any())),
     ("card_oracle_tags", |py, c, _p, _s, v| Ok(sorted_strs(v, &c.card_oracle_tags).into_pyobject(py)?.into_any())),
+    ("card_in_tags", |py, c, _p, _s, v| Ok(sorted_strs(v, &c.card_in_tags).into_pyobject(py)?.into_any())),
     ("card_art_tags", |py, _c, p, _s, v| Ok(sorted_strs(v, &p.card_art_tags).into_pyobject(py)?.into_any())),
     ("card_is_tags", |py, _c, p, _s, v| Ok(sorted_strs(v, &p.card_is_tags).into_pyobject(py)?.into_any())),
     ("card_frame_data", |py, _c, p, _s, v| Ok(sorted_strs(v, &p.card_frame_data).into_pyobject(py)?.into_any())),
@@ -13059,7 +13085,15 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 //
 // 2026082501 — `SortPermutations` gains per-order printing-span prefix sums, used to turn a bound on
 // cards visited into a sound O(1) bound on printings examined. Entirely inside `CardIndexes` again.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026082501;
+//
+// 2026090301 — `OracleCard` gains `card_in_tags`, the per-card `in:` union `_sync_in_tags` writes at
+// import (`in:paper` was `400 Failed to parse query` here against 32,729 cards on api.scryfall.com,
+// 2026-09-03), and `CardIndexes` gains its card-space `in_tags` index after `subtypes`. The header's
+// `AOracleCard` size MAY move (an 8-byte `ArchivedVec` in the card row) but is not relied on to:
+// every field after `card_oracle_tags` inside the row shifts, and an archive written before this
+// constant has different offsets, so this bump is what stops `access_unchecked` reading a 2026082501
+// store through the new layout.
+const ARCHIVE_FORMAT_VERSION: u32 = 2026090301;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {
@@ -13546,6 +13580,8 @@ impl QueryEngine {
                     card_subtypes: std::mem::take(&mut row.card_subtypes),
                     card_keywords: std::mem::take(&mut row.card_keywords),
                     card_oracle_tags: std::mem::take(&mut row.card_oracle_tags),
+                    // The first row's copy: `_sync_in_tags` wrote the same union on every row.
+                    card_in_tags: std::mem::take(&mut row.card_in_tags),
                     card_legalities: row.card_legalities,
                     mana_cost: row.mana_cost.clone(),
                     creature_power_text_id: row.creature_power_text_id,
@@ -13645,6 +13681,7 @@ impl QueryEngine {
             toughness:      build_numeric_index(&cards, |c| c.creature_toughness.map(|v| v as i16)),
             rarity:         build_rarity_index(&printings, &offsets),
             subtypes:       build_hybrid_tag_index(&cards, &coll_vocab, |c| &c.card_subtypes),
+            in_tags:        build_hybrid_tag_index(&cards, &coll_vocab, |c| &c.card_in_tags),
             keywords:       build_hybrid_tag_index(&cards, &coll_vocab, |c| &c.card_keywords),
             oracle_tags:    build_hybrid_tag_index(&cards, &coll_vocab, |c| &c.card_oracle_tags),
             layout:         build_layout_hybrid_index(&cards, &strings),
