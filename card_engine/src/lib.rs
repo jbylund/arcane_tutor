@@ -1961,10 +1961,52 @@ struct SubtypePairTable {
     rest_max: SpaceTotals,
 }
 
+/// How far below the routing boundary an EXCLUDED pair's printing count is forced to stay, as a
+/// divisor of `STREAM_MIN_MATCHES` (Round 65).
+///
+/// 2 means "every excluded pair is at most half the boundary", i.e. a guaranteed 2x margin. Derived
+/// from the live boundary rather than hardcoded at 512 so the invariant tracks the knob: raising
+/// `STREAM_MIN_MATCHES` must not silently shrink the margin, and lowering it must not silently void
+/// it. See `pair_inclusion_floor`.
+const PAIR_INCLUSION_FLOOR_DIVISOR: usize = 2;
+
+/// The printing count at or above which a pair is ALWAYS kept in a top-N table, regardless of rank.
+///
+/// This is what makes "the fallback estimate cannot flip a routing decision" a proven invariant
+/// rather than an observation about one corpus. `SubtypePairEstimate` reports
+/// `min(independence_product, rest_max.printings)`, so an excluded pair's estimate can never exceed
+/// `rest_max.printings`; forcing every pair at or above this floor INTO the table forces
+/// `rest_max.printings` below it, hence below `STREAM_MIN_MATCHES` with the divisor's margin. And
+/// because `printings >= cards` and `printings >= artworks` for any pair, bounding the printing column
+/// bounds the other two for free — the same safety holds in card and artwork space without a separate
+/// rule.
+///
+/// Round 65 measured why this was needed: the `identity` table's `rest_max.printings` was **1,060**
+/// against a boundary of 1,024, so the CAP ITSELF sat on the wrong side, and all 9 of that
+/// dimension's routing-relevant misses read the cap exactly (`id:ubr t:Elf` estimated 1,060 against a
+/// true 164). The build code had asserted the opposite since Round 34 — "each dimension's `rest_max`
+/// at this N lands far below the count where a wrong estimate starts actually flipping a routing
+/// decision" — which was verified in CARD space (identity's card `rest_max` is 377, genuinely far
+/// below) while the boundary it invokes applies to the space the estimate is compared in. A
+/// space-mismatched safety argument, sitting in the comment that claimed the argument held.
+fn pair_inclusion_floor() -> u32 {
+    (*STREAM_MIN_MATCHES / PAIR_INCLUSION_FLOOR_DIVISOR) as u32
+}
+
 /// The ONE cutoff helper for every top-N pair table: keeps the union of the tie-inclusive top-N in
-/// EACH of the three spaces independently, and returns `rest_max` as a per-space `SpaceTotals` over
-/// the pairs actually excluded. Used by `build_subtype_pair2_table` and, since Round 64, by all three
-/// `build_subtype_pair_tables` dimension tables (`set`/`colors`/`identity`) too.
+/// EACH of the three spaces independently PLUS every pair at or above `pair_inclusion_floor`, and
+/// returns `rest_max` as a per-space `SpaceTotals` over the pairs actually excluded. Used by
+/// `build_subtype_pair2_table` and, since Round 64, by all three `build_subtype_pair_tables` dimension
+/// tables (`set`/`colors`/`identity`) too.
+///
+/// **The floor is a separate rule from the rank cutoff, and it is the one that carries the safety
+/// guarantee** (Round 65). Rank keeps the table useful — the pairs queries actually ask about — while
+/// the floor keeps it SOUND, by making the excluded population's maximum a known quantity instead of
+/// whatever the N-th largest pair happens to be on today's corpus. Measured cost on the real corpus:
+/// **+325 pairs**, all in `identity` (286 -> 611). It adds nothing to `set` (whose largest pair is 503
+/// printings, so no set pair reaches the floor at all) or to `colors` (whose 48 qualifying pairs are
+/// already inside the rank cutoff), which is the shape to expect — the floor only bites where a
+/// dimension genuinely has pairs big enough to matter.
 ///
 /// **Round 47's tie rule, which this inherits and which is the reason the sort can be unstable.**
 /// The original helper was a plain `sort_unstable_by_key` + `truncate(n)` with no secondary sort key.
@@ -2023,6 +2065,10 @@ fn top_n_union_and_rest_max<K: Eq + std::hash::Hash>(pairs: HashMap<K, SpaceTota
     let mut union: HashSet<usize> = top_n_indices(&printings, n);
     union.extend(top_n_indices(&cards, n));
     union.extend(top_n_indices(&artworks, n));
+    // Round 65: the inclusion floor, applied on top of the rank cutoff rather than instead of it --
+    // see this function's own doc for why the two rules are separate.
+    let floor = pair_inclusion_floor();
+    union.extend(items.iter().enumerate().filter(|(_, (_, t))| t.printings >= floor).map(|(i, _)| i));
 
     let mut rest_max = SpaceTotals::default();
     for (i, (_, t)) in items.iter().enumerate() {
@@ -2033,6 +2079,17 @@ fn top_n_union_and_rest_max<K: Eq + std::hash::Hash>(pairs: HashMap<K, SpaceTota
         }
     }
 
+    // Round 65: the invariant the floor exists to buy, asserted where it is established rather than
+    // trusted downstream. Every excluded pair has `printings < floor` by construction, so this can
+    // only fire if the floor stopped being applied -- which is exactly the drift that let the Round 34
+    // safety claim go stale for `identity` (see `pair_inclusion_floor`'s doc). `rest_max` is 0 when
+    // nothing was excluded, which satisfies this trivially.
+    debug_assert!(
+        rest_max.printings < floor,
+        "excluded pairs must stay below the inclusion floor: rest_max.printings={} floor={floor} (STREAM_MIN_MATCHES={})",
+        rest_max.printings,
+        *STREAM_MIN_MATCHES
+    );
     let top: Vec<(K, SpaceTotals)> = items.into_iter().enumerate().filter(|(i, _)| union.contains(i)).map(|(_, kv)| kv).collect();
     (top, rest_max)
 }
@@ -19165,7 +19222,7 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 // 2026090303 — Round 57: new `CardIndexes` field `legality_date` (`LegalityDateTotals`, one exact
 // per-`(format, status)` printing prefix sum along the `released_at` value axis). Same blind spot
 // again: entirely inside `CardIndexes`.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026090402;
+const ARCHIVE_FORMAT_VERSION: u32 = 2026090403;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {

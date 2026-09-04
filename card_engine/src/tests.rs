@@ -8353,6 +8353,68 @@ fn top_n_union_and_rest_max_matches_old_plain_top_n_when_no_boundary_tie() {
     );
 }
 
+/// Round 65: the inclusion FLOOR must keep EVERY pair at or above it, including ones the rank cutoff
+/// excludes -- the property that makes `rest_max.printings < STREAM_MIN_MATCHES` an invariant instead
+/// of a corpus coincidence.
+///
+/// The floor only adds anything when MORE than `n` pairs sit at or above it, which is exactly the real
+/// case it was built for (`identity` has 611 such pairs against `TOP_N` = 256, so 325 of them fall
+/// outside the rank cutoff). So the fixture puts FIVE pairs at/above the floor against `n = 2`, and
+/// gives them zero cards and artworks so they cannot sneak in through those two spaces' own top-N
+/// either. Ten small pairs with distinct counts supply a real excluded population -- a mass tie at the
+/// boundary would be kept wholesale by Round 47's tie rule and exclude nothing at all.
+#[test]
+fn top_n_union_and_rest_max_floor_keeps_every_pair_above_it() {
+    let floor = super::pair_inclusion_floor();
+    let mut pairs: HashMap<String, SpaceTotals> = HashMap::new();
+    for i in 0..5u32 {
+        pairs.insert(format!("big{i}"), SpaceTotals { printings: floor + i, cards: 0, artworks: 0 });
+    }
+    for i in 1..=10u32 {
+        pairs.insert(format!("tiny{i}"), SpaceTotals { printings: i, cards: i, artworks: i });
+    }
+
+    let (items, rest_max) = super::top_n_union_and_rest_max(pairs, 2);
+    let kept: std::collections::HashSet<&str> = items.iter().map(|(k, _)| k.as_str()).collect();
+
+    for i in 0..5u32 {
+        assert!(
+            kept.contains(format!("big{i}").as_str()),
+            "big{i} is at/above the floor and must be kept; only 2 of the 5 can enter via the rank cutoff at n=2"
+        );
+    }
+    assert!(
+        rest_max.printings < floor,
+        "rest_max.printings ({}) must stay below the floor ({floor}) -- that is the invariant the floor buys",
+        rest_max.printings
+    );
+    assert!(
+        rest_max.printings <= 8,
+        "the excluded population is the small pairs only, so rest_max.printings ({}) must come from them",
+        rest_max.printings
+    );
+}
+
+/// Round 65: one BELOW the floor is not kept by the floor rule. Guards against an off-by-one that
+/// would make the floor `>` instead of `>=` (or vice versa) -- with n=1 the rank cutoff keeps only the
+/// single largest, so a just-under-floor pair has no other way in, and `rest_max` must then report it.
+#[test]
+fn top_n_union_and_rest_max_floor_is_inclusive_at_the_boundary_only() {
+    let floor = super::pair_inclusion_floor();
+    let mut pairs: HashMap<String, SpaceTotals> = HashMap::new();
+    pairs.insert("at_floor".to_string(), SpaceTotals { printings: floor, cards: 5, artworks: 5 });
+    pairs.insert("below".to_string(), SpaceTotals { printings: floor - 1, cards: 1, artworks: 1 });
+    pairs.insert("tiny".to_string(), SpaceTotals { printings: 1, cards: 0, artworks: 0 });
+
+    let (items, rest_max) = super::top_n_union_and_rest_max(pairs, 1);
+    let kept: std::collections::HashSet<&str> = items.iter().map(|(k, _)| k.as_str()).collect();
+
+    assert!(kept.contains("at_floor"), "exactly at the floor must be kept (the rule is >=, not >)");
+    assert!(!kept.contains("below"), "one below the floor must NOT be kept by the floor rule at n=1");
+    assert_eq!(rest_max.printings, floor - 1, "the just-excluded pair must be what rest_max reports");
+    assert!(rest_max.printings < floor, "the invariant still holds: excluded pairs stay under the floor");
+}
+
 /// `top_n_union_and_rest_max` (Round 47's property, retargeted in Round 64) edge case: an empty input map must not panic, and must return an
 /// empty `Vec` with `rest_max == 0`.
 #[test]
