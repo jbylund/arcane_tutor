@@ -7630,6 +7630,91 @@ fn acquire_perm_walk_span_matches_the_sort_column_bound() {
     assert_eq!(feats.perm_walk_span, N as u32, "unbounded acquire must fall back to the whole corpus");
 }
 
+/// `cost::stream_perm_steps` was extracted out of the `StreamedSelect` arm in Round 70 so `explain`
+/// could report the term and no harness would need a second copy of the formula. Two definitions of a
+/// walk formula drifting apart has now happened twice in this codebase -- `printings_walked` (caught by
+/// `fit_cost_model`'s mirror check as a 3.7% disagreement) and `fit_cost_model`'s own PERM_STEP column,
+/// which read `n_cards` where the arm reads `perm_walk_span` and so over-stated the walk by a median
+/// 2.44x on the 4.1% of walking rows where those differ.
+///
+/// So this pins the extracted function's THREE gates and its cap directly, rather than trusting that
+/// a cost total happens to come out right: the gates are what decide whether the term exists at all,
+/// and a total can absorb a wrong gate against another term's rate.
+#[test]
+fn stream_perm_steps_gates_and_cap() {
+    use super::cost::{stream_perm_steps, PlanFeatures};
+
+    let base = PlanFeatures {
+        n_cards: 30_000, n_printings: 90_000,
+        matches: 0, eval_domain: 0, scan_units: 0, stream_scan_units: 0,
+        residual_card_invariant: false, residual_tier_ns100: 0,
+        artwork_seen_cards: 0, artwork_seen_printings: 0, compose_scan_printings: 0,
+        limit: 60, offset: 0, perm_walk_span: 30_000,
+        broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0,
+        compose_paging: ComposePaging::Gather, collection_broadcast_printings: 0,
+        gather_group_printings: 0,
+    };
+    let min_matches = *super::STREAM_MIN_MATCHES as u32;
+
+    // Gate 1: no matches at all -- `run_query_streamed` returns before both branches.
+    assert_eq!(stream_perm_steps(&PlanFeatures { matches: 0, ..base }), 0.0, "zero matches charges no walk");
+
+    // Gate 2: at or below the boundary the small-total gather runs INSTEAD of the walk. Checked on
+    // both sides of the boundary, since an off-by-one here silently prices the wrong branch.
+    assert_eq!(
+        stream_perm_steps(&PlanFeatures { matches: min_matches, ..base }),
+        0.0,
+        "at STREAM_MIN_MATCHES the small-total gather runs, not the walk",
+    );
+    assert!(
+        stream_perm_steps(&PlanFeatures { matches: min_matches + 1, ..base }) > 0.0,
+        "one match above the boundary the walk is charged",
+    );
+
+    // Gate 3: a page starting past the end returns before both branches, however many matches there are.
+    assert_eq!(
+        stream_perm_steps(&PlanFeatures { matches: 5_000, offset: 5_000, ..base }),
+        0.0,
+        "a page past the end charges no walk",
+    );
+
+    // The formula itself: page_span matches spread through perm_walk_span entries.
+    let f = PlanFeatures { matches: 6_000, offset: 0, limit: 60, ..base };
+    assert!(
+        (stream_perm_steps(&f) - (60.0 * 30_000.0 / 6_000.0)).abs() < 1e-9,
+        "walk length must be page_span * perm_walk_span / matches, got {}",
+        stream_perm_steps(&f),
+    );
+
+    // The bound is `perm_walk_span` -- the SEGMENT the filter's sort-column bound admits, not the
+    // corpus. That is the distinction `fit_cost_model`'s column had wrong, so pin it: a bounded span
+    // must produce a bounded walk even where `n_cards` is 60x larger.
+    let bounded = PlanFeatures { matches: min_matches + 1, perm_walk_span: 500, ..base };
+    let steps = stream_perm_steps(&bounded);
+    assert!(
+        steps > 0.0 && steps <= 500.0,
+        "a bounded segment must bound the walk (n_cards is 30,000 here), got {steps}",
+    );
+
+    // And the arm's `.min(perm_walk_span)` clamp is UNREACHABLE, which is worth pinning so nobody
+    // "fixes" a live cap that is really dead code. `page_span` is itself `min(offset + limit, matches)`,
+    // so `page_span / matches <= 1` always and the product can never exceed the span. Checked at the
+    // extremes that would break it if `page_span` ever stopped being clamped: a limit far past the
+    // match count, and an offset just inside it.
+    for (matches, offset, limit) in [
+        (min_matches + 1, 0, u32::MAX),          // a page wider than the whole match set
+        (min_matches + 1, min_matches, 10_000),  // offset just inside, limit far past the end
+        (u32::MAX, 0, 10_000),                   // matches saturating
+    ] {
+        let f = PlanFeatures { matches, offset, limit, perm_walk_span: 500, ..base };
+        let steps = stream_perm_steps(&f);
+        assert!(
+            steps <= 500.0,
+            "the clamp must stay unreachable: matches={matches} offset={offset} limit={limit} gave {steps}",
+        );
+    }
+}
+
 // Group counts collapse duplicate illustrations within a card.
 #[test]
 fn artwork_group_counts_dedup_illustrations() {

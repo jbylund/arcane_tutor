@@ -259,8 +259,24 @@ def design_row(plan: str, acq: dict, limit: int, offset: int) -> tuple[list[floa
     if plan == "StreamedSelect":
         # Mirrors the arm's guards: an empty result or a page past the end returns before BOTH branches,
         # so neither the gather floor nor the walk is charged there.
-        walks_perm = matches > STREAM_MIN_MATCHES and matches > 0 and offset < matches
-        perm_steps = min(page_span * n_cards / matches, n_cards) if walks_perm else 0.0
+        # `cost::stream_perm_steps` itself, exposed for exactly this reason, so the column is not a
+        # second copy of the arm's walk formula. It WAS one, and it was WRONG: it read `n_cards` where
+        # the arm reads `perm_walk_span` -- the Round 32 generalization from "the whole permutation" to
+        # "the segment the filter's sort-column bound admits", which this mirror never picked up. So
+        # the PERM_STEP coefficient was being fitted against the pre-Round-32 formula on every query
+        # whose filter bounds the sort column -- measured at **4.1%** of walking rows (37 of 902), on
+        # which the old column OVER-stated the walk by a median **2.44x** (p90 6.08, max 11.25). Small
+        # population, large error, and precisely the queries the generalization exists for. This is the
+        # failure `printings_walked`'s own doc in cost.rs describes -- two definitions of a walk formula
+        # drifting apart -- caught a second time.
+        # The fallback is for runs recorded before the field existed, and mirrors the CURRENT arm.
+        perm_walk_span = float(acq.get("perm_walk_span", n_cards))
+        walks_perm = matches > STREAM_MIN_MATCHES and offset < matches
+        perm_steps = float(
+            acq["stream_perm_steps"]
+            if "stream_perm_steps" in acq
+            else (min(page_span * perm_walk_span / matches, perm_walk_span) if walks_perm else 0.0)
+        )
         # Mirrors run_query_streamed's early return: zero matches, or a page past the total, never
         # reaches the small-total gather. See STREAM_SMALL_TOTAL_FLOOR_PER_CARD_NS in cost.rs.
         runs_small_gather = 0 < matches <= STREAM_MIN_MATCHES and offset < matches
@@ -394,10 +410,21 @@ def counter_check(samples: list[dict]) -> dict[str, list[tuple[str, float]]]:
     pairs = (("cards_visited", "eval_domain"), ("printings_examined", "scan_units"), ("matches_pushed", "matches"))
 
     def feature_for(plan: str, counter: str, row: dict) -> str:
-        """Compose reads its own scan field, and which one depends on the paging branch that runs."""
-        if counter != "printings_examined" or plan != "PrintingCompose":
-            return {"cards_visited": "eval_domain", "printings_examined": "scan_units", "matches_pushed": "matches"}[counter]
-        return "compose_scan_printings" if row["acq"].get("compose_paging") == "Gather" else "printings_walked"
+        """Which field the plan's arm actually reads -- not all three plans read the same one.
+
+        StreamedSelect's scan term is `stream_scan_units`, not `scan_units`. This returned the latter
+        until Round 70, so the check graded P3 against a number its arm never touches; the two default
+        to equal and diverge wherever an acquire knows P3 examines fewer printings
+        (`residual_card_invariant` zeroes it, the legality divergent-share correction rescales it).
+        `design_row` above has always read the right field, so this was a diagnostic-only disagreement
+        with the fit it sits beside.
+        """
+        if counter == "printings_examined":
+            if plan == "PrintingCompose":
+                return "compose_scan_printings" if row["acq"].get("compose_paging") == "Gather" else "printings_walked"
+            if plan == "StreamedSelect":
+                return "stream_scan_units"
+        return {"cards_visited": "eval_domain", "printings_examined": "scan_units", "matches_pushed": "matches"}[counter]
 
     out: dict[str, list[tuple[str, float]]] = {}
     by_plan: dict[str, list[dict]] = collections.defaultdict(list)

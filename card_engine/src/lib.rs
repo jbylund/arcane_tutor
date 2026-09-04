@@ -19649,6 +19649,11 @@ fn acquire_facts_to_pydict<'py>(py: Python<'py>, f: &AcquireFacts) -> PyResult<B
         // Derived inside plan_cost rather than stored, and exposed because the Perm/OrderbyWalk
         // paging branches are priced entirely on it and nothing else can check them.
         ("printings_walked", cost::printings_walked(g) as u32),
+        // Same argument for StreamedSelect's page walk: `perm_walk_span` reaches cost ONLY through
+        // this derived term, so grading the raw span against anything is meaningless while grading
+        // this against the realized `perm_steps` is exactly the check. 0 where the arm charges no walk
+        // (the small-total gather, or a return before both branches).
+        ("stream_perm_steps", cost::stream_perm_steps(g) as u32),
     ] {
         d.set_item(k, v)?;
     }

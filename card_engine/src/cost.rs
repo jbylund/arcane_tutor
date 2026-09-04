@@ -776,6 +776,79 @@ pub(crate) fn printings_walked(f: &PlanFeatures) -> f64 {
     page_span / match_rate * WALK_LENGTH_BIAS
 }
 
+/// Whether `run_query_streamed`'s small-total gather runs, as the model predicts it: at or below
+/// `STREAM_MIN_MATCHES` it scans all `n_cards` instead of walking, and either way it returns before
+/// both branches when there are no matches or the page starts past the end.
+///
+/// Branches on the ESTIMATE `f.matches`, deliberately, because that is all the router has. The
+/// executor branches on the realized `total`, so an estimate that crosses the boundary sends the two
+/// down different arms with this predicate entirely correct — measured as **all 83** of 2,974
+/// StreamedSelect gate disagreements in Round 69, none of them a formula error.
+fn stream_runs_small_gather(f: &PlanFeatures) -> bool {
+    u64::from(f.matches) <= *super::STREAM_MIN_MATCHES as u64
+        && f.matches > 0
+        && u64::from(f.offset) < u64::from(f.matches)
+}
+
+/// Permutation entries `StreamedSelect`'s page walk steps to fill one page, and the whole of what
+/// `perm_walk_span` contributes to cost. Graded against the realized `perm_steps` counter.
+///
+/// Extracted from the arm rather than left inline for the reason `printings_walked`'s own doc gives:
+/// a harness that recomputes a walk formula in Python is a second definition, and last time that
+/// happened adding `WALK_LENGTH_BIAS` to the function alone changed what harnesses were TOLD without
+/// changing what the router CHARGED — a 3.7% disagreement `fit_cost_model`'s mirror check caught.
+/// One definition, read by the arm and reported to `explain`.
+///
+/// Zero when no walk term is charged at all, which is most rows: the small-total gather runs instead,
+/// or the query returns before either branch. Note the asymmetry with `printings_walked` — that one
+/// divides out a measured bias, this one has no bias correction, because Round 69 measured its pooled
+/// median at **1.023** already. What it lacks is not a constant but a shape: dispersion runs from 1.9x
+/// (`orderby=name`, where the sort order really is uncorrelated with the filter) to 38.8x
+/// (`orderby=cmc`, where it is not), at flat medians, and nothing already on `PlanFeatures` predicts
+/// the residual (max |r| 0.12 against `match_rate`, page depth, and the estimate itself).
+pub(crate) fn stream_perm_steps(f: &PlanFeatures) -> f64 {
+    if stream_runs_small_gather(f) || f.matches == 0 || u64::from(f.offset) >= u64::from(f.matches) {
+        return 0.0;
+    }
+    // Entries visited to accumulate `page_span` matches, when matches are spread uniformly through
+    // the WALKED SEGMENT: one match per `perm_walk_span / matches` entries. Bounded by that segment,
+    // since the walk cannot step past its end.
+    //
+    // The executor starts and ends the walk at the segment its filter's bound on the SORT COLUMN
+    // admits (`walk_bounds`), and `perm_walk_span` is that same segment's length, computed once at
+    // acquire by `mk_plan_feats` calling the identical `walk_bounds` helper over the identical
+    // `QueryParams::sort_bound` the executor reads -- not re-derived by a second path that could
+    // silently disagree with what dispatch actually walks. Before Round 32 this multiplied by
+    // `n_cards` unconditionally, which is right only when the filter constrains nothing about the sort
+    // column; `perm_walk_span` already collapses to `n_cards` in exactly that case, so this is a
+    // strict generalization, not a second code path with its own edge cases.
+    //
+    // It also collapses to `n_cards` when no permutation exists at all -- but that case never reaches
+    // here, because `streamed_select_applicable` requires `sort_perms.order(..).is_some()` and so
+    // drops the plan from the argmin before `plan_cost` runs. `SortCol::Rarity` and
+    // `SortCol::PriceUsd` have no permutation built, and Round 69 confirmed StreamedSelect is offered
+    // on 0 of 12 such queries against 12 of 12 for `name`/`cmc`. The fallback is unreachable for this
+    // term; it is the applicability gate, not the collapse, that makes it safe.
+    //
+    // Realized/estimated `perm_steps` over ~12.5k walking rows, same seed and sample length
+    // (docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md, Round 32 for
+    // the held-out re-check against current traffic):
+    //
+    //     unbounded walk (pre-Round-32)  p10 0.13   median 1.00   p90 6.43
+    //     sort-column bound (shipped)     p10 0.11   median 0.96   p90 5.31
+    //     realized inv_perm min/max      p10 0.08   median 0.90   p90 4.26
+    //
+    // The third row is not shipped -- it cost 0.51 ns per matching card -- but it bounds how
+    // much of the tail a start position can reach at all, and the gap between rows two and
+    // three is real: a realized minimum catches clustering from ANY source, while a bound
+    // catches only what the predicate names. What is left in BOTH is non-matching entries
+    // INTERIOR to the walked segment, which no start position reaches by construction. That
+    // is the popcount-skip mechanism's territory.
+    let page_span = f64::from((f.offset.saturating_add(f.limit)).min(f.matches));
+    let perm_walk_span = f64::from(f.perm_walk_span);
+    (page_span * perm_walk_span / f64::from(f.matches)).min(perm_walk_span)
+}
+
 /// The closed form above assumes matches are spread UNIFORMLY along the walk order, so a page of
 /// `page_span` rows arrives after `page_span / match_rate` printings. They are not: the permutation
 /// orders cards by the sort column, and matches cluster within that order, so the walk runs longer
@@ -887,48 +960,14 @@ pub(crate) fn plan_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
             // must not be charged for it. Charging them anyway over-costs by the whole floor --
             // measured est/real of 55.7 at p50 on zero-match queries, which really take 0.62 us
             // against a ~35 us estimate, and 1,265 of 33k StreamedSelect rows land there.
-            let runs_small_gather = u64::from(f.matches) <= *super::STREAM_MIN_MATCHES as u64
-                && f.matches > 0
-                && u64::from(f.offset) < u64::from(f.matches);
-            let floor = if runs_small_gather { n_cards * STREAM_SMALL_TOTAL_FLOOR_PER_CARD_NS } else { 0.0 };
+            let floor =
+                if stream_runs_small_gather(f) { n_cards * STREAM_SMALL_TOTAL_FLOOR_PER_CARD_NS } else { 0.0 };
             // The other branch: when the small-total gather does NOT run and there is a page to emit,
             // the walk steps the permutation until it fills. Same guards as the gather -- a query with
-            // no matches, or a page past the end, returns before the walk too.
-            let walks_permutation = !runs_small_gather && f.matches > 0 && u64::from(f.offset) < u64::from(f.matches);
-            let perm_steps = if walks_permutation {
-                // Entries visited to accumulate `page_span` matches, when matches are spread uniformly
-                // through the WALKED SEGMENT: one match per `perm_walk_span / matches` entries. Bounded
-                // by that segment, since the walk cannot step past its end.
-                //
-                // The executor starts and ends the walk at the segment its filter's bound on the SORT
-                // COLUMN admits (`walk_bounds`), and `perm_walk_span` is that same segment's length,
-                // computed once at acquire by `mk_plan_feats` calling the identical `walk_bounds` helper
-                // over the identical `QueryParams::sort_bound` the executor reads -- not re-derived by a
-                // second path that could silently disagree with what dispatch actually walks. Before
-                // Round 32 this multiplied by `n_cards` unconditionally, which is right only when the
-                // filter constrains nothing about the sort column; `perm_walk_span` already collapses to
-                // `n_cards` in exactly that case (and when no permutation exists at all), so this is a
-                // strict generalization, not a second code path with its own edge cases.
-                //
-                // Realized/estimated `perm_steps` over ~12.5k walking rows, same seed and sample length
-                // (docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md, Round 32 for
-                // the held-out re-check against current traffic):
-                //
-                //     unbounded walk (pre-Round-32)  p10 0.13   median 1.00   p90 6.43
-                //     sort-column bound (shipped)     p10 0.11   median 0.96   p90 5.31
-                //     realized inv_perm min/max      p10 0.08   median 0.90   p90 4.26
-                //
-                // The third row is not shipped -- it cost 0.51 ns per matching card -- but it bounds how
-                // much of the tail a start position can reach at all, and the gap between rows two and
-                // three is real: a realized minimum catches clustering from ANY source, while a bound
-                // catches only what the predicate names. What is left in BOTH is non-matching entries
-                // INTERIOR to the walked segment, which no start position reaches by construction. That
-                // is the popcount-skip mechanism's territory.
-                let perm_walk_span = f64::from(f.perm_walk_span);
-                (page_span * perm_walk_span / f64::from(f.matches)).min(perm_walk_span)
-            } else {
-                0.0
-            };
+            // no matches, or a page past the end, returns before the walk too. Both the guards and the
+            // formula live in `stream_perm_steps`, which `explain` also reports so a harness can grade
+            // the term against the realized `perm_steps` without a second copy of it.
+            let perm_steps = stream_perm_steps(f);
             // card_pass — and the verify tier that prices it — is per candidate CARD: the loop
             // calls `filter.card_pass` once per `cid`, and only the cheaper printing-dependent
             // residual is re-checked per row inside `push_card_matches`. Charging `tier_ns` per

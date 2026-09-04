@@ -75,11 +75,26 @@ MIN_COUNTER = 100
 # looked fine everywhere except card mode, where every kernel short-circuits. Reading the span as the
 # work done is how `cost.rs` came to assert that the scan plans "walk the full printing span of their
 # candidates in CARD mode too, not one row each"; they do not.
+#
+# `stream_perm_steps` is the derived walk term, not a stored field: `perm_walk_span` reaches cost ONLY
+# through `min(page_span * perm_walk_span / matches, perm_walk_span)`, so grading the raw span against
+# any counter is meaningless. `cost.rs` exposes the term itself for the same reason it exposes
+# `printings_walked` -- one definition, read by the arm and reported to `explain`, rather than a second
+# copy of the formula here. Graded against `perm_steps`, every permutation entry the walk touched
+# including the zero-count skips.
 PAIRS = (
     ("matches", "matches_pushed"),
     ("eval_domain", "cards_visited"),
     ("scan_units", "printings_examined"),
+    ("stream_perm_steps", "perm_steps"),
 )
+
+#: Plans whose cost arm charges a permutation-walk term. Only `StreamedSelect` does: `GatheredScan`
+#: publishes `perm_steps: 0` explicitly ("never walks the permutation") and compose's own walks count
+#: `printings_examined` instead, so grading them here would compare a feature to a counter neither the
+#: arm nor the executor connects. `MIN_COUNTER` would drop those rows anyway; being explicit keeps the
+#: reason in the code rather than in a filter's side effect.
+WALK_TERM_PLANS = frozenset({"StreamedSelect"})
 # Kept alongside so one run shows both gradings. The gap between the two columns IS the miscount, and
 # reporting it as a column beats asserting it in prose.
 SPAN_COUNTER = "printing_span"
@@ -122,19 +137,27 @@ def scan_feature(plan: str, paging: str, tier_ns100: int) -> str | None:
     plans read `scan_units`.
 
     `StreamedSelect` reads it only WITH a residual. Its arm is
-    `if tier_ns > 0.0 { scan_units * STREAM_SCAN_PER_ROW_NS } else { 0.0 }` -- with `all_match` (tier
-    0) P3 walks no printings and the term is switched off entirely. Graded anyway, those rows read
+    `if tier_ns > 0.0 { stream_scan_units * STREAM_SCAN_PER_ROW_NS } else { 0.0 }` -- with `all_match`
+    (tier 0) P3 walks no printings and the term is switched off entirely. Graded anyway, those rows read
     p50 2.72 / p70 3.08 against `printings_examined`, because `scan_units` there is GatheredScan's
     full-span quantity while StreamedSelect's counting kernel answers existence from the first
     matching printing. That is not a feature error -- it is a number the model never multiplies by
     anything -- and reporting it as one sent `fit_cost_model.py`'s `counter_check` into refusing to
     fit this plan at all.
+
+    And the field it reads is `stream_scan_units`, NOT `scan_units` -- this returned the latter until
+    Round 69, which graded StreamedSelect against a number its arm never touches. The two default to
+    equal (`mk_plan_feats` seeds `stream_scan_units: scan_units`) and diverge wherever an acquire knows
+    P3 examines fewer printings: `residual_card_invariant` zeroes it, and the legality
+    divergent-share correction rescales it. `lib.rs`'s own comment at that second site says the value is
+    "reported as 0 so `bench_feature_accuracy` grades this against the realized `printings_examined`" --
+    an intent this function silently defeated.
     """
     if plan == "PrintingCompose":
         # `GatherWalkDeclined` IS the gather -- a walk was attempted, declined, and fell into it.
         return "compose_scan_printings" if paging in ("Gather", "GatherWalkDeclined") else "printings_walked"
-    if plan == "StreamedSelect" and tier_ns100 == 0:
-        return None
+    if plan == "StreamedSelect":
+        return None if tier_ns100 == 0 else "stream_scan_units"
     return "scan_units"
 
 
@@ -163,6 +186,8 @@ def collect(engine: object, sampler: QuerySampler, rng: random.Random, budget: c
                     feat = scan_feature(plan["plan"], paging, acq["residual_tier_ns100"])  # noqa: PLW2901 - the arm decides
                     if feat is None:
                         continue  # this arm charges no scan term for this query; there is nothing to grade
+                if feat == "stream_perm_steps" and plan["plan"] not in WALK_TERM_PLANS:
+                    continue  # this plan's arm has no permutation-walk term
                 if plan["plan"] == "PrintingCompose" and not compose_grades(paging, feat):
                     continue  # this branch's arm never multiplies this feature by a rate
                 got = plan.get(counter)
@@ -201,17 +226,32 @@ def verdict(sorted_vals: list[float]) -> str:
     return "  OVER-COUNTS" if med > AGREE_HI else "  UNDER-COUNTS"
 
 
-def table(rows: list[dict], key: Callable[[dict], object], label: str, *, limit: int = 30, value: str = "ratio") -> None:
-    """Feature/counter percentiles for one grouping, worst-calibrated cells first."""
+def table(  # noqa: PLR0913 - a table renderer's arguments ARE its output format, as `percentile_table` says
+    rows: list[dict],
+    key: Callable[[dict], object],
+    label: str,
+    *,
+    limit: int = 30,
+    value: str = "ratio",
+    rank: tuple[str, Callable[[list[float]], float]] = costbench.BY_MISCALIBRATION,
+    annotate: Callable[[list[float]], str] | None = verdict,
+) -> None:
+    """Feature/counter percentiles for one grouping, worst-calibrated cells first by default.
+
+    `rank` is overridable because the default ordering is median-based (`|log(p50)|`) and so is
+    `verdict`: a cell whose median is 1.0 and whose p90/p10 is 38x sorts last and prints unflagged.
+    That is the correct default for a bias, and the wrong one for the walk terms, whose error IS the
+    spread -- so those pass `BY_COUNT` and read the percentile columns instead.
+    """
     costbench.percentile_table(
         rows,
         key,
         label,
         value=value,
-        rank=costbench.BY_MISCALIBRATION,
+        rank=rank,
         limit=limit,
         min_rows=MIN_ROWS,
-        annotate=verdict,
+        annotate=annotate,
     )
 
 
@@ -257,8 +297,10 @@ def main() -> None:
     # `prefer` decides whether the card-mode kernels early-break, and `PlanFeatures` does not carry
     # it, so one feature value has to serve both regimes. If these two rows differ, the feature is not
     # merely miscalibrated -- it is blind to a variable that changes the work.
-    scan = [r for r in rows if r["feature"] == "scan_units"]
-    table(scan, lambda r: f"scan_units / {r['unique']} / prefer={r['prefer']}", "scan_units by distinct-on and PREFER")
+    # Both scan features, since `stream_scan_units` is the same quantity for a different arm and the
+    # early-break question applies to it identically. Labelled by feature so the two stay separable.
+    scan = [r for r in rows if r["feature"] in ("scan_units", "stream_scan_units")]
+    table(scan, lambda r: f"{r['feature']} / {r['unique']} / prefer={r['prefer']}", "scan features by distinct-on and PREFER")
     # Orderby was always sampled and never sliced, so its effect has never been visible. It selects
     # the plan set (StreamedSelect needs a sort permutation; PlanePopcountOrder needs its column) and
     # therefore which arm reads the shared vector at all.
@@ -266,6 +308,22 @@ def main() -> None:
     # Compose only pays `scan_units` when it pages by Gather, so judge the feature on those rows.
     compose = [r for r in rows if r["plan"] == "PrintingCompose"]
     table(compose, lambda r: f"{r['feature']} <compose {r['paging']}> / {r['unique']}", "compose only: feature by PAGING branch")
+    # The walk terms get their own table ranked BY COUNT, not by miscalibration, because their error
+    # is not a median. `BY_MISCALIBRATION` sorts on |log(p50)| and `verdict` flags on p50 alone, so a
+    # cell sitting at 1.02 with a 38x p90/p10 ranks last and reads "calibrated" -- which is exactly
+    # what Round 69 found `stream_perm_steps` to be, and exactly the error a coefficient refit cannot
+    # represent. Read the p10..p90 columns here, not the flag: 1.9x on `orderby=name` (a sort order
+    # uncorrelated with the filter, so uniform density holds) against 38.8x on `orderby=cmc` (where it
+    # does not). `printings_walked` is included because it is the same failure in printing space, where
+    # the medians DO move (0.925 to 3.579 against one shipped WALK_LENGTH_BIAS of 1.45).
+    walks = [r for r in rows if r["feature"] in ("stream_perm_steps", "printings_walked")]
+    table(
+        walks,
+        lambda r: f"{r['feature']} / orderby={r['orderby']} / {r['unique']}",
+        "WALK TERMS by sort column -- read the SPREAD, not the median",
+        limit=40,
+        rank=costbench.BY_COUNT,
+    )
     # The old grading, same rows: `scan_units` against the printing SPAN rather than the printings
     # actually examined. Printed last as the control -- if these cells sit at 1.0 where the real
     # column does not, the span is what the constants were fit against.
