@@ -84,49 +84,34 @@ fixing the features would bury the remaining error in that rate, which is exactl
 `bench_cost_error_attribution.py`'s own doc warns about ("a fit will quietly bury the error in
 whichever term correlates with it"). Fix features first, then refit.
 
-1. **Make compose's WALK stop early, the way its GATHER already does — an executor fix, not a cost
-   fix.** `walk_grouped_page` steps the permutation and, per card, bit-tests the card's WHOLE printing
-   span before doing anything with it (`work.printings_examined += (end - start)`, then
-   `for pid in start..end { if !is_set(pid) { continue; } ... }`). Two optimisations the sibling
-   `gather_composed_page` already has are missing here, and this is the branch carrying **78% of all
-   routing regret**:
-   - **Card mode under `Prefer::Default` should break at the first set printing.** The gather's arm does
-     exactly this (`(start..end).find(|&pid| is_set(pid))`), justified because printings are stored
-     prefer-DESCENDING within a card, so the first set printing IS the chosen representative — no score
-     to compute, no `touched`/`group_best` bookkeeping. The walk's `Mode::Card` arm instead calls
-     `prefer_score` on every set printing and keeps the best. Same mode, same storage invariant,
-     optimisation present in one branch and absent in the other.
-   - **A card-invariant composed filter needs ONE bit test per card, and in the walk that is the
-     bigger win.** All printings of a card share their `pbits` value when the filter is card-invariant,
-     so one test decides the card. Note the asymmetry with the gather: the gather iterates
-     `candidate_cards`, every one of which has at least one set printing, so its "no set printing"
-     branch is unreachable. **The walk iterates the whole permutation, so most stepped cards do NOT
-     match** — and each of those currently costs a full span of bit tests where 1 would do. At the
-     corpus's ~3.08 average reprint depth that is ~3x the bit tests on the dominant population, more on
-     deep cards (`cmc=0` is 9.96).
-   - Artwork mode cannot break at the first set printing (it needs one representative per artwork
-     group) but can stop once every group is seen — the gather's counting path already does this with
-     `seen_words`. Printing mode needs every set printing and has no early exit.
-   - **Why this comes FIRST, ahead of any cost-model work on the same branch:** it narrows the VARIANCE
-     of the quantity the cost model has to predict, rather than trying to predict a high-variance
-     quantity better. Realized work moves from "sum of printing spans of stepped cards" — which carries
-     the full spread of reprint depth — toward "cards stepped", which does not. Round 67 measured the
-     walk-length residual at p90/p10 **23.3x** pooled; part of that spread is the executor's own
-     depth-dependence and is removable at the source.
-   - **Implementation trap, and it governs how this is verified.** `printings_examined` is incremented
-     UNCONDITIONALLY as `(end - start)` before the inner loop, so a loop that exits early would still
-     report the full span. The counter's DEFINITION has to change with the loop, which means a
-     before/after comparison of `printings_examined` is not apples-to-apples. Verify on realized
-     **`ns_loop`/`ns_round_total`**, which are definition-independent, and treat the counter change as
-     part of the round rather than as evidence for it. `bench_cost_error_attribution.py`'s own doc
-     records this exact hazard for `printing_span` ("substituting it would have manufactured a feature
-     error that was really a counter definition").
-   - **Correctness bar: row IDENTITY, not counts.** This area has bitten before — per-printing-varying
-     fields reaching `compile_plane`/`all_match` broke row selection for `unique=printing`/`artwork`
-     AND `unique=card`. An early break changes WHICH printing represents a card, so verify the returned
-     rows match byte-for-byte on real data, across all three distinct-ons and both default and
-     non-default prefer, not just that the totals agree.
-2. **Regress realized walk cost against `span` versus `set-printings` — is `printings_walked` even
+1. **Exploit card-invariance in the walk: ONE bit test per card instead of a full span.** Round 68
+   took the card/default early break (see the ledger); this is the half it deliberately left out, and
+   it is now the larger remaining win. All printings of a card share their `pbits` value when the
+   composed filter is card-invariant, so one test decides the card. The asymmetry with the gather is
+   what makes it valuable here: the gather iterates `candidate_cards`, every one of which has a set
+   printing, so its no-match branch is unreachable — the walk iterates the WHOLE permutation, so a card
+   with no set printing still bit-tests its full span today.
+   - **Needs plumbing, which is why it was split off.** `walk_grouped_page(ctx, params, pbits, perm)`
+     receives no filter and no card-invariance flag. `touches_printing_field` (`filter.rs`) is the
+     predicate and it is already computed at plan time as `composed_card_invariant` /
+     `feats.residual_card_invariant`, but it is never threaded into an executor. Decide where the flag
+     originates before writing anything.
+   - **Temper the expectation with Round 68's surprise.** I expected its early break to be small
+     because most stepped cards should not match; measured, the live `Perm` population's density is p0
+     0.013 / p50 0.205 / p90 0.701, because compose DECLINES on sparse totals and only dense traffic
+     survives to `Perm`. So non-matching cards are a smaller share than the "steps the whole
+     permutation" argument suggests. Measure the non-matching share on live `Perm` traffic FIRST.
+   - Same gate as Round 68: returned row IDENTITY, with the count of rows that actually hit the
+     changed path reported — a differential over 8,008 cells proved nothing there because 0 of them
+     were `Perm`-paged.
+2. **`printings_walked` now over-counts the walk it prices, because Round 68 made the walk faster.**
+   The feature is unchanged while the realized counter fell 2,092,874 → 1,828,715 on real `Perm`
+   traffic, so `<compose Perm> / card` feature/counter rose p50 **1.01 → 1.09** and nothing else moved.
+   Small, and mechanically understood rather than mysterious. Worth doing WITH item 3 rather than
+   separately, since both change the same term — and it is the concrete instance of the sequencing this
+   queue's header note argues for: executor, then features, then refit, because each step moves the
+   target of the next.
+3. **Regress realized walk cost against `span` versus `set-printings` — is `printings_walked` even
    measuring the right variable?** Deferred behind item 1 because that fix changes the loop this would
    measure. The suspicion: `printings_examined` counts bit tests, but the expensive work in the walk is
    `prefer_score` plus the push, done only on SET printings. If so the feature tracks a cheap quantity
@@ -136,13 +121,13 @@ whichever term correlates with it"). Fix features first, then refit.
    per-orderby constant and no variance term fixes a missing term.
    - The counters needed already exist: `printings_examined`, `matches_pushed`, `set_printings`,
      `ns_loop`. Regress `ns_loop` on each candidate on the same rows.
-   - **This decides what item 3 actually is.** If `set-printings` wins, item 3 is a feature change (or a
+   - **This decides what item 4 actually is.** If `set-printings` wins, item 3 is a feature change (or a
      second cost term) and the per-orderby table is secondary. If `span` wins, item 3 is the
      per-orderby split. They are very different rounds and the queue should not guess between them.
-3. **`printings_walked`'s bias constant is pooled across sort columns — but item 2 decides whether
+4. **`printings_walked`'s bias constant is pooled across sort columns — but item 3 decides whether
    this is even the right fix.** The 78%-of-regret branch, and the clump data below is a real
    finding either way; it is sequenced third because if the walk cost is missing a TERM (item 2)
-   then splitting a scalar is fitting a better constant to the wrong variable.** These two branches carry 57% + 21% of lost time and have the worst miss rates (8% and
+   then splitting a scalar is fitting a better constant to the wrong variable. These two branches carry 57% + 21% of lost time and have the worst miss rates (8% and
    **11%**, against `Gather`'s 1%). They are priced by `printings_walked`, and the feature is badly off
    exactly there: `<compose OrderbyWalk> / card` p50 **0.26** (spread 40.0), `/artwork` p50 **0.25**
    (spread 38.1) — a ~4x UNDER-count at the median — while `<compose Perm> / printing` over-counts in
@@ -214,7 +199,7 @@ whichever term correlates with it"). Fix features first, then refit.
      `ColorCmcTable` were built for, one level over. **Measure whether a computable clumping proxy
      predicts the realized walk length BEFORE designing anything** — `printings_walked` is already
      graded per-orderby, so the slice needed to test it exists.
-4. **`StreamedSelect` is over-costed ~57% at the median, uniformly.** p50 **1.57** — and it reads 1.57
+5. **`StreamedSelect` is over-costed ~57% at the median, uniformly.** p50 **1.57** — and it reads 1.57
    at EVERY orderby slice (name, toughness, cmc, power, cubecobra, edhrec) and every distinct-on
    (1.59/1.57/1.57), n=60,165. That flatness across slices with a wide percentile spread (p90/p10 7.0)
    is the signature of a stale rate or a spurious fixed term, and attribution agrees: `COEFFS` is the
@@ -222,7 +207,7 @@ whichever term correlates with it"). Fix features first, then refit.
    `fixed = 0.00` against a shipped **233.00**, plus `emit` 0.00/0.12 and `small_total_floor` 0.16/0.81
    — i.e. remove the fixed floor. A coefficient change, not a feature change; cheap to try and easy to
    measure. Sequenced AFTER item 1 because of the burying problem in the header note.
-5. **`compose_scan_printings`: the mis-gating is FIXED (Round 66); a per-arm REFIT remains** — investigated
+6. **`compose_scan_printings`: the mis-gating is FIXED (Round 66); a per-arm REFIT remains** — investigated
    2026-09-05, and the original framing of this item ("looks like a discrete arithmetic relationship,
    maybe a bug") was wrong. The feature is
    `compose_scan_printings = printing_matches * COMPOSE_GATHER_SPAN_PER_MATCH`, and that constant is
@@ -285,7 +270,7 @@ whichever term correlates with it"). Fix features first, then refit.
      - Only if per-arm constants still leave a wide spread does the per-query depth term become
        necessary — and that still needs `printing_matches` and `est.result.printing`/`.card` exposed
        together on an instrumented build, which remains unmeasured (see the retraction above).
-6. **`scan_units [printing_compose]` under-counts ~3x.** The highest-n miscalibration in the report
+7. **`scan_units [printing_compose]` under-counts ~3x.** The highest-n miscalibration in the report
    (32,833 `printing_compose` rows of 51,767 pooled): p50 **0.32-0.38** depending on distinct-on, p10
    **0.05**, spread 20.0-32.5. `scan_units` prices the MATERIALIZING alternatives when they compete
    against compose (see its own doc: "What the MATERIALIZING alternatives see"), so under-counting it
@@ -302,7 +287,7 @@ whichever term correlates with it"). Fix features first, then refit.
      "57 flagged cells outside [0.8, 1.25]" therefore overstates real-traffic impact and understates
      nothing — read it as a correctness instrument, not a latency one. Every flagged cell is
      `printing_compose` or `card_range_popcount`; nothing on `candidates`/`plane` is flagged at all.
-7. **Seed every `SpaceEstimate` with the domain instead of `UNKNOWN`.** **A correctness and
+8. **Seed every `SpaceEstimate` with the domain instead of `UNKNOWN`.** **A correctness and
    maintainability item, not a performance one** — it delivers no accuracy win and no latency win, and
    should be judged on that basis. The domain size is a true upper bound, so a space can start
    `{ guaranteed: n_cards, estimate: n_cards }` and only ever tighten. That deletes every `Option`,
@@ -344,7 +329,7 @@ whichever term correlates with it"). Fix features first, then refit.
      `printing_tightened`, set where a trusted card count is written, and that work is part of THIS
      item. See the ledger's Round 62 section, and the site-by-site correction above for why it is one
      gate rather than two.
-8. **Untangle `narrow_floor`.** Also a correctness item rather than a performance one. It reads
+9. **Untangle `narrow_floor`.** Also a correctness item rather than a performance one. It reads
    `s.card.best()` and writes `result_space.card.lower_guaranteed(f)` — a child's GUESS becoming the
    query's BOUND, the same laundering Round 59 fixed in the `And` seed. Still latent, and Round 63 is
    why it stayed that way: the arm that might have unmasked it now writes an exact triple into BOTH
@@ -356,7 +341,7 @@ whichever term correlates with it"). Fix features first, then refit.
    the tightest sound bound, for a reason belonging to a different question. It also computes a `min`
    (an upper bound) while being named a floor. Round 60 left a candidate set — **4,317 root nodes**
    with `card_guaranteed` tighter than any child's — but that set also contains legitimate
-   `Candidate::Exact` joints, so separating them is the round's actual work. Easiest after #7, when
+   `Candidate::Exact` joints, so separating them is the round's actual work. Easiest after #8, when
    bounds are always present. The joint-witness frame in
    [local-engine-joint-witness-and-empty-short-circuit.md](local-engine-joint-witness-and-empty-short-circuit.md)
    may be the honest replacement for its breadth filter rather than a repair of it.
@@ -632,7 +617,7 @@ symptoms. Re-open only with a fresh survey that contradicts the numbers.
   this?" by comparing `candidate` and `result`, which cannot see a tightening that moved only
   `guaranteed` — and Round 59 had made those routine. Two corollaries worth applying before the next
   proxy gets written: an `Option`'s PRESENCE is not a structural signal if any future round might seed
-  the field (domain-seeding makes both card gates vacuous either way — see item #7), and a flag derived
+  the field (domain-seeding makes both card gates vacuous either way — see item #8), and a flag derived
   as `!=` against a field's own earlier value is safer than one threaded through every mutation site,
   because monotone mutators make the comparison exact while a threaded flag goes stale silently when
   someone adds a write.
@@ -730,7 +715,7 @@ symptoms. Re-open only with a fresh survey that contradicts the numbers.
   est.result.printing()`. The flag disagrees with the retired test on 0.3-0.45% of rows, **every one
   `old=False → new=True`** — it only ever finds a bound-only tightening the number comparison was blind
   to. Zero plan flips; `bench_pairwise_ordering` unchanged, `bench_feature_accuracy` 0 cells changed
-  verdict. Two caveats, both live: it does NOT unblock the card half of item #7 (its own plan claimed
+  verdict. Two caveats, both live: it does NOT unblock the card half of item #8 (its own plan claimed
   otherwise and was wrong), and it cost 6 rows on 3 queries, which Round 63 Part 2 then closed.
 - Round 63: two exact numbers that existed and were being discarded. **Part 1** retires the last
   reprint-ratio leaf arm — `NumericSpanTotals`, a per-distinct-value prefix sum over each numeric
