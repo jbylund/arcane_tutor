@@ -27,7 +27,8 @@ each, and there are still too few for that to matter.
 
 So: an item here needs a reason beyond "the estimate is inaccurate". A cheap fix with a measured
 payoff still clears the bar; a large build does not. Correctness and maintainability arguments are
-fine — say so explicitly rather than implying a latency win.
+fine — say so explicitly rather than implying a latency win. Round 64 was the last item whose case
+rested on a measured accuracy payoff; **everything left is correctness or maintainability work.**
 
 Two caveats. The corpus is one sample (2026-08-02) in which bare name lookups dominate by design, and
 a power-user profile skews composable (`f:modern` plus other filters lands squarely in that 0.27%) —
@@ -38,20 +39,7 @@ against a measured 199.3us), which is a cost-model correctness concern that this
 **Planned revisit:** estimates and query planning are to be re-examined over the UNIFORM sampler as
 well, and that will inform what else gets done here. Treat this ordering as provisional until then.
 
-1. **Backport the `rest_max` triple + space-native independence to `SetSubtypeTable` /
-   `ColorSubtypeTable`.** The one item that clears the scope note on its own terms: the payoff is
-   already measured and the work is mostly wiring. Round 55 shipped both ideas for the new
-   `(subtype, subtype)` table but deliberately left these three untouched, so they still rank their
-   top-256 by CARD count alone and still scale one card-space `rest_max` into printing space by a
-   global reprint ratio. Round 55's own measurement says what that costs: printing-space-native
-   independence+cap beat card-space-x-global-ratio at every percentile on the same excluded population
-   (median 0.42x vs 0.64x, p90 3.27x vs 4.45x, max 21x vs 24.67x). `top_n_union_and_rest_max` already
-   exists and is generic over `K` — this is mostly switching the three `top_n_and_rest_max` call sites
-   and teaching `SubtypePairEstimate` to read the triple natively instead of scaling. Watch the
-   ordering constraint Round 55 surfaced (the fourth standing principle below):
-   `SubtypePairEstimate` is already positioned after its own exact scan, but re-check rather than
-   assume.
-2. **Seed every `SpaceEstimate` with the domain instead of `UNKNOWN`.** **A correctness and
+1. **Seed every `SpaceEstimate` with the domain instead of `UNKNOWN`.** **A correctness and
    maintainability item, not a performance one** — it delivers no accuracy win and no latency win, and
    should be judged on that basis. The domain size is a true upper bound, so a space can start
    `{ guaranteed: n_cards, estimate: n_cards }` and only ever tighten. That deletes every `Option`,
@@ -67,7 +55,7 @@ well, and that will inform what else gets done here. Treat this ordering as prov
      gates therefore need a second explicit signal — an "exact card source" flag parallel to
      `printing_tightened`, set where a trusted card count is written — and that work is part of THIS
      item. See the ledger's Round 62 section.
-3. **Untangle `narrow_floor`.** Also a correctness item rather than a performance one. It reads
+2. **Untangle `narrow_floor`.** Also a correctness item rather than a performance one. It reads
    `s.card.best()` and writes `result_space.card.lower_guaranteed(f)` — a child's GUESS becoming the
    query's BOUND, the same laundering Round 59 fixed in the `And` seed. Still latent, and Round 63 is
    why it stayed that way: the arm that might have unmasked it now writes an exact triple into BOTH
@@ -79,11 +67,11 @@ well, and that will inform what else gets done here. Treat this ordering as prov
    the tightest sound bound, for a reason belonging to a different question. It also computes a `min`
    (an upper bound) while being named a floor. Round 60 left a candidate set — **4,317 root nodes**
    with `card_guaranteed` tighter than any child's — but that set also contains legitimate
-   `Candidate::Exact` joints, so separating them is the round's actual work. Easiest after #2, when
+   `Candidate::Exact` joints, so separating them is the round's actual work. Easiest after #1, when
    bounds are always present. The joint-witness frame in
    [local-engine-joint-witness-and-empty-short-circuit.md](local-engine-joint-witness-and-empty-short-circuit.md)
    may be the honest replacement for its breadth filter rather than a repair of it.
-4. **Generalize "anchored independence" further.** Last, because the evidence for it got weaker rather
+3. **Generalize "anchored independence" further.** Last, because the evidence for it got weaker rather
    than stronger: the concrete instance this item used to point at (anchoring `legality x price`) was
    measured on 2026-09-04 and demoted, and the one shape checked closely turned out to be
    near-independent already with the min-fold handling it (see the `Independence` bullet below). Rounds
@@ -153,6 +141,20 @@ symptoms. Re-open only with a fresh survey that contradicts the numbers.
   - Worth remembering if this area is revisited: an `Independence` pair whose leaves are BOTH
     near-universal cannot tighten anything, so computing it is pure cost — the same shape as Round 56's
     `any_price_source` precheck. A cost saving, not an accuracy fix.
+- **`rest_max.printings` could fill the `guaranteed` channel** (from Round 64). It is now a real
+  printing-space value, and it is a PROVEN upper bound wherever `SubtypePairEstimate` fires: that arm
+  only runs when no exact subtype-pair hit covered the leaves, so the pair was excluded from `top`, and
+  a pair absent from the build map has count 0. Today it is `min()`-ed with the independence product
+  into one estimate-only candidate, which discards the bound (Round 59's admission rule). Splitting it
+  — `guaranteed = rest_max.printings`, `estimate = indep` — leaves `best()` unchanged while populating
+  a channel that is currently empty. Deliberately not bundled into Round 64: it changes mechanism
+  attribution and needs `check_bound_class_soundness.py`'s mechanism map updated.
+- **`nway_estimate_truth_survey.py` barely samples subtype-pair table MISSES** (found by Round 64).
+  That round moved its target population's median from 1.309x to exactly 1.000x and the survey read
+  ZERO plan flips and no ratio change, because the catalog generates (dim, subtype) pairs almost only
+  in configurations that HIT the table. A flat survey is therefore not evidence that a
+  mechanism-level fix did nothing — check whether the mechanism's own population is represented first.
+  Worth teaching the sampler, alongside the `banned:`/`restricted:` gap already recorded below.
 - **Two-sided `usd>=a usd<=b` interior ranges** are where the 9 surviving `Independence` misses
   actually live, so they are the better-targeted successor to the demoted item above — but they need a
   design idea first, not just wiring. `RangeCardCounts` "declines genuinely interior ranges, so a
@@ -297,7 +299,7 @@ symptoms. Re-open only with a fresh survey that contradicts the numbers.
   this?" by comparing `candidate` and `result`, which cannot see a tightening that moved only
   `guaranteed` — and Round 59 had made those routine. Two corollaries worth applying before the next
   proxy gets written: an `Option`'s PRESENCE is not a structural signal if any future round might seed
-  the field (domain-seeding makes both card gates vacuous either way — see item #2), and a flag derived
+  the field (domain-seeding makes both card gates vacuous either way — see item #1), and a flag derived
   as `!=` against a field's own earlier value is safer than one threaded through every mutation site,
   because monotone mutators make the comparison exact while a threaded flag goes stale silently when
   someone adds a write.
@@ -326,7 +328,7 @@ symptoms. Re-open only with a fresh survey that contradicts the numbers.
 - Round 49: `covered` loosened from leaf-occupancy to subset-identity tracking (`CoveredState`) for the
   independence registry — recovers Round 48's own regression and improves the sweep overall.
 - Round 50: "anchored independence" for `SubtypeArithBox` — exact joint × single residual `Price` rate,
-  narrowly scoped (see item #4 above for what's left to generalize).
+  narrowly scoped (see item #3 above for what's left to generalize).
 - Round 51: exact `arith_tuple` (printing, card, artwork) triples, precomputed at build time
   (`ArithTupleIndex.totals`) — closes Round 46's census gap; surfaced the `unique=artwork` acquire-path
   gap, closed by Round 52.
@@ -346,8 +348,7 @@ symptoms. Re-open only with a fresh survey that contradicts the numbers.
 - Round 55: `(subtype, subtype)` exact top-256 table (`SubtypePairTable`) + a printing-space-native
   capped-independence fallback — closes `same_family:type+type_realistic`/`_disjoint`'s 0% mechanism
   coverage (100% after; `t:cleric t:spirit` 628 vs true 19 → exact in all three spaces). First use of
-  the union-of-3-spaces top-N cutoff and a real per-space `rest_max` triple (item #1 above is the
-  backport of both to the three older tables). Surfaced the estimate-placement ordering constraint now
+  the union-of-3-spaces top-N cutoff and a real per-space `rest_max` triple (Round 64 backported both to the three older tables). Surfaced the estimate-placement ordering constraint now
   recorded as the fourth standing principle above.
 - Round 56: anchored independence for `ColorCmcTable` (second anchor after Round 50's), sharing one
   hoisted `anchored_price_residual` helper. Routing-relevant misses 1,016 -> 880 (-13.4%), over-side
@@ -395,7 +396,7 @@ symptoms. Re-open only with a fresh survey that contradicts the numbers.
   est.result.printing()`. The flag disagrees with the retired test on 0.3-0.45% of rows, **every one
   `old=False → new=True`** — it only ever finds a bound-only tightening the number comparison was blind
   to. Zero plan flips; `bench_pairwise_ordering` unchanged, `bench_feature_accuracy` 0 cells changed
-  verdict. Two caveats, both live: it does NOT unblock the card half of item #2 (its own plan claimed
+  verdict. Two caveats, both live: it does NOT unblock the card half of item #1 (its own plan claimed
   otherwise and was wrong), and it cost 6 rows on 3 queries, which Round 63 Part 2 then closed.
 - Round 63: two exact numbers that existed and were being discarded. **Part 1** retires the last
   reprint-ratio leaf arm — `NumericSpanTotals`, a per-distinct-value prefix sum over each numeric
@@ -409,6 +410,14 @@ symptoms. Re-open only with a fresh survey that contradicts the numbers.
   flagged cells 62 → 60, the two that cleared being exactly the `eval_domain … / card` pair this round
   targets. Its apparent side effect — `Independence`'s under-truth count up 172 → 180 — was later shown to be
   a MISREAD of a row-level diagnostic, and re-measuring is what demoted the anchoring item entirely.
+- Round 64: backported Round 55's union-of-3-spaces cutoff and per-space `rest_max` triple to
+  `SetSubtypeTable`/`ColorSubtypeTable`, and made `SubtypePairEstimate` printing-space-native — the last
+  `card-space * n_printings / n_cards` scaling in this arm, after Rounds 61 and 63 removed the other two.
+  On 750 real table-MISS pairs: median **1.309x -> 1.000x**, p90 8.25 -> 6.00, routing-relevant 3 -> 1.
+  Deleted `top_n_and_rest_max` (no callers left), migrating its Round 47 tie rationale into the surviving
+  helper and retargeting its four guard tests rather than deleting them. Survey-flat by construction —
+  see the sampler-coverage bullet above. One honest trade: `set`'s tail improved sharply while its median
+  moved further below truth (0.900 -> 0.586).
 - Measurement, no round number (2026-09-04): **the residual-size distribution, and the route share
   that reframes this whole doc.** Measured over real weighted traffic (14,473 queries) rather than the
   sampler, deliberately — the sampler's shape templates decide residual sizes, so measuring against it
