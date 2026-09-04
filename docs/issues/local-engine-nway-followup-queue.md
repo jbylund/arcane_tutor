@@ -40,7 +40,35 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
      ledger's Round 61 section), and split the timing by a control subset of queries the change cannot
      touch, not by a same-binary canary.
    - `scripts/check_bound_class_soundness.py` should stay green throughout.
-2. **Anchor `Independence` and the `Or` arm now that their legality input is exact.** Round 61's only
+2. ~~**Anchor `Independence` and the `Or` arm now that their legality input is exact.**~~ —
+   **DEMOTED 2026-09-04 on measurement. Do not revive without a fresh survey saying otherwise.** The
+   loose `Independence` claims this item was built on are almost all clamped by the per-leaf min-fold
+   before they reach anything, so the mechanism is far less culpable than its raw claims suggest.
+   Measured over Round 63's seed-63 survey (9,777 rows, 2,088 carrying an `Independence` claim):
+   - Its claim BINDS on only **32%** of those rows, and where it binds the median claim/true is
+     **1.017** — essentially exact. Median across all rows with a claim is 1.600 for the claim but
+     **1.068** for the row's final number.
+   - Routing-relevant misses (wrong side of 1,024, >=200 abs, >=10% rel) that `Independence` is
+     actually responsible for: **9 of 2,088 (0.4%)**, ranging 0.79x-4.83x. The 52x-196x claims never
+     bind.
+   - **Not one of the 9 is `legality x price`** — the shape this item names. Bucketed by leaf pair,
+     `legality x other` contributes **0** routing-relevant misses of 120; the 9 are dominated by
+     two-sided `usd>=a usd<=b` ranges combined with type/color/cmc.
+   - The worst-looking row, `usd>0.04 t:vampire f:oathbreaker` (an 80,770 claim against a true 1,118),
+     is already estimated well: `Independence` fires TWICE, and the `subtype x price` pair gives
+     **1,080 against 1,118 (0.966x)**, which the min-fold picks. Type and price are near-independent in
+     this corpus (vampires are >$0.04 at 85.9% against the corpus's 83.0%). The bad claim comes from
+     `f:oathbreaker` covering **99.5%** of printings — a non-selective leaf whose product can never
+     beat the other leaf alone. That is not correlation, and no anchor addresses it.
+   - **The signal that originally justified this item was misread.** Round 63 reported
+     `Independence`'s under-truth count rising 172 -> 180 in `check_bound_class_soundness.py`'s
+     ROW-LEVEL view. That view buckets by ATTRIBUTED mechanism and its own header warns the attributed
+     mechanism need not be the binding one; it is explicitly a diagnostic, not evidence about any
+     mechanism's accuracy.
+   - One cheap idea worth remembering if this area is ever revisited: an `Independence` pair whose
+     leaves are BOTH near-universal cannot tighten anything, so computing it is pure cost — the same
+     shape as Round 56's `any_price_source` precheck. A cost saving, not an accuracy fix.
+   Original description follows. Round 61's only
    regressions were structural and predictable: `Independence`'s `round(a * b / n)` already over-predicts
    on correlated pairs and a too-small `a` had been cancelling part of that, so `star:legality+*+usd`
    worsened (+0.009 to +0.023 mean abs-log-ratio) and every newly-broken straddle is one of those rows
