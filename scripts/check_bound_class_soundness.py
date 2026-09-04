@@ -16,12 +16,29 @@ mechanism string this script cannot classify, exits 1.
 ## What is checked, and against what
 
 Each row's `and_trace.considered` holds one entry per mechanism the `And` arm ATTEMPTED, with that
-mechanism's OWN printing-space number (`printing`) and whether it produced one (`hit`). Those are the
-individual claims the admission rule governs, so those are what this checks -- not the row's final
+mechanism's OWN printing-space numbers and whether it produced any (`hit`). Those are the individual
+claims the admission rule governs, so those are what this checks -- not the row's final
 `predicted_matches`, which is `SpaceMeasure::best()` over every channel and every mechanism at once
 and so can sit below truth for reasons that have nothing to do with any bound-class candidate (an
 estimate-class mechanism undershooting, or one of the three reprint-ratio leaf arms doing so). Both
 views are printed; only the per-candidate one decides the exit status. See `ROW_LEVEL_VIEW_DOC`.
+
+## Round 60: read the engine's own answer, keep the name map as a cross-check
+
+Since Round 60 each trace entry reports the two CHANNELS behind its collapsed `printing`:
+`printing_guaranteed` (a proven bound) and `printing_estimate` (a guess). So "is this candidate
+bound-class" stopped being a question this script has to answer from a name -- a candidate is
+bound-class exactly when it populated `guaranteed`, which is the admission rule stated directly. The
+checked number is `printing_guaranteed` itself, not the `best()`-collapsed `printing`: the invariant
+is about what was CLAIMED as a bound.
+
+`BOUND_CLASS_MECHANISMS`/`ESTIMATE_CLASS_MECHANISMS` are kept, demoted from classifier to
+CROSS-CHECK: every hit is classified both ways and any disagreement is a hard failure. That turns
+what used to be a maintenance hazard (a new mechanism silently misclassified, or worse, classified
+correctly here while writing the wrong channel in Rust) into a consistency test between the two.
+Older runs, written before Round 60, have no channel keys at all; they are handled by falling back to
+the name map, with the fallback reported so a comparison against a pre-Round-60 baseline is not
+silently weaker.
 
 ## The confound this respects: printing space only
 
@@ -43,12 +60,16 @@ import json
 import pathlib
 import sys
 
-# ── mechanism classification ───────────────────────────────────────────────────────────────────
+# ── mechanism classification (cross-check only, since Round 60) ────────────────────────────────
 # Deliberately this script's OWN list rather than a mirror of `is_estimate_class_mechanism` in
 # lib.rs. That predicate does NOT answer "does this mechanism contribute a bound": it classifies a
 # mechanism by whether it can offer a same-set (printing, card, artwork) triple, for trace-attribution
 # priority. `LegalityDateTotals` is a member of it AND contributes a bound; `PriceJointTable` is not a
 # member and also contributes a bound. Mirroring it would silently mis-scope this check.
+#
+# Round 60 demoted these from CLASSIFIER to CROSS-CHECK: the class now comes from whether the trace
+# entry populated `printing_guaranteed`, and any disagreement with these sets fails the run. They are
+# still the fallback for runs produced before Round 60, which carry no channel keys.
 #
 # BOUND: writes `SpaceMeasure::guaranteed`, so its number must be `>= truth`, always.
 #   - Three-space exact triples, folded `Candidate::Exact`.
@@ -109,26 +130,58 @@ def load_rows(path: pathlib.Path) -> list[dict]:
         return [json.loads(line) for line in fh]
 
 
-def bound_class_claims(row: dict) -> list[tuple[str, int]]:
-    """Every (mechanism, printing) pair this row's `And` arm actually produced a number for.
+def bound_class_claims(row: dict) -> list[tuple[str, int, bool]]:
+    """Every (mechanism, claimed_bound, from_channels) this row's `And` arm actually PROVED a number for.
 
     Reads `and_trace.considered`, which holds one entry per ATTEMPTED mechanism -- winners and losers
     alike. Checking the losers matters: a bound-class candidate that undershoots is unsound whether or
     not it happened to win the fold on this particular query, and a future mechanism could easily
     undershoot only on rows where something else was tighter.
 
-    A `hit: false` entry is a clean decline with no number (`printing: null`) and is skipped, not
-    treated as a zero.
+    A `hit: false` entry is a clean decline with no number in any channel and is skipped, not treated
+    as a zero -- the trace expresses absence as `null` precisely so it cannot be misread as
+    "proved empty".
+
+    `from_channels` says whether this claim was read from `printing_guaranteed` (Round 60 and later)
+    or fell back to the mechanism-name map, so `check_file` can report a pre-Round-60 run as the
+    weaker check it is.
     """
     trace = row.get("and_trace")
     if not trace:
         return []
-    out: list[tuple[str, int]] = []
+    out: list[tuple[str, int, bool]] = []
     for group in trace.get("considered", []):
-        if not group.get("hit") or group.get("printing") is None:
+        if not group.get("hit"):
             continue
-        out.append((group["mechanism"], group["printing"]))
+        if "printing_guaranteed" in group:
+            # Round 60: a candidate is bound-class exactly when it populated `guaranteed`, and the
+            # number to check is that channel's own -- not the `best()`-collapsed `printing`.
+            if group["printing_guaranteed"] is not None:
+                out.append((group["mechanism"], group["printing_guaranteed"], True))
+        elif group.get("printing") is not None and group["mechanism"] in BOUND_CLASS_MECHANISMS:
+            out.append((group["mechanism"], group["printing"], False))
     return out
+
+
+def channel_map_disagreements(rows: list[dict]) -> list[str]:
+    """Mechanisms whose written CHANNEL disagrees with this script's own name map.
+
+    The cross-check Round 60 keeps the map for: the engine says a candidate is bound-class by
+    populating `printing_guaranteed`, and this script says so by name. If they ever differ, one of
+    them is wrong and both are load-bearing, so the run fails rather than quietly preferring either.
+    """
+    bad: set[str] = set()
+    for row in rows:
+        for group in (row.get("and_trace") or {}).get("considered", []):
+            if not group.get("hit") or "printing_guaranteed" not in group:
+                continue
+            engine_says_bound = group["printing_guaranteed"] is not None
+            map_says_bound = group["mechanism"] in BOUND_CLASS_MECHANISMS
+            if engine_says_bound != map_says_bound:
+                bad.add(
+                    f"{group['mechanism']} (engine: {'bound' if engine_says_bound else 'estimate'}, map: {'bound' if map_says_bound else 'estimate'})"
+                )
+    return sorted(bad)
 
 
 def unknown_mechanisms(rows: list[dict]) -> set[str]:
@@ -148,23 +201,24 @@ def unknown_mechanisms(rows: list[dict]) -> set[str]:
     return seen - BOUND_CLASS_MECHANISMS - ESTIMATE_CLASS_MECHANISMS
 
 
-def per_candidate_check(rows: list[dict]) -> tuple[dict[str, list[dict]], collections.Counter]:
-    """The invariant: every bound-class candidate's own printing number must be `>= true_total`.
+def per_candidate_check(rows: list[dict]) -> tuple[dict[str, list[dict]], collections.Counter, bool]:
+    """The invariant: every bound-class candidate's own claimed bound must be `>= true_total`.
 
-    Returns (violations by mechanism, attempt counts by mechanism) over `unique=printing` rows only.
+    Returns (violations by mechanism, attempt counts by mechanism, whether every claim was read from
+    the trace's own channels) over `unique=printing` rows only.
     """
     violations: dict[str, list[dict]] = collections.defaultdict(list)
     attempts: collections.Counter = collections.Counter()
+    all_from_channels = True
     for row in rows:
         if row["unique"] != CHECKED_UNIQUE or row.get("true_total") is None:
             continue
-        for mechanism, printing in bound_class_claims(row):
-            if mechanism not in BOUND_CLASS_MECHANISMS:
-                continue
+        for mechanism, claimed, from_channels in bound_class_claims(row):
+            all_from_channels &= from_channels
             attempts[mechanism] += 1
-            if printing < row["true_total"]:
-                violations[mechanism].append({"q": row["q"], "claimed": printing, "true_total": row["true_total"]})
-    return violations, attempts
+            if claimed < row["true_total"]:
+                violations[mechanism].append({"q": row["q"], "claimed": claimed, "true_total": row["true_total"]})
+    return violations, attempts, all_from_channels
 
 
 def row_level_table(rows: list[dict]) -> None:
@@ -199,8 +253,20 @@ def check_file(path: pathlib.Path) -> bool:
         print("        ESTIMATE_CLASS_MECHANISMS in this script, deliberately, after deciding which channel it may write")
         return False
 
-    violations, attempts = per_candidate_check(rows)
-    print("\nPER-CANDIDATE CHECK (the invariant): every bound-class candidate's own printing number vs true_total")
+    if disagreements := channel_map_disagreements(rows):
+        print("  FAIL: the trace's own channels disagree with this script's name map for:")
+        for line in disagreements:
+            print(f"        {line}")
+        print("        One of the two is wrong. Either the mechanism writes the wrong channel in lib.rs, or this")
+        print("        script's BOUND_CLASS_MECHANISMS/ESTIMATE_CLASS_MECHANISMS needs a deliberate update.")
+        return False
+
+    violations, attempts, from_channels = per_candidate_check(rows)
+    source = (
+        "trace channels (printing_guaranteed)" if from_channels else "the mechanism-name map (pre-Round-60 run: no channel keys)"
+    )
+    print("\nPER-CANDIDATE CHECK (the invariant): every bound-class candidate's own claimed bound vs true_total")
+    print(f"  bound-class decided by: {source}")
     print(f"{'mechanism':<36}{'candidates':>12}{'under truth':>14}")
     for name in sorted(BOUND_CLASS_MECHANISMS):
         if attempts[name]:
