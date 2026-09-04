@@ -10,7 +10,10 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
 
 ## Active queue (in order)
 
-1. **Stop the two REMAINING reprint-ratio leaf arms undershooting.** Round 61 did the `Legality` arm
+1. ~~**Stop the two REMAINING reprint-ratio leaf arms undershooting.**~~ — **closed by Round 63**, both
+   halves: the bare cmc/power/toughness arm is now exact via `NumericSpanTotals`, and devotion was
+   measured and deliberately left alone. Kept below with the measurements, because the devotion
+   decision is a "do not re-nominate" record rather than a finished task. Round 61 did the `Legality` arm
    (0.647-1.040x over all 23 formats; 14 of 14 outvoted rows recovered — see Completed below). Two of
    the three arms Round 59 demoted are still guessing `card_count * n_printings / n_cards`:
    - ~~**Broadcast/devotion**~~ — **measured 2026-09-04, and NOT worth doing.** 22 devotion queries
@@ -45,7 +48,12 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
    to +0.015). This is Round 56's finding recurring: an estimate-class combiner whose inputs became
    exact needs its own anchor. **Do not reach for a fudge factor** — Round 56 swept one on real data and
    rejected it.
-3. **Fold `PairTotals`' exact CARD and ARTWORK counts, not just its printing count.** `pair_bounded_min`
+3. ~~**Fold `PairTotals`' exact CARD and ARTWORK counts, not just its printing count.**~~ — **closed by
+   Round 63 Part 2**, including Round 62's three regressed rows, which now report an `eval_domain`
+   equal to the realized `cards_visited`. Kept below for the one finding that generalizes: the
+   disjointness branch deliberately does NOT prove card/artwork 0, because `result.card` is consumed as
+   a DOMAIN and a proven-empty answer says nothing about what a plan walks to discover emptiness.
+   Original description follows. `pair_bounded_min`
    calls `pt.get(x, y, Mode::Printing)` and returns one printing-space `usize`; the And arm then builds
    `SpaceEstimate { printing, card: UNKNOWN, artwork: UNKNOWN }` (`lib.rs:10792`). The table holds all
    three exactly, and `PairTotals::get_all` already returns the triple from the SAME hashmap lookup —
@@ -248,6 +256,22 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
   the `And` arm's own seed, where it made the root's `guaranteed` read 36 against a true 100. Recorded on
   `SpaceMeasure` itself. Corollary: `printing.guaranteed.is_some()` is NOT an invariant (an `Or` of two
   estimate-only leaves leaves it absent); `printing.best().is_some()` is.
+- **"Exact" is not one property: a number can be an exact ANSWER and still be the wrong DOMAIN.**
+  `result.card` is read by `acquire_plan_features` as the card count the materializing alternatives
+  walk, and that parts company with the answer's own card count exactly when narrowing declines a
+  broad child. Round 63 found this the hard way: proving `card: Some(0)` on a disjointness branch is a
+  true statement about the answer, and it drove `border:white border:black`'s `eval_domain`/`scan_units`
+  to 0 and flipped its plan against a realized `cards_visited` of 2,059. **All 303 tests passed with
+  that bug in place** — only checking the feature against realized execution caught it. So: before
+  folding any newly-available exact count into `result`, ask which of the two questions it answers,
+  and verify against `explain_analyze`'s realized counters rather than against the suite.
+- **Measure the cost of an accuracy fix before assuming the cheap version is the cheap one.** Twice
+  now the accurate implementation has also been the FASTER one, and once the obvious reuse was 2.9x
+  slower than the thing it replaced. Round 63 rejected `arith_tuple_totals` reuse at +186% on
+  `and_estimate_ns` p50 (control +7%) and shipped a new ~570-byte-per-field table that measured −19%
+  against a −12% control; Round 61's shared lookup was −5.7% where the naive two-call form was +9.3%.
+  Always split by a control subset the change cannot touch — a same-build canary has now twice read
+  clean while the build itself moved.
 - **Answer a structural question with a structural signal recorded where the structure happens, never
   by comparing two numbers downstream.** Round 62's retired test asked "did any mechanism tighten
   this?" by comparing `candidate` and `result`, which cannot see a tightening that moved only
@@ -352,6 +376,17 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
   to. Zero plan flips; `bench_pairwise_ordering` unchanged, `bench_feature_accuracy` 0 cells changed
   verdict. Two caveats, both live: it does NOT unblock the card half of item #4 (its own plan claimed
   otherwise and was wrong), and it costs 6 rows on 3 queries, now active item #3.
+- Round 63: two exact numbers that existed and were being discarded. **Part 1** retires the last
+  reprint-ratio leaf arm — `NumericSpanTotals`, a per-distinct-value prefix sum over each numeric
+  field's existing sorted index, makes bare cmc/power/toughness exact in all three spaces (`cmc=0`
+  3,699 → 11,948 = truth). The obvious `arith_tuple_totals` reuse was measured at **+186%** on
+  `and_estimate_ns` and rejected (kept on `r63p1-arith-tuple-reuse-measured-slow`); the table it was
+  replaced with measures *faster* than the inexact path it replaces. **Part 2** folds `PairTotals`'
+  exact card/artwork columns, which `get_all` was already fetching for the trace and the estimator was
+  throwing away — closing Round 62's three regressed rows structurally, with `eval_domain` now equal to
+  realized `cards_visited`. 20 plan flips of 9,777 rows; ratio 0.144 → 0.140; `bench_feature_accuracy`
+  flagged cells 62 → 60, the two that cleared being exactly the `eval_domain … / card` pair this round
+  targets. Left `Independence`'s under-truth count up 172 → 180, which is more evidence for item #2.
 - Harness fix (no round number, a Python-only fix outside the engine): `client/query_sampler.py`'s
   `_count_row` folded oracle/flavor words via `Counter.update(set(...))` — bare-set iteration is
   hash-seed-randomized per process, so tied-frequency co-occurring words could swap `most_common()`'s
