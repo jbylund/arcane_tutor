@@ -84,42 +84,78 @@ IRLS_MIN_PREDICTION_NS = 1.0
 # term moves freely, large enough to pin the collinear ones (floor/page_span vs the intercept).
 RIDGE_STRENGTH = 0.01
 
-# The constants currently in cost.rs, in the same term order design_row emits. The IRLS start point,
-# and the baseline each fitted rate is reported against.
-CURRENT: dict[str, list[float]] = {
-    # eval_domain, scan_units, tier scale, matches, page_span, fixed
-    # ..., page_span, page_rows, fixed -- page_rows new 2026-08-03. The phase has two drivers: the
-    # quickselect scales with offset+limit, the collect with the page actually returned. A designed page
-    # sweep separates them where traffic cannot, since the two are correlated in the sampled query mix.
-    # 2026-08-03: the first column is now the UNCONDITIONAL loop rate and the third carries the
-    # `card_pass` call (3.00) on top of the floor (18.89), because the arm gates the call on
-    # `tier_ns > 0` -- `all_match_known` skips it. The design matrix already had these as two
-    # columns; only the arm and these labels changed.
-    # ..., artwork_seen_printings, fixed -- new (this session): `exec_gathered_scan`'s Mode::Artwork
-    # branch pays a per-printing group_best/touched dedupe check StreamedSelect's artwork_seen_cards
-    # column does not describe (that one is per-CARD; this is per-PRINTING, see cost.rs).
-    "GatheredScan": [3.88, 2.06, 21.89, 2.24, 3.51, 9.79, 0.50, 169.6],
-    # eval_domain, scan_units, residual floor, matches, artwork_seen_cards, n_cards floor, corpus pass, fixed
+# The constants currently in cost.rs, keyed by the term names `design_row` emits. The IRLS start
+# point, and the baseline each fitted rate is reported against.
+#
+# Keyed by NAME rather than positional, because the positional form is what allowed the two mirror
+# bugs this dict has carried: a term the engine charges and the design vector omitted outright
+# (compose's COLLECTION_BROADCAST_PER_PRINTING), and one fixed cost standing in for an arm that
+# charges two. Both were invisible as long as a reader had to count a 12-element literal against a
+# 12-element prose comment -- which had itself drifted, since StreamedSelect's list omitted
+# `perm_steps`. `coeffs_for` now raises on any key-set disagreement, naming the term.
+CURRENT: dict[str, dict[str, float]] = {
+    "GatheredScan": {
+        # The UNCONDITIONAL loop rate; the card_pass CALL (3.00) rides in CARD_PASS+FLOOR on top of
+        # the floor (18.89), because the arm gates the call on `tier_ns > 0` -- all_match_known skips it.
+        "LOOP_PER_CARD": 3.88,
+        "SCAN_PER_ROW": 2.06,
+        "CARD_PASS+FLOOR": 21.89,
+        "PUSH_PER_MATCH": 2.24,
+        # The page phase has two drivers: the quickselect scales with offset+limit, the collect with
+        # the page actually returned. A designed page sweep separates them where traffic cannot, since
+        # the two are correlated in the sampled query mix.
+        "SELECT_PER_PAGE_SLOT": 3.51,
+        "COLLECT_PER_PAGE_ROW": 9.79,
+        # `exec_gathered_scan`'s Mode::Artwork branch pays a per-printing group_best/touched dedupe
+        # check that StreamedSelect's ARTWORK_SEEN_PER_CARD does not describe (that one is per-CARD).
+        "ARTWORK_PER_PRINTING": 0.50,
+        # The arm's TWO fixed costs, gated apart on `matches == 0` (GATHER_FIXED_COST_NS and
+        # GATHER_FIXED_COST_ZERO_MATCH_NS). A single FIXED column always charged 169.6 and disagreed
+        # with the engine on 20.0% of rows by a constant -127.6 ns.
+        "FIXED": 169.6,
+        "FIXED_ZERO_MATCH": 42.0,
+    },
     # Refit once `printings_examined` existed: this plan's fit was vetoed for as long as the only
     # available counter was the printing SPAN, which its all_match rows disagree with by ~3x over a
     # term the arm multiplies by zero. Median agreement 0.63 -> 0.92, within-25% 19% -> 58%.
-    # ..., perm_steps, ... -- the permutation walk's length, new 2026-08-03. It is the one quantity in
-    # P3's finish phase no other feature is proportional to: the walk steps until the page fills, so it
-    # visits ~page_span * n_cards / matches entries, inversely proportional to selectivity.
-    # Same split as GatheredScan above: 2.58 unconditional, and the call (2.47) folded into the
-    # residual-gated column alongside the 6.58 floor.
-    "StreamedSelect": [2.58, 5.97, 9.05, 0.12, 1.0, 1.21, 1.02, 0.02, 217.0],
-    # broadcast, scatter, project, popcount, walk step, walk emit, gather card pass, gather bittest,
-    # gather push, fixed. Several of these are SHARED with other arms in cost.rs (LINEAR_PASS,
-    # RANGE_SCATTER, GATHER_CARD_PASS, GATHER_PUSH_PER_MATCH, ...), so a fitted value that disagrees
-    # with the other arm's is information about the shared constant, not a number to paste blindly.
-    # GATHER_GROUP_PER_PRINTING sits between the bit-test and push columns, matching design_row.
-    # Added when the artwork tail was traced to the grouping arm's work being charged at the bit-test
-    # rate; its 1.5 start is a physical guess (a struct read plus prefer_score), meant to be fitted.
-    # BUILD_PER_PRINTING (second to last) is the full-width bitmap build, Gather-arm only: it was
-    # measured directly over a 10x corpus axis rather than fitted here, so a pooled fit disagreeing
-    # with 0.0835 is a signal to re-examine, not to paste.
-    "PrintingCompose": [1.93, 0.48, 1.93, 1.07, 0.58, 2.19, 13.22, 0.38, 1.5, 3.39, 0.0835, 163.56],
+    "StreamedSelect": {
+        # Same split as GatheredScan: 2.58 unconditional, the call (2.47) folded into the
+        # residual-gated column alongside the 6.58 floor.
+        "LOOP_PER_CARD": 2.58,
+        "SCAN_PER_ROW": 5.97,
+        "CARD_PASS+FLOOR": 9.05,
+        "EMIT_PER_MATCH": 0.12,
+        # The permutation walk's length -- the one quantity in P3's finish phase no other feature is
+        # proportional to: the walk steps until the page fills, so it visits
+        # ~page_span * perm_walk_span / matches entries, inversely proportional to selectivity.
+        "PERM_STEP": 1.0,
+        "ARTWORK_SEEN_PER_CARD": 1.21,
+        "SMALL_TOTAL_FLOOR_PER_CARD": 1.02,
+        "CORPUS_PASS_PER_CARD": 0.02,
+        "FIXED": 217.0,
+    },
+    # Several of these are SHARED with other arms in cost.rs (LINEAR_PASS, RANGE_SCATTER,
+    # GATHER_CARD_PASS, GATHER_PUSH_PER_MATCH, ...), so a fitted value that disagrees with the other
+    # arm's is information about the shared constant, not a number to paste blindly.
+    "PrintingCompose": {
+        "BROADCAST_PER_PRINTING": 1.93,
+        "SCATTER_PER_PRINTING": 0.48,
+        "COLLECTION_BROADCAST_PER_PRINTING": 1.34,
+        "PROJECT_PER_PRINTING": 1.93,
+        "POPCOUNT_PER_WORD": 1.07,
+        "WALK_STEP": 0.58,
+        "WALK_EMIT_PER_ROW": 2.19,
+        "GATHER_CARD_PASS": 13.22,
+        "GATHER_BITTEST_PER_PRINTING": 0.38,
+        # Added when the artwork tail was traced to the grouping arm's work being charged at the
+        # bit-test rate; 1.5 is a physical guess (a struct read plus prefer_score), meant to be fitted.
+        "GATHER_GROUP_PER_PRINTING": 1.5,
+        "GATHER_PUSH_PER_MATCH": 3.39,
+        # The full-width bitmap build, Gather-arm only: measured directly over a 10x corpus axis
+        # rather than fitted here, so a pooled fit disagreeing with 0.0835 is a signal to re-examine.
+        "BUILD_PER_PRINTING": 0.0835,
+        "FIXED": 163.56,
+    },
 }
 
 
@@ -208,8 +244,16 @@ def nnls(rows: list[list[float]], targets: list[float]) -> list[float]:
 SHIPPED_RESIDUAL_FLOOR = {"GatheredScan": 18.89, "StreamedSelect": 6.58}
 
 
-def design_row(plan: str, acq: dict, limit: int, offset: int) -> tuple[list[float], list[str], float] | None:
+def design_row(plan: str, acq: dict, limit: int, offset: int) -> tuple[dict[str, float], float] | None:
     """The feature vector for one plan's cost arm, plus the part no coefficient scales.
+
+    Keyed by TERM NAME, matching `CURRENT`, rather than a positional list paired with a separate
+    names list. The positional form is what let two mirror bugs live here: a term the arm charges and
+    this vector omitted entirely (compose's `collection_broadcast_printings`), and a term whose
+    meaning had silently shifted. Neither is expressible now -- a missing term is a `KeyError` naming
+    it, and nothing can be inserted at the wrong index because there are no indices. It also made
+    every edit a hand-count of a 12-element literal against a 12-element comment, which had already
+    drifted (`StreamedSelect`'s omitted `perm_steps`).
 
     Mirrors `cost.rs` exactly. The awkward term is the residual charge, which the arms express as
     `eval_domain * max(tier_ns, FLOOR)` -- not linear in the floor, so it cannot be one column. It is
@@ -242,18 +286,25 @@ def design_row(plan: str, acq: dict, limit: int, offset: int) -> tuple[list[floa
         # fast path), so `artwork_seen_cards` can read 0 (zeroed by all_match_known) on the same row
         # where `artwork_seen_printings` is correctly nonzero -- read the real field directly.
         artwork_seen_printings = float(acq.get("artwork_seen_printings", 0))
+        # The arm charges ONE of two fixed costs -- `GATHER_FIXED_COST_ZERO_MATCH_NS` when
+        # `matches == 0`, `GATHER_FIXED_COST_NS` otherwise -- so a single FIXED column cannot express
+        # it and the mirror always charged the larger. That was 20.0% of GatheredScan rows disagreeing
+        # with the engine at a constant residue of exactly -127.6 ns (169.6 - 42.0), and the single
+        # largest cause of the mirror-drift refusal. Two mutually exclusive indicator columns instead:
+        # every row contributes 1.0 to exactly one of them, so each coefficient fits its own branch.
+        zero_match = 1.0 if acq["matches"] == 0 else 0.0
         return (
-            [eval_domain, scan_units, eval_domain * residual_on, matches, page_span, page_rows, artwork_seen_printings, 1.0],
-            [
-                "LOOP_PER_CARD",
-                "SCAN_PER_ROW",
-                "CARD_PASS+FLOOR",
-                "PUSH_PER_MATCH",
-                "SELECT_PER_PAGE_SLOT",
-                "COLLECT_PER_PAGE_ROW",
-                "ARTWORK_PER_PRINTING",
-                "FIXED",
-            ],
+            {
+                "LOOP_PER_CARD": eval_domain,
+                "SCAN_PER_ROW": scan_units,
+                "CARD_PASS+FLOOR": eval_domain * residual_on,
+                "PUSH_PER_MATCH": matches,
+                "SELECT_PER_PAGE_SLOT": page_span,
+                "COLLECT_PER_PAGE_ROW": page_rows,
+                "ARTWORK_PER_PRINTING": artwork_seen_printings,
+                "FIXED": 1.0 - zero_match,
+                "FIXED_ZERO_MATCH": zero_match,
+            },
             excess,
         )
     if plan == "StreamedSelect":
@@ -286,28 +337,17 @@ def design_row(plan: str, acq: dict, limit: int, offset: int) -> tuple[list[floa
         # when a residual must be tested. `n_cards` carries the O(corpus) work it pays regardless of
         # selectivity -- the counts buffer resized and cleared every query.
         return (
-            [
-                eval_domain,
-                stream_scan_units * residual_on,
-                eval_domain * residual_on,
-                matches,
-                perm_steps,
-                float(acq["artwork_seen_cards"]),
-                small_total,
-                n_cards,
-                1.0,
-            ],
-            [
-                "LOOP_PER_CARD",
-                "SCAN_PER_ROW",
-                "CARD_PASS+FLOOR",
-                "EMIT_PER_MATCH",
-                "PERM_STEP",
-                "ARTWORK_SEEN_PER_CARD",
-                "SMALL_TOTAL_FLOOR_PER_CARD",
-                "CORPUS_PASS_PER_CARD",
-                "FIXED",
-            ],
+            {
+                "LOOP_PER_CARD": eval_domain,
+                "SCAN_PER_ROW": stream_scan_units * residual_on,
+                "CARD_PASS+FLOOR": eval_domain * residual_on,
+                "EMIT_PER_MATCH": matches,
+                "PERM_STEP": perm_steps,
+                "ARTWORK_SEEN_PER_CARD": float(acq["artwork_seen_cards"]),
+                "SMALL_TOTAL_FLOOR_PER_CARD": small_total,
+                "CORPUS_PASS_PER_CARD": n_cards,
+                "FIXED": 1.0,
+            },
             excess,
         )
     if plan == "PrintingCompose":
@@ -327,55 +367,75 @@ def design_row(plan: str, acq: dict, limit: int, offset: int) -> tuple[list[floa
         # value index entry at a time, so there is no bucket granularity to express.
         walk = page_span / match_rate * WALK_LENGTH_BIAS if not gather else 0.0
         return (
-            [
-                float(acq["broadcast_printings"]),
-                float(acq["scatter_printings"]),
-                float(acq["project_printings"]),
-                float(acq["popcount_words"]),
-                walk,
-                limit if not gather else 0.0,
-                eval_domain if gather else 0.0,
-                float(acq["compose_scan_printings"]) if gather else 0.0,
-                float(acq.get("gather_group_printings", 0)) if gather else 0.0,
-                matches if gather else 0.0,
+            {
+                "BROADCAST_PER_PRINTING": float(acq["broadcast_printings"]),
+                "SCATTER_PER_PRINTING": float(acq["scatter_printings"]),
+                # The card-space collection leaf's build (`ids_of` + `broadcast_card_ids_to_printings`),
+                # charged by the engine in `build` on EVERY paging branch. It was missing from this
+                # vector entirely, which accounted for 53 of 53 compose mirror disagreements -- exactly
+                # `collection_broadcast_printings * 1.34` on every one of them. Pricier per printing
+                # than a range's contiguous scatter because it walks a card cursor per id.
+                "COLLECTION_BROADCAST_PER_PRINTING": float(acq.get("collection_broadcast_printings", 0)),
+                "PROJECT_PER_PRINTING": float(acq["project_printings"]),
+                "POPCOUNT_PER_WORD": float(acq["popcount_words"]),
+                "WALK_STEP": walk,
+                "WALK_EMIT_PER_ROW": limit if not gather else 0.0,
+                "GATHER_CARD_PASS": eval_domain if gather else 0.0,
+                "GATHER_BITTEST_PER_PRINTING": float(acq["compose_scan_printings"]) if gather else 0.0,
+                "GATHER_GROUP_PER_PRINTING": float(acq.get("gather_group_printings", 0)) if gather else 0.0,
+                "GATHER_PUSH_PER_MATCH": matches if gather else 0.0,
                 # The full-width printing-bitmap build, charged on the Gather arm only -- Perm and
                 # OrderbyWalk had their rates fitted with it already absorbed. See
                 # `COMPOSE_BUILD_PER_PRINTING_NS` in cost.rs for why it is scoped rather than shared.
-                float(acq["n_printings"]) if gather else 0.0,
-                1.0,
-            ],
-            [
-                "BROADCAST_PER_PRINTING",
-                "SCATTER_PER_PRINTING",
-                "PROJECT_PER_PRINTING",
-                "POPCOUNT_PER_WORD",
-                "WALK_STEP",
-                "WALK_EMIT_PER_ROW",
-                "GATHER_CARD_PASS",
-                "GATHER_BITTEST_PER_PRINTING",
-                "GATHER_GROUP_PER_PRINTING",
-                "GATHER_PUSH_PER_MATCH",
-                "BUILD_PER_PRINTING",
-                "FIXED",
-            ],
+                "BUILD_PER_PRINTING": float(acq["n_printings"]) if gather else 0.0,
+                "FIXED": 1.0,
+            },
             0.0,  # no residual-floor term in this arm, so nothing comes off the target
         )
     return None
 
 
+def coeffs_for(plan: str, terms: list[str]) -> list[float]:
+    """`CURRENT[plan]` as a vector in `terms` order, refusing any mismatch loudly.
+
+    The whole point of naming the terms is that a disagreement between the arm mirror and the
+    constants becomes an error that says which term, instead of a silently shifted column. So this
+    checks the key sets both ways rather than just indexing.
+    """
+    have = CURRENT[plan]
+    missing = [t for t in terms if t not in have]
+    extra = [t for t in have if t not in terms]
+    if missing or extra:
+        msg = (
+            f"CURRENT[{plan!r}] does not match `design_row`'s terms: "
+            f"missing {missing}, unused {extra}. Add the constant from cost.rs, or drop the term."
+        )
+        raise KeyError(msg)
+    return [have[t] for t in terms]
+
+
 def perm_step_check(samples: list[dict]) -> tuple[int, float, float, float] | None:
     """Realized `perm_steps` against the estimate cost.rs derives. The ratio should be 1.00.
 
-    Separate from `counter_check` because this feature is not published by acquire -- the arm computes
-    it from `page_span`, `n_cards` and `matches`. The rate was fitted and cross-validated (kernel
-    0.958-1.256 ns/entry, traffic 1.15), but a rate can look right while the quantity it multiplies is
-    wrong, so the ESTIMATE needs its own grade.
+    Separate from `counter_check` because this term is derived rather than stored. It reads the
+    engine's own `stream_perm_steps` -- exposed in Round 70 for exactly this -- rather than recomputing
+    the formula, which is what it used to do and which was WRONG: it divided by `n_cards` where the arm
+    uses `perm_walk_span`, so it graded the pre-Round-32 formula. That made THREE copies of this
+    walk length in the tree (here, `design_row`, and the arm), two of them stale. The rate was fitted
+    and cross-validated (kernel 0.958-1.256 ns/entry, traffic 1.15), but a rate can look right while
+    the quantity it multiplies is wrong, so the ESTIMATE needs its own grade.
 
     What is being tested is the uniform-spread assumption: the walk is modelled as finding one match
-    every `n_cards / matches` entries, which holds if matches are scattered evenly through the sort
-    permutation and fails if they cluster. Clustering is not far-fetched -- the permutation is ordered
-    by a sort column, and predicates correlate with sort columns (`year>=2020` under `order=released`
-    is the extreme case), so a real skew here would be a genuine model defect and not noise.
+    every `perm_walk_span / matches` entries, which holds if matches are scattered evenly through the
+    walked segment and fails if they cluster. Clustering is not far-fetched -- the permutation is
+    ordered by a sort column, and predicates correlate with sort columns (`year>=2020` under
+    `order=released` is the extreme case), so a real skew here would be a genuine model defect.
+
+    Round 69 measured it, and the skew is real but is NOT in the median: pooled p50 1.023, and sliced
+    by sort column the medians stay flat (0.918-1.183) while the DISPERSION runs from 1.9x on
+    `orderby=name` -- an order uncorrelated with any filter, where uniform spread genuinely holds -- to
+    38.8x on `orderby=cmc`, where it does not. Nothing already on `PlanFeatures` predicts the residual
+    (max |r| 0.12). So no coefficient fixes this, which is the whole point of grading it apart.
 
     Read the SPREAD, not just the median. The executor bounds its walk to the realized match span, so
     the ends of a cluster no longer cost anything and this ratio can only be inflated by non-matching
@@ -392,8 +452,14 @@ def perm_step_check(samples: list[dict]) -> tuple[int, float, float, float] | No
         acq, matches = s["acq"], float(s["acq"]["matches"])
         if matches <= 0:
             continue
-        page_span = float(min(s["offset"] + s["limit"], matches))
-        estimate = min(page_span * float(acq["n_cards"]) / matches, float(acq["n_cards"]))
+        # `cost::stream_perm_steps` itself. Absent from a run recorded before Round 70, in which case
+        # fall back to the arm's CURRENT formula -- `perm_walk_span`, not `n_cards`.
+        if "stream_perm_steps" in acq:
+            estimate = float(acq["stream_perm_steps"])
+        else:
+            page_span = float(min(s["offset"] + s["limit"], matches))
+            span = float(acq.get("perm_walk_span", acq["n_cards"]))
+            estimate = min(page_span * span / matches, span)
         if estimate > 0:
             ratios.append(float(s["perm_steps"]) / estimate)
     if not ratios:
@@ -532,18 +598,22 @@ def mirror_matches_engine(samples: list[dict]) -> tuple[float, int]:
         built = design_row(x["plan"], x["acq"], x["limit"], x["offset"])
         if built is None or x["predicted"] <= 0:
             continue
-        vec, _, excess = built
-        mine = sum(c * v for c, v in zip(CURRENT[x["plan"]], vec, strict=True)) + excess
+        row, excess = built
+        # Paired by NAME, so a term present in one side and not the other is an error rather than a
+        # silent off-by-one down the rest of the vector.
+        coeffs = CURRENT[x["plan"]]
+        coeffs_for(x["plan"], list(row))  # key-set check; raises naming the offending term
+        mine = sum(coeffs[k] * v for k, v in row.items()) + excess
         total += 1
         ok += abs(mine / x["predicted"] - 1.0) < MIRROR_TOLERANCE
     return (ok / total if total else 0.0), total
 
 
-def fit_plan(plan: str, rows: list[dict], label: str | None = None) -> tuple[list[str], list[float]] | None:
+def fit_plan(plan: str, rows: list[dict], label: str | None = None) -> dict[str, float] | None:
     """Fit and report one plan's arm: current vs fitted coefficient, and the agreement each gives.
 
-    Returns the fitted `(names, coeffs)` so a caller partitioning by distinct-on can compare them
-    across modes; `None` when the plan has no fittable design.
+    Returns the fitted rates keyed by term name, so a caller partitioning by distinct-on compares
+    them by name rather than by position; `None` when the plan has no fittable design.
     """
     design, names, targets = [], None, []
     for r in rows:
@@ -554,8 +624,16 @@ def fit_plan(plan: str, rows: list[dict], label: str | None = None) -> tuple[lis
             # compose rows come back Decline-and-measured. Aborting the plan on the first of them is
             # why PrintingCompose silently never got fitted.
             continue
-        vec, names, excess = built
-        design.append(vec)
+        row, excess = built
+        # The numeric fit needs a stable column order, so one is fixed from the first row and every
+        # later row is projected onto it -- and asserted to carry the same terms, since a branch that
+        # emitted a different term set would otherwise fit two meanings into one column.
+        if names is None:
+            names = list(row)
+        elif list(row) != names:
+            msg = f"{plan}: design_row emitted terms {list(row)} after {names}; the arm's columns must be fixed"
+            raise KeyError(msg)
+        design.append([row[n] for n in names])
         # Fit and score the part coefficients control: the residual EXCESS over the floor is not
         # scaled by any of them, so it comes off the target rather than riding as a column.
         targets.append(max(r["measured"] - excess, 1.0))
@@ -571,17 +649,18 @@ def fit_plan(plan: str, rows: list[dict], label: str | None = None) -> tuple[lis
     design = [list(k) for k in grouped]
     targets = [statistics.median(v) for v in grouped.values()]
     weights = [float(len(v)) for v in grouped.values()]
-    coeffs = fit_log_ratio(design, targets, CURRENT[plan], weights)
+    current = coeffs_for(plan, names)
+    coeffs = fit_log_ratio(design, targets, current, weights)
 
     print(f"\n=== {label or plan} ({len(rows):,} rows, {len(design):,} distinct shapes) ===")
-    print(f"{'term':<30}{'current':>12}{'fitted':>12}{'x':>8}")
-    for name, cur, c in zip(names, CURRENT[plan], coeffs, strict=True):
-        print(f"{name:<30}{cur:>12.2f}{c:>12.2f}{c / cur if cur else math.inf:>8.2f}")
+    print(f"{'term':<34}{'current':>12}{'fitted':>12}{'x':>8}")
+    for name, cur, c in zip(names, current, coeffs, strict=True):
+        print(f"{name:<34}{cur:>12.2f}{c:>12.2f}{c / cur if cur else math.inf:>8.2f}")
 
     # Both scored on the same deduplicated shapes, so the comparison is like for like.
     before, after = [], []
     for d, y, w in zip(design, targets, weights, strict=True):
-        for coefs, out in ((CURRENT[plan], before), (coeffs, after)):
+        for coefs, out in ((current, before), (coeffs, after)):
             pred = sum(c * v for c, v in zip(coefs, d, strict=True))
             out.extend([y / pred if pred > 0 else math.inf] * int(w))
     for tag, ratios in (("current", before), ("fitted", after)):
@@ -591,7 +670,7 @@ def fit_plan(plan: str, rows: list[dict], label: str | None = None) -> tuple[lis
         print(
             f"  {tag:<8} median {statistics.median(finite):>6.2f}   p10 {qs[0]:>6.2f}   p90 {qs[8]:>7.2f}   within 25% {near:>5.0%}"
         )
-    return names, coeffs
+    return dict(zip(names, coeffs, strict=True))
 
 
 def fit_by_mode(plan: str, rows: list[dict]) -> None:
@@ -610,7 +689,7 @@ def fit_by_mode(plan: str, rows: list[dict]) -> None:
     by_mode: dict[str, list[dict]] = collections.defaultdict(list)
     for r in rows:
         by_mode[r["unique"]].append(r)
-    fits: dict[str, tuple[list[str], list[float]]] = {}
+    fits: dict[str, dict[str, float]] = {}
     for mode, mrows in sorted(by_mode.items()):
         if len(mrows) < MIN_ROWS_FOR_FIT:
             continue
@@ -620,17 +699,17 @@ def fit_by_mode(plan: str, rows: list[dict]) -> None:
     if len(fits) < 2:  # noqa: PLR2004 - nothing to compare against
         return
     modes = list(fits)
-    names = fits[modes[0]][0]
+    names = list(fits[modes[0]])
     print(f"\n--- {plan}: coefficient spread across distinct-on ---")
-    print(f"{'term':<30}" + "".join(f"{m:>11}" for m in modes) + f"{'max/min':>10}")
-    for i, name in enumerate(names):
-        vals = [fits[m][1][i] for m in modes]
+    print(f"{'term':<34}" + "".join(f"{m:>11}" for m in modes) + f"{'max/min':>10}")
+    for name in names:
+        vals = [fits[m][name] for m in modes]
         lo, hi = min(vals), max(vals)
         # A term at ~0 in every mode is unidentified, not mode-dependent; ignore it either way.
         ratio = hi / lo if lo > MODE_SPLIT_MIN_RATE else math.inf
         flag = "  MODE-DEPENDENT" if hi > MODE_SPLIT_MIN_RATE and ratio > MODE_SPLIT_FACTOR else ""
         shown = "   inf" if math.isinf(ratio) else f"{ratio:>10.2f}"
-        print(f"{name:<30}" + "".join(f"{v:>11.2f}" for v in vals) + f"{shown}{flag}")
+        print(f"{name:<34}" + "".join(f"{v:>11.2f}" for v in vals) + f"{shown}{flag}")
     print(f"  Flagged where the rate moves more than {MODE_SPLIT_FACTOR}x between modes: that is the arm")
     print("  missing a mode-dependent term, not three constants waiting to be hard-coded.")
 
@@ -680,8 +759,10 @@ def main() -> None:
         rows, p10, med, p90 = perm
         print(f"\nStreamedSelect perm_steps realized/estimated over {rows:,} walking rows:")
         print(f"  p10 {p10:.2f}   median {med:.2f}   p90 {p90:.2f}")
-        print("  tests the uniform-spread assumption behind `page_span * n_cards / matches`; skew would")
-        print("  show as a median away from 1.00, and clustering as a wide p10-p90 spread.")
+        print("  tests the uniform-spread assumption behind `page_span * perm_walk_span / matches`; skew")
+        print("  would show as a median away from 1.00, and clustering as a wide p10-p90 spread.")
+        print("  Round 69: the median is fine and the SPREAD is the defect -- 1.9x on orderby=name")
+        print("  against 38.8x on orderby=cmc, at flat medians. No rate can represent that.")
 
     by_plan: dict[str, list[dict]] = collections.defaultdict(list)
     for s in samples:
