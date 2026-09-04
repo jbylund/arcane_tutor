@@ -220,6 +220,121 @@ total regret by 0.0 ms).
 | 65 | An inclusion FLOOR on every top-N pair table: any pair whose printing count is at or above `STREAM_MIN_MATCHES / PAIR_INCLUSION_FLOOR_DIVISOR` (divisor 2, so half the boundary) is kept regardless of rank, on top of the existing rank cutoff rather than instead of it. Turns "the fallback estimate cannot flip a routing decision" from an observation about one corpus into a **proven invariant**: `SubtypePairEstimate` reports `min(indep, rest_max.printings)`, so forcing every big pair INTO the table forces `rest_max.printings` below the floor — and since `printings >= cards` and `printings >= artworks` for any pair, that bounds card and artwork space for free. Derived from the live knob, not hardcoded, and asserted at the point of establishment via `debug_assert`. ARCHIVE_FORMAT_VERSION → 2026090403 | kept | n/a (not this doc's own metric) | **The bug it fixes**: `identity`'s `rest_max.printings` was **1,060** against a boundary of **1,024** — the CAP ITSELF on the wrong side — and all **9** of that dimension's routing-relevant misses read the cap exactly (`id:ubr t:Elf` estimated 1,060 against a true 164). After: cap **509** (2.01x margin), exact hits 5.1% → **10.6%**, **routing-relevant misses across all three dimensions 1 → 0**. `set` and `colors` are **byte-identical** — no set pair reaches the floor (its largest is 503 printings) and colors' 48 qualifying pairs were already kept. Cost **+325 pairs** (identity 286 → 611) = **+8,152 bytes of archive (+0.011%)**; build+load unchanged (interleaved 4-rep min ratio 0.9931). Survey at seed 63 over 9,777 rows: zero plan flips, no detectable ratio change, zero-true-count rate unchanged. Soundness green (883 candidates, none below truth). `cargo test` 305 debug / 302 release (+2), clippy clean both profiles | see "Round 65" narrative below — a space-mismatched safety claim that had sat in the code since Round 34, and why the cheaper zero-cost variant was declined |
 | 66 | **First COST-FEATURE round, not an estimator round.** `gather_composed_page` takes one of three per-card arms and only two walk the candidate's `start..end` span: printing mode pushes every set printing, and the grouping arm (artwork always, card under a non-default prefer) must score every printing per group. The card/**default**-prefer arm breaks at the first set printing (`(start..end).find(is_set)`), because printings are stored prefer-descending so the first set one IS the representative. `compose_scan_printings` charged `printing_matches * COMPOSE_GATHER_SPAN_PER_MATCH` (1.47) in **all three**. Now charges `eval_domain` — the candidate-card count — in the early-break arm only. Deliberately NOT the sibling `groups` predicate, which agrees on card mode but would wrongly strip the multiplier from printing mode. Also wires `--n-queries` into `bench_feature_accuracy.py` (`Budget(sample=N)`, already supported and never exposed) | kept | n/a (not this doc's own metric) | **The direct property, identical population both sides (n=93 `unique=card`/`prefer=default` compose-Gather rows graded against realized `printings_examined`)**: p50 **5.040 → 1.000**, p10 0.79 → 0.16, p90 10.84 → 3.11, mean 7.38 → 1.48. Single rows exact — `f:gladiator`/card charged **80,654** against a realized 15,131, now **15,131** (verified independently). **Controls byte-identical**: card/`prefer=newest` (n=105) and printing/default (n=8) match field-for-field. `bench_feature_accuracy` at matched populations (**112,129 rows both sides, exactly equal**): 146 cells / 59 flagged before AND after, **zero new, zero newly flagged, zero unflagged**; exactly 7 cells move, all `compose_scan_printings`, each at equal n. Ordering holds (87.0→87.1, 95.8→95.7, …). Flips: **3 of 37,771 (0.008%)** on a gather-reaching population, all `GatheredScan → PrintingCompose`, dispatch-priced **2 faster / 1 slower, net +48.67 µs**. Soundness green (6,695 candidates). `cargo test` 305 debug / 302 release, clippy clean both profiles (verified by me — the agent omitted them). Timing flat: same-build controls exceed either cross-build read and the cross-build sign flips | see "Round 66" narrative below — a pinned median that needed slicing rather than smoothing, and the refit this round deliberately did NOT do |
 | 68 | **First EXECUTOR round in this arc — removes real work rather than improving a prediction.** `walk_grouped_page` stepped the permutation and, per card, bit-tested the card's WHOLE printing span and called `prefer_score` on every set printing. But printings are stored prefer-DESCENDING within a card (`from_rows`' load-time sort, ties by illustration_id then scryfall_id), so under `Mode::Card` + `Prefer::Default` the FIRST set printing already IS the chosen representative — every later `prefer_score`, the `touched`/`group_best` bookkeeping and the post-loop group emit were waste. Now takes the same `(start..end).find(is_set)` early break `gather_composed_page` and `push_card_matches` already used. `printings_examined` moved off its unconditional pre-match `(end - start)` to the EXIT POSITION, per arm, with no per-iteration add (the project's hot-path instrumentation rule). Scoped to the only LIVE walk: `walk_card_page_via_popcount_skip` sits behind `COMPOSE_SIGMA_ENABLED` (defaults 0) and the printing/artwork popcount-skip walks have zero production call sites | kept | n/a (not this doc's own metric) | **Row identity is the gate and it passed twice independently.** Agent: 7,776 cells / 374,712 rows byte-identical (3 distinct-ons x 4 prefers x 3 sort cols x both directions x 6 page points x 6 densities), debug AND release, plus 9,000 cells / 235,692 rows matching by sha256 from routed dumps. Me, separately: **21,912 compose cells including 5,920 `Perm`-paging, 750,580 rows, identical sha256** over printing identity — my first attempt used `orderby=rarity` and hit **0 Perm cells**, so it proved nothing until the orderby was varied. **Realized time**: `PrintingCompose` `ns_loop` p50 **0.707** (3,896 → 1,979 ns), interleaved over 6 block pairs, with GatheredScan/StreamedSelect/PlanePopcountOrder/CardRangePopcount controls all reading p50 **1.000**. Plan choice unaffected: **0 changes over 66,414** survey observations, and 0 `paging_taken`/`picked`/`result_total` flips over 595 exact-population paired compose cells. `cargo test` 305 debug / 302 release, clippy clean both profiles (verified by me) | see "Round 68" narrative below — why the end-to-end number is much smaller than the loop number, a density regime the router never reaches, and a cost-feature consequence that is now a queue item |
+| 69 | **Measurement only.** Grades StreamedSelect's two never-graded cost drivers (`perm_walk_span` via the walk term, `stream_scan_units`) against realized counters, answers whether the permutation-less sort columns need their own cost branch, and re-measures the compose walk's per-orderby clump after Round 68 invalidated it | n/a | n/a | **No instrumentation round was needed — item 1's stated blocker was wrong.** Both realized counters (`perm_steps`, `printings_examined`) already exist and are already published. Walk term: pooled median **1.023**, spread 9.6x, split by sort column into **1.9x** (`name`) to **38.8x** (`cmc`) at flat medians (0.918-1.183) — so a per-orderby scalar cannot help in CARD space, and no existing feature predicts the residual (max \|r\| 0.12). `stream_scan_units` is **bimodal**: p25/p50 exactly 1.000, p90 **11.8** (printing 16.7x, artwork 14.0x). Both cost GATES are correct — all 83 walk-gate disagreements (2.79%) are the estimate crossing `STREAM_MIN_MATCHES`, and 720 of 778 scan-gate ones (92.5%) are the plan returning before any loop. `rarity`/`usd` need **no** cost branch: they have no permutation and `streamed_select_applicable` drops the plan from the argmin (offered 0/12 vs 12/12 for `name`/`cmc`). Compose's `Perm`/`OrderbyWalk` shared arm is likewise **correct** (residual medians 1.277 vs 1.449) — but its per-column medians span **0.925-3.579** against one shipped `WALK_LENGTH_BIAS` of 1.45, which CONFIRMS item 5 | see "Round 69" narrative below — a blocker that was already unblocked, and a stale table that validated its own replacement |
+
+### Round 69 (measurement only, no code change)
+
+Grades StreamedSelect's two never-graded cost drivers, `perm_walk_span` and `stream_scan_units`, which
+is queue item 1 as re-scoped. Raw outputs in [measurements/](measurements/)
+(`2026-09-04-streamedselect-feature-grading-uniform.txt` and the gate attribution beside it).
+
+**The stated blocker was wrong, and that is the round's first result.** Item 1 said both features "need
+a realized counter to grade against." Both counters already exist and are already published by
+`explain_analyze`: `perm_walk_span` enters cost only through the walk term, whose realized counterpart
+is `perm_steps`, and `stream_scan_units` grades against `printings_examined`. `cost.rs:526` says so in
+as many words. So the gap was in the harness, not the engine — no instrumentation round, and no
+paired-A/B obligation on a hot path. Cost: one throwaway script.
+
+**The walk term's median is already right and its variance is the whole error.** Realized `perm_steps`
+over the shipped estimate `min(page_span * perm_walk_span / matches, perm_walk_span)`, 560 usable rows
+of 2,974 StreamedSelect plan-rows that ran (`--mode uniform`, 1-3 predicates x 3 `unique` x 6 `orderby`
+x offsets {0, 60, 300}): pooled p10 0.446, median **1.023**, p90 4.302, spread **9.6x**. Sliced by sort
+column the medians barely move (0.918-1.183) while the dispersion ranges from **1.9x** (`name`) to
+**38.8x** (`cmc`), with `edhrec` 11.8x and `power` 8.6x. `rarity` and `usd` produce zero walk rows, so
+the term is untested for those sorts.
+
+That pattern is the finding. A per-orderby **scalar** — the shape item 5 was scoped around — cannot help,
+because there is no per-column offset to correct. What varies is how well the uniform-density assumption
+holds: `name` order is uncorrelated with any filter, so matches really are spread evenly and the formula
+is nearly exact; `cmc` and `power` correlate with the predicates queries actually use (`cmc` with
+color/type, `power` with `t:creature`), so matches clump and the waiting-time formula breaks down. And
+**no feature the router already holds predicts the residual** — log-log Pearson r is **+0.058** against
+`match_rate` (the control, correctly ~0), -0.105 against `page_frac`, -0.122 against the estimate
+itself. A clumping correction has to be a new statistic (filter-vs-sort-column correlation), which makes
+it a build rather than a calibration.
+
+**Do the permutation-less sort columns need their own cost branch?** `rarity` and `usd` produce zero
+walk rows, which prompted the question. For StreamedSelect the answer is **no, and for a better reason
+than `cost.rs` gives.** `SortPermutations::get` returns `None` for `SortCol::Rarity` and
+`SortCol::PriceUsd` — `build_sort_permutations` builds permutations only for
+edhrec/cubecobra/cmc/power/toughness/name — and `streamed_select_applicable` requires
+`sort_perms.order(..).is_some()`, so the plan is dropped from the argmin **before `plan_cost` is ever
+called**. Verified empirically: across 6 broad queries x 2 `unique` x those two columns, StreamedSelect
+was offered on **0 of 12** and ran on 0, while being offered on 12 of 12 for `name`/`cmc`. So
+`perm_walk_span`'s `map_or(ctx.n_cards(), ..)` fallback is unreachable for the walk term, and
+`cost.rs:909`'s claim that the span "already collapses to `n_cards` … when no permutation exists at
+all" is true but beside the point — the applicability gate, not the collapse, is what makes it safe.
+`perm_walk_span` is read at exactly one site (`cost.rs:927`), so nothing else inherits the fallback.
+
+Incidentally this is also why `perm_walk_span == n_cards` so often: the sort-column bound only narrows
+the span when the filter constrains **the same column being sorted**. In the same 48-row check the only
+row where it bit was `cmc>=2` ordered by `cmc` (27,456 against `n_cards` 31,724).
+
+**Where the question DOES land: compose already has the branch in the executor and not in the cost
+model.** `orderby_walk_available(sort_col)` is literally `matches!(sort_col, PriceUsd | Rarity)` — so
+compose's two walk arms partition on exactly this property, `Perm` walking the card permutation and
+`OrderbyWalk` stepping a `PrintingValueIndex`. Two different traversals in two different spaces, and
+regret scores them separately (57% / 21%). But `cost.rs` prices them with **one shared arm**
+(`ComposePaging::Perm | ComposePaging::OrderbyWalk => printings_walked * COMPOSE_WALK_STEP_NS + …`).
+
+Measured, that merge is **fine, and the split that matters is a different one.** Realized
+`printings_examined` / `sigma_bound::uniform_mean` over 971 gradeable compose walk rows — note the
+denominator excludes `WALK_LENGTH_BIAS`, so the shipped estimate is this divided by **1.45**:
+
+| slice | n | p10 | median | p90 | spread |
+|---|---|---|---|---|---|
+| POOLED | 971 | 0.537 | 1.312 | 12.766 | 23.8x |
+| paging `Perm` | 520 | 0.588 | **1.277** | 13.077 | 22.2x |
+| paging `OrderbyWalk` | 451 | 0.493 | **1.449** | 12.596 | 25.6x |
+| `orderby=name` | 154 | 0.656 | **0.925** | 1.423 | **2.2x** |
+| `orderby=usd` | 213 | 0.397 | 1.049 | 5.928 | 14.9x |
+| `orderby=power` | 121 | 0.488 | 1.243 | 3.094 | 6.3x |
+| `orderby=edhrec` | 116 | 0.537 | 2.802 | 11.453 | 21.3x |
+| `orderby=rarity` | 238 | 0.632 | 2.967 | 17.041 | 27.0x |
+| `orderby=cmc` | 129 | 0.438 | **3.579** | 37.327 | **85.3x** |
+
+The two paging arms are statistically indistinguishable (1.277 vs 1.449), so merging them is justified
+and the shared-arm comment is right. **The sort COLUMN is what the pooled bias hides** — and unlike
+card space, here the MEDIANS move, 0.925 to 3.579, a **3.9x range against a single shipped
+`WALK_LENGTH_BIAS = 1.45`.** Per column the constant should be roughly 0.64x its current value for
+`name` and 2.5x for `cmc`. It also cuts straight across the paging boundary: `rarity` (2.967) and `usd`
+(1.049) are both `OrderbyWalk` and differ by 2.8x from each other, so no paging-level split can
+capture it.
+
+**So item 5's original scoping — a per-orderby bias for `printings_walked` — is correct, and this is
+the first direct evidence for it.** It also means the two walks are genuinely different problems rather
+than one: printing space has a per-column BIAS a scalar can fix, card space has per-column VARIANCE it
+cannot. Within a column nothing existing predicts the residual in either space (|r| <= 0.21 against
+`match_rate`, `page_frac`, and the estimate itself).
+
+**`stream_scan_units` is bimodal, not biased.** Realized `printings_examined` / estimate over 1,011
+charged rows: p25 **1.000**, median **1.000**, p90 **11.839**. `printing` (n=354) and `artwork` (n=366)
+are exact through p50 and then reach p90 16.7x and 14.0x; `card` (n=291) is the only slice that
+under-runs at the bottom (p10 0.308). Either exactly right or a large under-count, with little in
+between — the second error shape a coefficient refit cannot represent, and the reason the queue's
+"fix features before refitting" warning applies here too.
+
+**Both cost gates are correct.** `walks_permutation` disagreed with whether the walk ran on 83 of 2,974
+rows (2.79%), and **all 83** are the ESTIMATE landing on the wrong side of `STREAM_MIN_MATCHES` while
+the executor branches on the realized `total` — the gate logic mirrors the executor exactly. The
+residual-scan gate disagreed on 778 rows, of which **720 (92.5%)** are the plan returning before any
+loop (no work done, so nothing mis-estimated), leaving a 58-row residue (1.95%). Attributing these
+mattered: taken at face value the scan gate looked wrong on a quarter of all rows.
+
+**And the clump table it replaces was stale.** Item 5's per-orderby table was recorded at 11:54; Round
+68 landed at 12:44 and redefined `printings_examined`. Re-running at identical seeds (same 971 rows,
+same per-column n) moved the pooled median 1.395 -> **1.312** and `cmc` 4.931 -> **3.579** (-27%),
+narrowing the range of medians from 5.2x to 3.9x. The re-run validates itself: `usd` and `rarity` — the
+only two columns that take `OrderbyWalk` rather than the `walk_grouped_page` arm Round 68 changed — are
+**unchanged to three decimals** (1.049, 2.967) while every `Perm` column moved. A change landing on
+exactly the columns that use the changed arm, and on none of the others, is what a real effect looks
+like. This is the queue's "measure after item 2, not before" rule collecting its first scalp.
+
+**One incidental estimator finding, on a population items 3-4 do not cover.** The boundary straddles are
+one-directional gross OVER-estimates on `is:` and rarity-range leaves rather than on conjunctions —
+`is:vanilla` estimated 17,437 against a realized 429, `r:rare is:vanilla` 5,653 against 15, and
+`r>=mythic year>=1994 year<=2005` **9,466 against 0**. Every routing-boundary error the walk gate
+suffers comes from there, not from the `And` arm this arc has spent thirty rounds on.
 
 ### Round 68
 
