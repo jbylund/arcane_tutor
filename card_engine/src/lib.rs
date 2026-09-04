@@ -9234,7 +9234,11 @@ fn compose_printing_bits(
 /// either, since `best()` can resolve from the estimate channel. That is why the `And` arm seeds its
 /// own `printing` accumulator from the per-leaf fold's `SpaceMeasure` DIRECTLY, channel by channel,
 /// rather than wrapping one `best()`-derived `usize` in `known()` the way Round 58 left it.
-#[derive(Clone, Copy)]
+/// `PartialEq` (Round 62) is a STRUCTURAL comparison of both channels, deliberately not a comparison
+/// of `best()`: it is used to ask "did a fold move this measure at all", which is precisely the
+/// question `best()` cannot answer once one channel can move while the other decides the number. See
+/// `ComposeEstimate::printing_tightened`.
+#[derive(Clone, Copy, PartialEq, Eq)]
 struct SpaceMeasure {
     /// Tightest PROVEN upper bound on the true count, or `None` for "no mechanism proved one".
     guaranteed: Option<usize>,
@@ -9484,6 +9488,32 @@ struct ComposeEstimate {
     /// is one pointer-sized niche, not an inline `Vec`/`String` payload every clone would have to
     /// pay for.
     and_trace: Option<Box<AndTrace>>,
+    /// Round 62: **did any mechanism actually tighten `result.printing` below what the per-leaf fold
+    /// seeded?** A structural fact, recorded where it happens, rather than a number comparison
+    /// downstream.
+    ///
+    /// `acquire_plan_features` has to know this to price the MATERIALIZING alternatives: they walk the
+    /// CANDIDATE set (`narrow_rec` declines broad children), so the moment `result` moves below
+    /// `candidate` the answer's own count stops describing the domain they scan. It used to ask
+    /// `est.candidate.printing() == est.result.printing()`. That test is not simply wrong --
+    /// `result <= candidate` always holds, so an inequality really does imply a tightening -- but it
+    /// is unsound in the other direction, in two ways, both of which report "nothing tightened" when
+    /// something did:
+    ///
+    /// - **It cannot see a bound-only tightening.** `printing()` is `SpaceMeasure::best()`, and Round
+    ///   60 measured the estimate channel to be the tighter of the two on 17,628 of 32,745 roots -- so
+    ///   on over half of roots `best()` reads the estimate, and a mechanism that lowered only
+    ///   `guaranteed` leaves the number it compares completely unmoved. Round 59 made bound-only
+    ///   tightenings the norm rather than a curiosity (`Candidate::PrintingBound`, `pair_bounded_min`'s
+    ///   `guaranteed`-seeded fold), so this is a live gap, not a hypothetical.
+    /// - **It cannot separate "tightened to the same number" from "not tightened."**
+    ///
+    /// `true` on an `And` whose own `pair_bounded_min`/`fold_candidate` folds moved `result.printing`
+    /// off its seed, and on any node with such a child (a nested `And` under an `And`/`Or` pushes
+    /// `result` below `candidate` at the parent too, which is exactly the same question the parent's
+    /// consumer is asking). `false` for every leaf, where `result` and `candidate` are the same value
+    /// by construction.
+    printing_tightened: bool,
 }
 
 impl ComposeEstimate {
@@ -9491,14 +9521,14 @@ impl ComposeEstimate {
     /// the same count, and there is no space beyond printing to report.
     fn leaf(k: usize, broadcast: usize, scatter: usize) -> Self {
         let space = SpaceEstimate::printing_only(k);
-        Self { result: space, candidate: space, broadcast, scatter, collection_broadcast: 0, exact_domain: None, and_trace: None }
+        Self { result: space, candidate: space, broadcast, scatter, collection_broadcast: 0, exact_domain: None, and_trace: None, printing_tightened: false }
     }
 
     /// `leaf`, plus whichever of the card/artwork spaces the caller already has in hand for free --
     /// every call site that has one is expected to pass it, not re-derive it via `result`'s own scale.
     fn leaf_spaces(k: usize, broadcast: usize, scatter: usize, card: Option<usize>, artwork: Option<usize>) -> Self {
         let space = SpaceEstimate::spaces(k, card, artwork);
-        Self { result: space, candidate: space, broadcast, scatter, collection_broadcast: 0, exact_domain: None, and_trace: None }
+        Self { result: space, candidate: space, broadcast, scatter, collection_broadcast: 0, exact_domain: None, and_trace: None, printing_tightened: false }
     }
 
     /// `leaf_spaces`, for the two leaf arms whose printing figure is a card count scaled by the corpus
@@ -9507,14 +9537,14 @@ impl ComposeEstimate {
     /// without leaving the line, that `k` here is a GUESS and not a bound.
     fn leaf_spaces_approx_printing(k: usize, broadcast: usize, scatter: usize, card: Option<usize>, artwork: Option<usize>) -> Self {
         let space = SpaceEstimate::spaces_approx_printing(k, card, artwork);
-        Self { result: space, candidate: space, broadcast, scatter, collection_broadcast: 0, exact_domain: None, and_trace: None }
+        Self { result: space, candidate: space, broadcast, scatter, collection_broadcast: 0, exact_domain: None, and_trace: None, printing_tightened: false }
     }
 
     /// A card-space collection leaf specifically -- see `collection_broadcast`'s doc for why this
     /// isn't just `leaf(k, 0, k)`.
     fn collection_leaf(k: usize, card: Option<usize>, artwork: Option<usize>) -> Self {
         let space = SpaceEstimate::spaces(k, card, artwork);
-        Self { result: space, candidate: space, broadcast: 0, scatter: 0, collection_broadcast: k, exact_domain: None, and_trace: None }
+        Self { result: space, candidate: space, broadcast: 0, scatter: 0, collection_broadcast: k, exact_domain: None, and_trace: None, printing_tightened: false }
     }
 }
 
@@ -10659,6 +10689,13 @@ fn compose_printing_estimate(
                 collection_broadcast: a.collection_broadcast + c.collection_broadcast,
                 exact_domain: None,
                 and_trace: None,
+                // A child that tightened its OWN `result` below its OWN `candidate` has already
+                // pushed `folded.result` below `folded.candidate` here -- so the flag propagates
+                // through the fold, not just out of this arm's own mechanisms. Without this, an
+                // `And` whose children did all the tightening (a nested `And`) would report
+                // "nothing tightened" to a consumer whose candidate set really is broader than the
+                // answer, which is the same false negative the numeric test is being replaced for.
+                printing_tightened: a.printing_tightened || c.printing_tightened,
             });
             // Round 37a: `leaves` reports each DIRECT child's own solo estimate -- recomputed here
             // (not read off `children_estimates`, which is keyed to `and_sources` and can hold FEWER
@@ -10744,6 +10781,11 @@ fn compose_printing_estimate(
             let folded_printing_bound =
                 folded.result.printing.guaranteed.expect("the And fold seeds printing's guaranteed channel from leaf(n_printings)");
             let pair_min = pair_bounded_min(v, indexes, folded_printing_bound, &mut covered);
+            // Round 62: the seed `printing_tightened` is measured against -- the per-leaf fold's own
+            // printing measure, both channels, BEFORE `pair_bounded_min` or any `fold_candidate` gets
+            // to lower it. See `ComposeEstimate::printing_tightened`'s doc for what the flag answers
+            // and why the old `candidate == result` number comparison could not.
+            let seed_printing = folded.result.printing;
             let mut printing = folded.result.printing;
             printing.lower_guaranteed(pair_min);
             printing.lower_estimate(pair_min);
@@ -12407,7 +12449,19 @@ fn compose_printing_estimate(
             if let Some(t) = and_trace.as_mut() {
                 t.tree = and_trace_build_tree(&t.leaves, &t.considered, result_space);
             }
-            ComposeEstimate { result: result_space, exact_domain, and_trace: and_trace.map(Box::new), ..folded }
+            // Round 62: "did anything in THIS arm move `result.printing` off the per-leaf seed", ORed
+            // with whatever the children already reported through `folded`. Stated as one comparison
+            // of the SAME field against its own seed, both channels, rather than threaded as a
+            // `&mut bool` through `fold_candidate`'s ~20 call sites: `SpaceMeasure`'s only mutators
+            // (`lower_guaranteed`/`lower_estimate`) are monotone -- each either lowers a channel or
+            // fills an absent one, never restores it -- so `!=` against the seed holds exactly when at
+            // least one of them fired, and unlike a threaded flag it cannot silently go stale when a
+            // future mechanism writes `result.printing` without updating a bookkeeping parameter.
+            // This is NOT the comparison being retired: that one read `best()` across two DIFFERENT
+            // fields (`candidate` vs `result`), which is blind to a bound-only tightening; this reads
+            // both channels of one field against its own earlier value.
+            let printing_tightened = folded.printing_tightened || result_space.printing != seed_printing;
+            ComposeEstimate { result: result_space, exact_domain, and_trace: and_trace.map(Box::new), printing_tightened, ..folded }
         }
         FilterExpr::Or(v) => {
             let n_cards = offsets.len() - 1;
@@ -12428,6 +12482,12 @@ fn compose_printing_estimate(
                     collection_broadcast: a.collection_broadcast + c.collection_broadcast,
                     exact_domain: None,
                     and_trace: None,
+                    // `Or` tightens nothing of its own (it is a sum-then-clamp), but a tightened child
+                    // makes this node's `result` sum smaller than its `candidate` sum, which is
+                    // exactly the condition the consumer is asking about -- so the flag propagates.
+                    // `clamp` below cannot introduce a divergence: it applies the identical `min` to
+                    // `result` and `candidate` alike.
+                    printing_tightened: a.printing_tightened || c.printing_tightened,
                 });
             ComposeEstimate { result: clamp(summed.result), candidate: clamp(summed.candidate), ..summed }
         }
@@ -12524,7 +12584,7 @@ fn compose_printing_estimate(
             let artwork = exact_result_total(inner, indexes, Mode::Artwork).map(|a| n_artworks.saturating_sub(a));
             if src.card_space {
                 let space = SpaceEstimate::spaces(complement, card, artwork);
-                ComposeEstimate { result: space, candidate: space, broadcast: 0, scatter: 0, collection_broadcast: k, exact_domain: None, and_trace: None }
+                ComposeEstimate { result: space, candidate: space, broadcast: 0, scatter: 0, collection_broadcast: k, exact_domain: None, and_trace: None, printing_tightened: false }
             } else {
                 ComposeEstimate::leaf_spaces(complement, 0, k, card, artwork)
             }
@@ -16976,10 +17036,21 @@ fn acquire_plan_features(
         // printing-scaled one wearing a card-shaped name (`domain_hint_is_card_space_not_printing_scaled`)
         // -- can only be >= the real domain (it ignores what non-plane siblings would additionally
         // narrow), so `min`-ing it with the existing estimate is a strict tightening, never a regression.
-        let domain_cards_before_card = if est.candidate.printing() == est.result.printing() {
-            est_cards
-        } else {
+        //
+        // Round 62: the branch is taken on `est.printing_tightened`, an explicit flag the estimator
+        // sets where a fold actually lowers `result.printing`, replacing the numeric
+        // `est.candidate.printing() == est.result.printing()` test. The structural question here has
+        // always been "did any mechanism tighten `result.printing` below the per-leaf fold" -- if it
+        // did, `est_cards` describes the ANSWER and no longer describes the domain the materializing
+        // alternatives walk. `printing()` is `best()`, so the old spelling could not see a tightening
+        // that moved only `guaranteed`, and Round 60 measured `best()` reading from the estimate
+        // channel on 17,628 of 32,745 roots -- i.e. on the majority of roots a bound-only tightening
+        // was silently reported as "nothing tightened", and this branch handed `scan_units` an
+        // answer-shaped number for a domain-shaped slot. See `ComposeEstimate::printing_tightened`.
+        let domain_cards_before_card = if est.printing_tightened {
             calibrated_balls_into_bins(est.candidate.printing(), n_cards as usize)
+        } else {
+            est_cards
         };
         // `est.card` additionally tightens `domain_cards`, beyond the `else` branch above, but ONLY for
         // a genuine `And` -- found live (`id:g border:white`, artwork mode): `est.candidate == est.result`
@@ -17111,11 +17182,14 @@ fn acquire_plan_features(
                 // narrow already costs nothing to get wrong.
                 return exact_domain.printing.min(n_printings as usize);
             }
-            // `est.candidate == est.result` mirrors `domain_cards`' own guard: nothing was tightened
+            // `!est.printing_tightened` mirrors `domain_cards`' own guard: nothing was tightened
             // away from the leaf/pair-exact estimate, so `exact_printing_span` (already gated to
             // card-invariant filters above, where match count IS the matching cards' full span) is the
-            // true span under exactly these candidates.
-            if est.candidate.printing() == est.result.printing()
+            // true span under exactly these candidates. Round 62: the explicit flag, for the same
+            // reason the sibling guard above swapped to it -- `exact_printing_span` describes the span
+            // of the UNTIGHTENED candidate set, so a tightening this test cannot see (one that moved
+            // only `guaranteed`) makes it the span of a set larger than the one being priced.
+            if !est.printing_tightened
                 && let Some(printings) = exact_printing_span
             {
                 return printings.min(n_printings as usize);
