@@ -4128,6 +4128,28 @@ struct SpaceTotals {
     cards: u32,
     artworks: u32,
 }
+// SPECIFIED, NOT BUILT (Round 74) -- the statistic `scan_all`'s printing/artwork branch needs and no
+// table holds: a fourth `span: u32`, the sum of `offsets[cid + 1] - offsets[cid]` over the cards this
+// value matches. That branch currently estimates it as `cards * printings_per_card * a premium`, whose
+// residual spread is ~18x and which no constant can tighten (see
+// `COMPOSE_FULL_SPAN_REPRINT_PREMIUM`).
+//
+// `printings` is NOT this, and the repo already proved it rather than guessing: `scan_all`'s own doc
+// records that substituting `exact_result_total(composed, Mode::Printing)` for the span regressed
+// 1,077 queries, "because a card can have OTHER printings that don't match the leaf's own value but
+// are still part of that card's range". `span` is that whole range -- which is exactly what
+// `printings_examined` realizes in printing and artwork mode, where the kernel returns `end - start`
+// unconditionally (`printing_span == printings_examined` on 99.5% / 99.4% of measured rows).
+//
+// Cost: one `u32` per existing entry, computed inside the `build_value_totals` pass that already
+// visits every (card, printing) pair -- no new index probe, no per-query scan, no new pass. The table
+// is ~2 KB today, so ~+0.7 KB of archive plus an `ARCHIVE_FORMAT_VERSION` bump. A single-value leaf
+// reads it exactly; an `And` takes `min` over children, the same composition `domain_cards` already
+// uses, and a true upper bound since the candidate set is a subset of each child's.
+//
+// What it does NOT cover is a range leaf: `RangeCardCounts` would need the mirrored prefix/suffix span
+// aggregate, the same idea at a second table's cost. Coverage of the affected population is therefore
+// partial and unmeasured -- size it before building.
 
 impl ArchivedSpaceTotals {
     fn get(&self, mode: Mode) -> usize {
@@ -16628,6 +16650,41 @@ const COMPOSE_GATHER_SPAN_PER_MATCH: f64 = 1.47;
 /// to the realized span, not because the size-bias premise above reversed sign.
 const COMPOSE_CANDIDATE_SPAN_BIAS: f64 = 0.7;
 
+/// How much more reprinted a composable predicate's candidate cards are than an average card, for
+/// `scan_all`'s `Mode::Printing`/`Mode::Artwork` branch — which walks each candidate's WHOLE span, so
+/// unlike the card-mode branch it has no first-match depth term to discount by.
+///
+/// Deliberately NOT folded into `COMPOSE_CANDIDATE_SPAN_BIAS`: that constant is fit on `unique=card`
+/// samples (see its own doc) and multiplies the card-mode depth term, and laundering a card-fitted
+/// constant into a non-card path is what hid the bug this branch exists to fix. This one is fit on the
+/// population it serves and multiplies nothing else.
+///
+/// **1.2, and the choice is a real trade-off rather than an optimum**, because the three metrics
+/// disagree. Graded as `feature / printings_examined` over 955 compose printing/artwork rows, sweeping
+/// this constant:
+///
+///     x1.0   median 0.914   within-25% 36%   |mean log| 0.4679   spread 19.0
+///     x1.2   median 1.000   within-25% 31%   |mean log| 0.3193   spread 18.8   <-- shipped
+///     x1.4   median 1.000   within-25% 29%   |mean log| 0.1939   spread 18.1
+///     x1.9   median 1.076   within-25% 30%   |mean log| 0.0540   spread 16.8
+///
+/// `within-25%` peaks at 1.0, median-unbiasedness starts at 1.2, and |mean log| minimises near 1.9
+/// because the realized distribution is right-skewed (p90 8.26) and a mean chases that tail. 1.2 is
+/// the SMALLEST value that lands the median at exactly 1.000, which is the criterion
+/// `bench_feature_accuracy` actually flags on ([0.8, 1.25] on the median), while staying near the
+/// within-25% peak. The realized multiplier's own median is **1.095**, so this is close to
+/// median-unbiased by construction.
+///
+/// The direction is load-bearing, not aesthetic: this term is 44% of StreamedSelect's predicted cost,
+/// so under-charging over-picks P3, and over-charging pushes traffic to compose — which `lib.rs`
+/// already notes is over-picked in artwork, carrying 21% of all routing regret. Median-neutral is the
+/// defensible target; the mean-log optimum at 1.9 would over-charge P3 at the median and is rejected
+/// for that reason, not for lack of fit.
+///
+/// The residual ~18x spread is this premium's own variance and no constant fixes it — see
+/// `SpaceTotals`' doc for the per-value `span` column that would supply it exactly.
+const COMPOSE_FULL_SPAN_REPRINT_PREMIUM: f64 = 1.2;
+
 /// `balls_into_bins` with its measured clustering bias divided out of the BALL COUNT. See
 /// `COMPOSE_CARD_ESTIMATE_BIAS` for the 1.78 and why clustering causes it.
 ///
@@ -17528,6 +17585,27 @@ fn acquire_plan_features(
             // match/printing/candidate count. `COMPOSE_CANDIDATE_SPAN_BIAS` still corrects the
             // remaining "candidates are more reprinted than an average card" size bias (see its own
             // doc) on top of the depth term, refit for this shape (see the constant's own doc).
+            // **Everything above is `Mode::Card` ONLY**, and Round 74 gates it there. The depth term
+            // models the position of the FIRST MATCHING printing, which is where `card_match_count`'s
+            // `Mode::Card` arm returns (`return (1, i as u32 + 1)`). The `Mode::Printing` and
+            // `Mode::Artwork` arms of that same function return `(end - start)` UNCONDITIONALLY, so
+            // what gets realized there is the candidate's whole span -- `printing_span ==
+            // printings_examined` on 99.5% / 99.4% of measured rows in those modes, against a card-mode
+            // realized depth of 0.54 of the span. And `(ppc + 1) / (density + 1) <= ppc` by
+            // construction, so applying the discount to a full-span walk can ONLY under-charge. It did,
+            // by 3x at the median: the shipped feature graded p50 **0.335** against realized
+            // `printings_examined` on 955 compose printing/artwork rows, |mean log| 1.2301.
+            //
+            // `COMPOSE_CANDIDATE_SPAN_BIAS` does not transfer either -- its own doc records that it was
+            // fit on `unique=card` samples exclusively -- so the non-card branch returns early rather
+            // than inheriting it. That matters beyond tidiness: a card-fitted constant silently
+            // multiplying a non-card path is precisely what made this bug invisible, and Round 72 hit
+            // the same shape one estimator over (a span multiplier pooled across two regimes, pure
+            // over-charge on one). One constant, named for the population it is fit on.
+            if !matches!(mode, Mode::Card) {
+                return (((cards as f64) * printings_per_card * COMPOSE_FULL_SPAN_REPRINT_PREMIUM) as usize)
+                    .min(n_printings as usize);
+            }
             let density = (printing_matches as f64) / (cards as f64).max(1.0);
             let expected_depth = ((printings_per_card + 1.0) / (density + 1.0)).min(printings_per_card);
             (((cards as f64) * expected_depth * COMPOSE_CANDIDATE_SPAN_BIAS) as usize).min(n_printings as usize)

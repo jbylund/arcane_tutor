@@ -222,6 +222,124 @@ total regret by 0.0 ms).
 | 68 | **First EXECUTOR round in this arc — removes real work rather than improving a prediction.** `walk_grouped_page` stepped the permutation and, per card, bit-tested the card's WHOLE printing span and called `prefer_score` on every set printing. But printings are stored prefer-DESCENDING within a card (`from_rows`' load-time sort, ties by illustration_id then scryfall_id), so under `Mode::Card` + `Prefer::Default` the FIRST set printing already IS the chosen representative — every later `prefer_score`, the `touched`/`group_best` bookkeeping and the post-loop group emit were waste. Now takes the same `(start..end).find(is_set)` early break `gather_composed_page` and `push_card_matches` already used. `printings_examined` moved off its unconditional pre-match `(end - start)` to the EXIT POSITION, per arm, with no per-iteration add (the project's hot-path instrumentation rule). Scoped to the only LIVE walk: `walk_card_page_via_popcount_skip` sits behind `COMPOSE_SIGMA_ENABLED` (defaults 0) and the printing/artwork popcount-skip walks have zero production call sites | kept | n/a (not this doc's own metric) | **Row identity is the gate and it passed twice independently.** Agent: 7,776 cells / 374,712 rows byte-identical (3 distinct-ons x 4 prefers x 3 sort cols x both directions x 6 page points x 6 densities), debug AND release, plus 9,000 cells / 235,692 rows matching by sha256 from routed dumps. Me, separately: **21,912 compose cells including 5,920 `Perm`-paging, 750,580 rows, identical sha256** over printing identity — my first attempt used `orderby=rarity` and hit **0 Perm cells**, so it proved nothing until the orderby was varied. **Realized time**: `PrintingCompose` `ns_loop` p50 **0.707** (3,896 → 1,979 ns), interleaved over 6 block pairs, with GatheredScan/StreamedSelect/PlanePopcountOrder/CardRangePopcount controls all reading p50 **1.000**. Plan choice unaffected: **0 changes over 66,414** survey observations, and 0 `paging_taken`/`picked`/`result_total` flips over 595 exact-population paired compose cells. `cargo test` 305 debug / 302 release, clippy clean both profiles (verified by me) | see "Round 68" narrative below — why the end-to-end number is much smaller than the loop number, a density regime the router never reaches, and a cost-feature consequence that is now a queue item |
 | 69 | **Measurement only.** Grades StreamedSelect's two never-graded cost drivers (`perm_walk_span` via the walk term, `stream_scan_units`) against realized counters, answers whether the permutation-less sort columns need their own cost branch, and re-measures the compose walk's per-orderby clump after Round 68 invalidated it | n/a | n/a | **No instrumentation round was needed — item 1's stated blocker was wrong.** Both realized counters (`perm_steps`, `printings_examined`) already exist and are already published. Walk term: pooled median **1.023**, spread 9.6x, split by sort column into **1.9x** (`name`) to **38.8x** (`cmc`) at flat medians (0.918-1.183) — so a per-orderby scalar cannot help in CARD space, and no existing feature predicts the residual (max \|r\| 0.12). `stream_scan_units` is **bimodal**: p25/p50 exactly 1.000, p90 **11.8** (printing 16.7x, artwork 14.0x). Both cost GATES are correct — all 83 walk-gate disagreements (2.79%) are the estimate crossing `STREAM_MIN_MATCHES`, and 720 of 778 scan-gate ones (92.5%) are the plan returning before any loop. `rarity`/`usd` need **no** cost branch: they have no permutation and `streamed_select_applicable` drops the plan from the argmin (offered 0/12 vs 12/12 for `name`/`cmc`). Compose's `Perm`/`OrderbyWalk` shared arm is likewise **correct** (residual medians 1.277 vs 1.449) — but its per-column medians span **0.925-3.579** against one shipped `WALK_LENGTH_BIAS` of 1.45, which CONFIRMS item 5 | see "Round 69" narrative below — a blocker that was already unblocked, and a stale table that validated its own replacement |
 
+### Round 74 — `scan_all`'s depth discount was card-mode-only, applied to every mode
+
+The largest term in the model with a graded feature behind it (`SCAN_PER_ROW`, 44.1% of
+StreamedSelect's predicted cost) was under-charging by **3x at the median**. Three agents worked
+separate lanes — the QUANTITY, the FUNCTIONAL FORM, and the DISPERSION — and two of them converged
+independently on the same root cause, which is the strongest evidence this arc has produced for a
+single fix.
+
+**The bug.** `scan_all`'s fall-through computes
+`expected_depth = (printings_per_card + 1) / (density + 1)` — an order statistic on the position of
+the FIRST MATCHING printing. That is exactly where `card_match_count`'s `Mode::Card` arm returns
+(`return (1, i + 1)`). The `Mode::Printing` and `Mode::Artwork` arms of the same function return
+`(end - start)` **unconditionally**, so what gets realized there is the candidate's whole span:
+`printing_span == printings_examined` on **99.5% / 99.4%** of measured rows in those modes, against a
+card-mode realized depth of 0.54 of the span. And `(ppc + 1) / (density + 1) <= ppc` by construction,
+so applying the discount to a full-span walk **can only ever under-charge**. On top of that,
+`COMPOSE_CANDIDATE_SPAN_BIAS` multiplies it, and its own doc records that it was fit on `unique=card`
+samples exclusively. Round 72 hit the same shape one estimator over (a span multiplier pooled across
+two regimes, pure over-charge on one).
+
+**The fix** is a mode gate with an early return, so the non-card branch inherits no card-fitted
+constant, plus one new constant named for the population it is fit on. Card mode is untouched.
+
+**The constant was chosen by a head-to-head neither lane ran.** The two lanes proposed different
+multipliers on `cards * printings_per_card` — 1.0 (an early return bypassing the bias) and 1.4
+(a premium of 2.0 times the shipped 0.7 bias) — and reported them from different harnesses on
+different populations, so their numbers were not comparable. Graded together on one population of 955
+compose printing/artwork rows:
+
+| multiplier | median | within 25% | \|mean log\| | spread |
+|---|---|---|---|---|
+| shipped | 0.335 | 30% | 1.2301 | 27.8x |
+| 1.0 | 0.914 | **36%** | 0.4679 | 19.0x |
+| **1.2 (shipped)** | **1.000** | 31% | 0.3193 | 18.8x |
+| 1.4 | **1.000** | 29% | 0.1939 | 18.1x |
+| 1.9 | 1.076 | 30% | **0.0540** | 16.8x |
+
+The three metrics genuinely disagree: `within-25%` peaks at 1.0, median-unbiasedness starts at 1.2,
+and |mean log| minimises near 1.9 because the realized distribution is right-skewed (p90 8.26) and a
+mean chases that tail. **1.2 is the smallest value landing the median at exactly 1.000** — the
+criterion `bench_feature_accuracy` actually flags on — while staying near the within-25% peak, and the
+realized multiplier's own median is **1.095**. The direction is load-bearing rather than aesthetic:
+under-charging over-picks P3, and over-charging pushes traffic to compose, which is already
+over-picked in artwork (21% of all routing regret), so the mean-log optimum at 1.9 is rejected for
+over-charging at the median, not for fit.
+
+**Paired at an identical population (60,122 feature-rows both sides, 0 cell-n mismatches, 173 of 217
+cells unchanged):**
+
+| cell | n | p50 | spread |
+|---|---|---|---|
+| `stream_scan_units` pooled | 5,038 | 0.850 -> **1.000** | 25.6 -> **12.6** |
+| `stream_scan_units [printing_compose]` | 3,434 | 0.420 -> **1.000** | 36.4 -> **18.4** |
+| `stream_scan_units <StreamedSelect> / printing` | 1,832 | 0.930 -> **1.000** | 18.5 -> 10.7 |
+| `stream_scan_units <StreamedSelect> / artwork` | 1,757 | 0.930 -> **1.000** | 18.3 -> 9.5 |
+| `scan_units` pooled | 11,987 | 0.550 -> **0.930** | 10.7 -> **6.6** |
+| `scan_units <GatheredScan> / printing` | 4,013 | 0.400 -> **1.000** | 11.1 -> 6.7 |
+| `scan_units <GatheredScan> / artwork` | 4,007 | 0.390 -> **1.000** | 10.7 -> 6.6 |
+
+**It had to move BOTH plans, and that is why the effect is larger than any single lane measured.**
+GatheredScan's `scan_units` has the identical defect (p50 0.40) because both plans read the same
+`scan_all`. Fixing `stream_scan_units` alone would have manufactured a false P3/P4 asymmetry — the
+exact hazard `lib.rs` warns about — so the shared helper is the right place and every per-`orderby`
+cell moves to ~1.000 with its spread roughly halved.
+
+**Flips, dispatch-priced.** 54 of 3,600 prefer-varied survey rows (1.50%), **0 in card mode**, all
+away from StreamedSelect. Priced by measuring both the old and new pick inside the SAME
+`explain_analyze` response (common-mode, so the two share whatever drift the machine has — a
+cross-build comparison could not resolve microseconds against the documented ~9% noise floor):
+
+| transition | n | net | median |
+|---|---|---|---|
+| `StreamedSelect -> PrintingCompose` | 16 | **-2,410.7 us** | -56.67 us |
+| `StreamedSelect -> GatheredScan` | 29 | -65.0 us | -0.37 us |
+| `GatheredScan -> PrintingCompose` | 2 | **+151.4 us** | +75.71 us |
+
+Net **-2,324.3 us** over 47 priced rows, 21 faster / 3 slower / 23 inside a 1 us floor. The flips
+toward compose were the flagged risk and turned out to be the entire win; the only real regression is
+a 2-row `GatheredScan -> PrintingCompose` pair, worst single row +180.1 us
+(`id:u pow>=1 pow<=4 year>=1995`/printing/rarity/offset 300/newest). `cargo test` 306 debug / 303
+release, clippy clean both profiles.
+
+**Two proposals measured and REJECTED, recorded so they are not retried:**
+
+- **The `residual_card_invariant -> stream_scan_units = 0` override is genuinely unsound** —
+  `touches_printing_field` reports `Legality => false` by an explicit ranking choice made for
+  `printing_dependent`'s verify order (`filter.rs:898`), so a legality residual zeroes a term the
+  executor really pays (`f:oldschool t:creature`/printing zeroed against a realized 2,587). Replacing
+  it with the exact divergent-candidate span makes the cell exact (32 rows, 0.000 -> 1.000) and still
+  should not ship: **0 plan flips of 19,011**, and it costs **+7.4 us of acquire** on a
+  12,716-candidate query (~0.55 ns per candidate) against 66.7 us saved across 46 rows. It needs an
+  O(1) divergence estimate, not an O(candidates) pass. Simply dropping the zero is far worse (p50
+  **20.0x**, p90 **204x**) — for broad formats divergence really is the rare corpus case.
+- **A per-mode split of the cost ARM itself.** `PlanFeatures` deliberately carries no `mode`,
+  `prefer` or `all_match`, so `plan_cost` structurally cannot branch on them, and every prior
+  "split the arm" round (66, 68, 70, 72) was implemented acquire-side instead. The form
+  `if tier_ns > 0 { count x rate }` is **exactly correct where the count is honest**: restricted to
+  the `candidates` acquire's full-span-walk arms it reads **100.0% exact, spread 1.0**. The 27x pooled
+  spread was one acquire branch's number, never a missing term.
+
+**Also recorded, not acted on.** `card_match_count` does not take `prefer` at all — P3's residual
+scan is prefer-independent, and all the prefer sensitivity lives in the separate `redo_examined`
+counter. The `tier_ns > 0` gate has one provable condition error (under `Mode::Card` with an
+existential plane the kernel walks printings even when `all_match_known`, so `tier == 0` is the wrong
+proxy: 32 of 1,927 rows, realized `examined/cards_visited` p50 1.17) but it simulates at 0-1 flips per
+4,000 queries and would need a new `PlanFeatures` field. And 153 of 199 rows where the feature is
+live-zeroed are compose queries whose `scan_units` is 0 from an estimated EMPTY intersection while the
+executor still scans — a plan must scan to discover a set is empty; this fix incidentally cuts that
+population to 24.
+
+**The card-mode grading is itself partly wrong, which bounds what any of this proves.**
+`stream_scan_units` deliberately includes a redo-bias term (Round 31), but `printings_examined` is
+captured only from the counting pass and structurally cannot see the redo — that is the separate
+`redo_examined` counter. On the 568 card rows where redo fires, `ssu/examined` reads p50 0.892 while
+`ssu/(examined + redo)` reads 0.370. So card mode's cell is measured against a counter missing a
+component the feature intends, and Round 73's 44.1%/27.1x figures inherit that. Card mode is gated out
+of this fix for that reason among others; repairing the grading is a prerequisite to touching it.
+
 ### Round 73 (measurement only, no code change) — which terms actually carry the cost
 
 Adds `scripts/bench_term_contributions.py` and answers the question that should have been asked
