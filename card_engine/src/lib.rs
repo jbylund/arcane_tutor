@@ -14983,20 +14983,48 @@ fn walk_grouped_page<'a>(
         let start = u32::from(offsets[cid as usize]) as usize;
         let end = u32::from(offsets[cid as usize + 1]) as usize;
         work.cards_visited += 1;
-        work.printings_examined += (end - start) as u64;
         scratch.clear();
         match mode {
             // Printing: every set printing is its own row (no grouping).
             Mode::Printing => {
+                work.printings_examined += (end - start) as u64;
                 for pid in start..end {
                     if is_set(pid) {
                         scratch.push((sort_key_bits(card, &printings[pid], sort_col, descending), cid, pid as u32));
                     }
                 }
             }
-            // Card / Artwork: one best-prefer representative per group — a single group for Card, one
-            // per `artwork_group_id` for Artwork.
+            // Card, default prefer: printings are stored prefer-DESCENDING within a card (the load-time
+            // sort in `from_rows`, ties by illustration_id then scryfall_id), so the first *set* printing
+            // in range already IS the chosen representative — every `prefer_score` call after it was
+            // wasted, as was the `touched`/`group_best` bookkeeping. Same early break
+            // `gather_composed_page` and `push_card_matches` take, and byte-identical in what it picks:
+            // the general loop's strict `>` gives ties to the lowest pid, which is the one `find` stops
+            // at. Only MATCHING cards save anything, though: this walk steps the whole permutation, so a
+            // card with no set printing still bit-tests its full span (the `else`) and is untouched here.
+            Mode::Card if matches!(prefer, Prefer::Default) => {
+                // `find` rather than an explicit indexed loop with a `break`, so this reads as the
+                // same construct `gather_composed_page`'s corresponding arm uses. Both shapes were
+                // measured on the real corpus and are indistinguishable, at every density in the live
+                // `Perm` population and in the out-of-population sparse regime alike, so consistency
+                // with the sibling decides it.
+                if let Some(pid) = (start..end).find(|&pid| is_set(pid)) {
+                    // Counted from the EXIT POSITION, not per iteration: `printings_examined` used to
+                    // be an unconditional `end - start` before the match, which an early-exiting loop
+                    // would over-report, and instrumentation inside this loop is exactly what the
+                    // project's hot-path rule exists to prevent.
+                    work.printings_examined += (pid - start + 1) as u64;
+                    scratch.push((sort_key_bits(card, &printings[pid], sort_col, descending), cid, pid as u32));
+                } else {
+                    work.printings_examined += (end - start) as u64;
+                }
+            }
+            // Card (non-default prefer) / Artwork: one best-prefer representative per group — a single
+            // group for Card, one per `artwork_group_id` for Artwork. Both must score every set printing:
+            // a custom prefer has no relationship to store order, and Artwork cannot stop until it has
+            // seen every group (a cheaper stop for it is a separate optimization).
             Mode::Card | Mode::Artwork => {
+                work.printings_examined += (end - start) as u64;
                 touched.clear();
                 for pid in start..end {
                     if !is_set(pid) {
@@ -15485,11 +15513,10 @@ fn gather_composed_page<'a>(
             // Card, default prefer: printings are stored prefer-desc within a card (same invariant
             // `push_card_matches` relies on), so the first *set* printing in range is already the
             // chosen one — no score to compute, no `touched`/`group_best` bookkeeping, an O(1) early
-            // break instead of scanning the rest of the card's printings. This matters here (unlike
-            // `walk_grouped_page`, which pays the same unconditional score-every-candidate cost) since
-            // this loop isn't bounded by page size — it visits every candidate card, so a per-printing
-            // cost that scales with total matches rather than `limit` is the dominant term for a broad
-            // composed set.
+            // break instead of scanning the rest of the card's printings. It matters more here than in
+            // `walk_grouped_page` (which now takes the same break) since this loop isn't bounded by page
+            // size — it visits every candidate card, so a per-printing cost that scales with total
+            // matches rather than `limit` is the dominant term for a broad composed set.
             Mode::Card if matches!(prefer, Prefer::Default) => {
                 // The one arm that does stop early: `find` breaks at the first set printing, and a
                 // candidate card has at least one by construction, so this tests `first_set - start + 1`
