@@ -204,96 +204,29 @@ biggest:
 realistic (37% of regret against 32% under), the reverse of uniform. Anything that makes compose look
 cheaper must be verified in BOTH modes, with plan flips dispatch-priced rather than assumed good.
 
-1. **Grade `perm_walk_span` and `stream_scan_units` — StreamedSelect's own cost drivers, currently
-   measured by NOTHING.** Investigated 2026-09-04, and it re-scoped what was a coefficient item.
-   - **The shipped arm reads features no instrument covers.** `cost.rs`'s `StreamedSelect` arm uses
-     `matches`, `offset`, `limit`, `perm_walk_span`, `eval_domain`, `stream_scan_units` and
-     `residual_tier_ns100`. `bench_feature_accuracy` grades exactly five features — `scan_units`,
-     `compose_scan_printings`, `printings_walked`, `matches`, `eval_domain` — so `perm_walk_span` and
-     `stream_scan_units` are graded by nothing. `bench_cost_error_attribution`'s StreamedSelect design
-     matrix is `[eval_domain, scan_units*residual, eval_domain*residual, matches, floor, n_cards, 1]`,
-     which does not contain them either. So attribution's StreamedSelect **`model form` floor of 0.538
-     may be partly "features attribution does not model"**, and its `COEFFS` share of +0.511 is the
-     gain from refitting ITS model, not the shipped one.
-   - **`perm_walk_span` is `n_cards` on 97.8% of observations** (both modes; 93.8% of the queries where
-     StreamedSelect is actually PICKED under realistic, 92.4% under uniform). So the shipped walk term
-     `(page_span * perm_walk_span / matches).min(perm_walk_span)` collapses to
-     `page_span * n_cards / matches` almost always — the **same uniform-density waiting-time formula as
-     `printings_walked`**, in card space, and with **no clumping correction at all** (`printings_walked`
-     at least divides out `WALK_LENGTH_BIAS` = 1.45).
-   - **Which means the 57% over-cost is probably a SHAPE error, not a stale rate**, and recalibrating
-     coefficients would absorb it into a rate — exactly what this queue's header note warns against.
-     The clump measurement is the reason to believe it: the analogous printing-space error ranges
-     **0.951x to 4.931x by orderby**, which is how a pooled p50 of 1.57 can look like a uniform shift
-     while being wildly wrong per slice.
-   - **GRADED 2026-09-04, and the blocker this bullet used to state was wrong.** It said both features
-     "need a realized counter to grade against"; both counters already exist and are already published
-     by `explain_analyze`. `perm_walk_span` enters cost only through the walk term, whose realized
-     counterpart is **`perm_steps`** (`lib.rs`'s `n_perm_steps`, every permutation entry the walk
-     touches including zero-count skips — `cost.rs:526` even says the estimate "is graded against the
-     realized `perm_steps` counter rather than trusted"). `stream_scan_units` grades against
-     **`printings_examined`**. So no instrumentation round is needed; the gap was in the *harness*, not
-     the engine. Measured over 2,974 StreamedSelect plan-rows that actually ran, `--mode uniform`,
-     seeded queries at 1-3 predicates x 3 `unique` x 6 `orderby` x offsets {0, 60, 300}:
-   - **The walk term's median is already right; its VARIANCE is the error, and the sort column splits
-     it.** Realized `perm_steps` / estimated, on the 560 rows where both are usable:
+1. **The `fixed` term, the only separable fragment of what used to be StreamedSelect's coefficient
+   item.** Everything else in that item is done: Round 69 graded both features and Round 70
+   instrumented them permanently (see Completed). What is left is the one piece a shape error cannot
+   contaminate — the fit wants `fixed` **233.00 -> 0.00** (plus `emit` 0.00/0.12,
+   `small_total_floor` 0.16/0.81). A standalone constant absorbs nothing, so it can move on its own.
+   - **Blocked on something new, though: `fit_cost_model` currently REFUSES to fit.** Its Python
+     mirror of `cost.rs` disagrees with the engine's `predicted_ns` on **6.6%** of rows, and the tool
+     correctly declines rather than fitting coefficients for a model the engine does not run. Round 70
+     fixed one cause (the PERM_STEP column read `n_cards` where the arm reads `perm_walk_span`) and the
+     refusal survived it, so at least one more drift site exists and has to be found before any
+     coefficient here can be trusted. This is the arc's whole purpose arriving as a concrete blocker.
+   - **`fit_cost_model` has no fixed-count bound**, only `--seconds`, so before/after mirror-agreement
+     reads are over different populations — the exact trap `bench_feature_accuracy` grew `--n-queries`
+     to escape in Round 66. Wire the same `Budget(sample=N)` in first; it is a few lines and it is what
+     makes the drift hunt above measurable.
+   - Motivation unchanged: `StreamedSelect -> GatheredScan` is the **#2 transition under realistic**
+     (26% of regret, n=1,664, 60% miss), up from 17% under uniform.
+   - **The walk RATE stays out of scope** and is not a calibration job. Round 69 measured its error as
+     dispersion at a correct median (p50 1.023, spread 1.9x on `orderby=name` to 38.8x on `cmc`), and
+     no feature already on `PlanFeatures` predicts the residual (max |r| 0.12). A fix needs a NEW
+     statistic — filter-vs-sort-column correlation — which is a build. Its printing-space sibling is
+     item 5, where the same mechanism shows up as a per-column BIAS a scalar CAN fix.
 
-     | slice | n | p10 | median | p90 | p90/p10 |
-     |---|---|---|---|---|---|
-     | POOLED | 560 | 0.446 | **1.023** | 4.302 | **9.6x** |
-     | `orderby=name` | 180 | 0.865 | 1.043 | 1.674 | **1.9x** |
-     | `orderby=cmc` | 144 | 0.290 | 1.183 | 11.249 | **38.8x** |
-     | `orderby=edhrec` | 105 | 0.289 | 1.039 | 3.402 | 11.8x |
-     | `orderby=power` | 131 | 0.440 | 0.918 | 3.786 | 8.6x |
-
-     `rarity` and `usd` contribute **zero** walk rows, and that is structural rather than sampling:
-     those two columns have no permutation (`SortPermutations::get` returns `None`;
-     `build_sort_permutations` builds only edhrec/cubecobra/cmc/power/toughness/name), and
-     `streamed_select_applicable` requires one — so StreamedSelect leaves the argmin **before
-     `plan_cost` runs**, verified as offered on 0 of 12 such rows against 12 of 12 for `name`/`cmc`.
-     **No separate cost branch is needed here**, and `perm_walk_span`'s `n_cards` fallback is
-     unreachable for the walk term (read at exactly one site, `cost.rs:927`).
-   - **In CARD space a per-orderby scalar would not work.** Every slice median sits in 0.918-1.183, so
-     there is no per-column offset to correct. What differs is *dispersion* — `name` is nearly exact
-     (1.9x) while `cmc` is 38.8x. That is the uniform-density assumption holding for a sort column
-     uncorrelated with any filter and failing for columns correlated with one (`cmc` with color/type,
-     `power` with `t:creature`), which is a mechanism, not a rate. **And nothing the router already
-     holds predicts it**: log-log Pearson r against `match_rate` **+0.058**, `page_frac` -0.105, the
-     estimate itself -0.122. A clump term here would have to be a NEW statistic —
-     filter-vs-sort-column correlation — not a reweighting of existing features.
-   - **In PRINTING space it would, which CONFIRMS item 5 rather than cautioning against it.** An
-     earlier version of this bullet hedged that the card-space result might argue against item 5's
-     per-orderby scoping; measured directly on compose's own walk it argues the opposite. Over 971
-     gradeable rows the per-column MEDIANS move — `name` **0.925**, `usd` 1.049, `power` 1.243,
-     `edhrec` 2.802, `rarity` 2.967, `cmc` **3.579** — a **3.9x range against a single shipped
-     `WALK_LENGTH_BIAS = 1.45`**. Meanwhile the two paging arms are indistinguishable (`Perm` 1.277 vs
-     `OrderbyWalk` 1.449), so the cost model's decision to price them with one shared arm is right and
-     the split it is missing is the sort column, which cuts across paging (`rarity` 2.967 and `usd`
-     1.049 are both `OrderbyWalk`, 2.8x apart). Full table in the ledger's Round 69 section.
-   - **`stream_scan_units` under-estimates in the printing-bearing modes, exactly and then badly.**
-     Realized `printings_examined` / estimate over 1,011 charged rows: pooled p25 **1.000**, median
-     **1.000**, p90 **11.839**. Split by `unique`, `printing` (n=354) and `artwork` (n=366) are exact at
-     p25/p50/p75-boundary and then reach p90 **16.7x** and **14.0x**; `card` (n=291) is the only slice
-     that under-runs at the low end (p10 0.308). So the estimate is either right on the nose or a large
-     under-count, with nothing in between — a bimodal error, which is the other signature a coefficient
-     refit cannot represent.
-   - **Both cost GATES are correct; their disagreements with the executor are estimate errors, not
-     formula errors.** The `walks_permutation` predicate disagreed with whether the walk ran on 83 of
-     2,974 rows (2.79%) — and **all 83** are the estimate landing on the wrong side of
-     `STREAM_MIN_MATCHES` while the executor branches on the realized `total` (`is:vanilla` est 17,437
-     vs real 429; `r:rare is:vanilla` est 5,653 vs real 15; `r>=mythic year>=1994 year<=2005` est 9,466
-     vs real **0**). The residual-scan gate disagreed on 778 rows, of which **720 (92.5%)** are the plan
-     returning before any loop at all (nothing was done, so nothing was mis-estimated), leaving a 58-row
-     residue (1.95%). Worth noting the straddles are one-directional gross OVER-estimates on
-     `is:`/rarity-range leaves, which is an estimator finding on a population items 3-4 do not cover.
-   - **The one safe fragment of the old coefficient item**, separable and still worth doing: the fit
-     wants `fixed = 0.00` against a shipped **233.00** (plus `emit` 0.00/0.12, `small_total_floor`
-     0.16/0.81). A standalone constant cannot absorb a shape error, so that piece is safe to change on
-     its own. Everything touching the WALK RATE waits for the grading above.
-   - Motivation is unchanged and still strong: `StreamedSelect -> GatheredScan` is the **#2 transition
-     under realistic** (26% of regret, n=1,664, 60% miss), up from 17% under uniform. **But note the
-     likely fix now converges with item 5** — a per-orderby clump term, in card space instead of
-     printing space — rather than being an independent coefficient round.
 2. **Exploit card-invariance in the walk: ONE bit test per card instead of a full span.** Round 68
    took the card/default early break (see the ledger); this is the half it deliberately left out. All printings of a card share their `pbits` value when the
    composed filter is card-invariant, so one test decides the card. The asymmetry with the gather is
@@ -1039,6 +972,7 @@ symptoms. Re-open only with a fresh survey that contradicts the numbers.
   to truth against 22 further** and cuts predictions of 0-against-nonzero-truth from 72 to 49; its median
   ratio falling (0.900 -> 0.586) is an artifact of the distribution being zero-inflated, not a regression —
   a median summarizes such a distribution badly.
+- Round 69/70: graded `perm_walk_span` (via `cost::stream_perm_steps`) and `stream_scan_units`, the two StreamedSelect drivers no instrument covered; both counters already existed. Round 70 also fixed two harness sites reading the wrong field.
 - Measurement, no round number (2026-09-04): **the residual-size distribution, and the route share
   that reframes this whole doc.** Measured over the weighted crawl corpus (14,473 entries) rather than the
   sampler, deliberately — the sampler's shape templates decide residual sizes, so measuring against it
