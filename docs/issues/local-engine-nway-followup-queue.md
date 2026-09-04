@@ -53,7 +53,62 @@ against a measured 199.3us), which is a cost-model correctness concern that this
 **Planned revisit:** estimates and query planning are to be re-examined over the UNIFORM sampler as
 well, and that will inform what else gets done here. Treat this ordering as provisional until then.
 
-1. **`compose_scan_printings`: the mis-gating is FIXED (Round 66); a per-arm REFIT remains** — investigated
+**Reordered 2026-09-05 by a UNIFORM-sampler regret + attribution pass** (`bench_regret_matrix.py`,
+`bench_cost_error_attribution.py`, `bench_cost_error_percentiles.py`, all at seed 66, ~300k plan-rows).
+Raw outputs and the full tables are in the ledger's Round 67 section. The three agree, and they moved
+`printings_walked` to the front:
+
+| where routing loss actually is | share of all lost time |
+|---|---|
+| `printing_compose` acquire | **97%** |
+| compose paging `Perm` | **57%** |
+| compose paging `OrderbyWalk` | **21%** |
+| compose paging `Decline` | 15% |
+| compose paging `Gather` | **7%** |
+
+**67% of all regret is queries that should have picked `PrintingCompose` and did not**
+(`GatheredScan -> PrintingCompose` 35%, `StreamedSelect -> PrintingCompose` 32%); only 14% is compose
+picked wrongly. Compose's MEDIAN cost is the best of the three big plans (1.11, spread 2.8) — the damage
+is a tail (p99 43.7, p100 203, `/printing` p99 132.6), so it loses exactly where it should win.
+
+And **features are not the lever for absolute cost accuracy**: substituting realized executor counters
+for every estimated feature removes only **+0.021 to +0.099** of log error, against a `model form`
+floor of 0.235-0.862. That does NOT make feature work pointless — regret is about ORDERING, and the
+known feature biases all push the same way (against compose) — but it does mean no feature fix will
+move the absolute-accuracy numbers, and a claim that one will is wrong.
+
+**A warning for the joint refit this arc exists to unblock:** the shipped coefficients are already
+absorbing feature bias. `scan_units` fitted/shipped is **4.98/1.72** (GatheredScan) and **9.59/2.13**
+(StreamedSelect) — a 2.9-4.5x gap that matches the feature's own ~3x under-count. Refitting before
+fixing the features would bury the remaining error in that rate, which is exactly what
+`bench_cost_error_attribution.py`'s own doc warns about ("a fit will quietly bury the error in
+whichever term correlates with it"). Fix features first, then refit.
+
+1. **`printings_walked` for compose's `Perm` and `OrderbyWalk` paging branches — 78% of all routing
+   regret.** These two branches carry 57% + 21% of lost time and have the worst miss rates (8% and
+   **11%**, against `Gather`'s 1%). They are priced by `printings_walked`, and the feature is badly off
+   exactly there: `<compose OrderbyWalk> / card` p50 **0.26** (spread 40.0), `/artwork` p50 **0.25**
+   (spread 38.1) — a ~4x UNDER-count at the median — while `<compose Perm> / printing` over-counts in
+   the tail (p99 11.3, p100 91.3). Pooled `printings_walked` is p50 0.90 with spread 26.5, so the
+   pooled view hides both.
+   - The under-count and the over-count point opposite ways, so **do not fit one scalar to the pooled
+     population** — that is the mistake `COMPOSE_GATHER_SPAN_PER_MATCH` embodies (Round 66: pooling two
+     regimes produced a constant that was pure over-charge on one of them). Grade `Perm` and
+     `OrderbyWalk` separately, and each by distinct-on.
+   - Expected direction: a compose cost that stops over-shooting in the tail should let compose win the
+     `GatheredScan -> PrintingCompose` and `StreamedSelect -> PrintingCompose` transitions it currently
+     loses — 67% of regret. Round 66 is a small precedent: its 3 flips were all
+     `GatheredScan -> PrintingCompose`, 2 of 3 measurably faster.
+   - Verify with `bench_regret_matrix.py` (does the share actually move), not only feature accuracy.
+2. **`StreamedSelect` is over-costed ~57% at the median, uniformly.** p50 **1.57** — and it reads 1.57
+   at EVERY orderby slice (name, toughness, cmc, power, cubecobra, edhrec) and every distinct-on
+   (1.59/1.57/1.57), n=60,165. That flatness across slices with a wide percentile spread (p90/p10 7.0)
+   is the signature of a stale rate or a spurious fixed term, and attribution agrees: `COEFFS` is the
+   dominant cause on `candidates` (**+0.791**) and worth +0.511 overall. The fit wants
+   `fixed = 0.00` against a shipped **233.00**, plus `emit` 0.00/0.12 and `small_total_floor` 0.16/0.81
+   — i.e. remove the fixed floor. A coefficient change, not a feature change; cheap to try and easy to
+   measure. Sequenced AFTER item 1 because of the burying problem in the header note.
+3. **`compose_scan_printings`: the mis-gating is FIXED (Round 66); a per-arm REFIT remains** — investigated
    2026-09-05, and the original framing of this item ("looks like a discrete arithmetic relationship,
    maybe a bug") was wrong. The feature is
    `compose_scan_printings = printing_matches * COMPOSE_GATHER_SPAN_PER_MATCH`, and that constant is
@@ -116,7 +171,7 @@ well, and that will inform what else gets done here. Treat this ordering as prov
      - Only if per-arm constants still leave a wide spread does the per-query depth term become
        necessary — and that still needs `printing_matches` and `est.result.printing`/`.card` exposed
        together on an instrumented build, which remains unmeasured (see the retraction above).
-2. **`scan_units [printing_compose]` under-counts ~3x.** The highest-n miscalibration in the report
+4. **`scan_units [printing_compose]` under-counts ~3x.** The highest-n miscalibration in the report
    (32,833 `printing_compose` rows of 51,767 pooled): p50 **0.32-0.38** depending on distinct-on, p10
    **0.05**, spread 20.0-32.5. `scan_units` prices the MATERIALIZING alternatives when they compete
    against compose (see its own doc: "What the MATERIALIZING alternatives see"), so under-counting it
@@ -133,7 +188,7 @@ well, and that will inform what else gets done here. Treat this ordering as prov
      "57 flagged cells outside [0.8, 1.25]" therefore overstates real-traffic impact and understates
      nothing — read it as a correctness instrument, not a latency one. Every flagged cell is
      `printing_compose` or `card_range_popcount`; nothing on `candidates`/`plane` is flagged at all.
-3. **Seed every `SpaceEstimate` with the domain instead of `UNKNOWN`.** **A correctness and
+5. **Seed every `SpaceEstimate` with the domain instead of `UNKNOWN`.** **A correctness and
    maintainability item, not a performance one** — it delivers no accuracy win and no latency win, and
    should be judged on that basis. The domain size is a true upper bound, so a space can start
    `{ guaranteed: n_cards, estimate: n_cards }` and only ever tighten. That deletes every `Option`,
@@ -175,7 +230,7 @@ well, and that will inform what else gets done here. Treat this ordering as prov
      `printing_tightened`, set where a trusted card count is written, and that work is part of THIS
      item. See the ledger's Round 62 section, and the site-by-site correction above for why it is one
      gate rather than two.
-4. **Untangle `narrow_floor`.** Also a correctness item rather than a performance one. It reads
+6. **Untangle `narrow_floor`.** Also a correctness item rather than a performance one. It reads
    `s.card.best()` and writes `result_space.card.lower_guaranteed(f)` — a child's GUESS becoming the
    query's BOUND, the same laundering Round 59 fixed in the `And` seed. Still latent, and Round 63 is
    why it stayed that way: the arm that might have unmasked it now writes an exact triple into BOTH
@@ -187,7 +242,7 @@ well, and that will inform what else gets done here. Treat this ordering as prov
    the tightest sound bound, for a reason belonging to a different question. It also computes a `min`
    (an upper bound) while being named a floor. Round 60 left a candidate set — **4,317 root nodes**
    with `card_guaranteed` tighter than any child's — but that set also contains legitimate
-   `Candidate::Exact` joints, so separating them is the round's actual work. Easiest after #3, when
+   `Candidate::Exact` joints, so separating them is the round's actual work. Easiest after #5, when
    bounds are always present. The joint-witness frame in
    [local-engine-joint-witness-and-empty-short-circuit.md](local-engine-joint-witness-and-empty-short-circuit.md)
    may be the honest replacement for its breadth filter rather than a repair of it.
@@ -463,7 +518,7 @@ symptoms. Re-open only with a fresh survey that contradicts the numbers.
   this?" by comparing `candidate` and `result`, which cannot see a tightening that moved only
   `guaranteed` — and Round 59 had made those routine. Two corollaries worth applying before the next
   proxy gets written: an `Option`'s PRESENCE is not a structural signal if any future round might seed
-  the field (domain-seeding makes both card gates vacuous either way — see item #3), and a flag derived
+  the field (domain-seeding makes both card gates vacuous either way — see item #5), and a flag derived
   as `!=` against a field's own earlier value is safer than one threaded through every mutation site,
   because monotone mutators make the comparison exact while a threaded flag goes stale silently when
   someone adds a write.
@@ -561,7 +616,7 @@ symptoms. Re-open only with a fresh survey that contradicts the numbers.
   est.result.printing()`. The flag disagrees with the retired test on 0.3-0.45% of rows, **every one
   `old=False → new=True`** — it only ever finds a bound-only tightening the number comparison was blind
   to. Zero plan flips; `bench_pairwise_ordering` unchanged, `bench_feature_accuracy` 0 cells changed
-  verdict. Two caveats, both live: it does NOT unblock the card half of item #3 (its own plan claimed
+  verdict. Two caveats, both live: it does NOT unblock the card half of item #5 (its own plan claimed
   otherwise and was wrong), and it cost 6 rows on 3 queries, which Round 63 Part 2 then closed.
 - Round 63: two exact numbers that existed and were being discarded. **Part 1** retires the last
   reprint-ratio leaf arm — `NumericSpanTotals`, a per-distinct-value prefix sum over each numeric

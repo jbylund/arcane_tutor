@@ -220,6 +220,54 @@ total regret by 0.0 ms).
 | 65 | An inclusion FLOOR on every top-N pair table: any pair whose printing count is at or above `STREAM_MIN_MATCHES / PAIR_INCLUSION_FLOOR_DIVISOR` (divisor 2, so half the boundary) is kept regardless of rank, on top of the existing rank cutoff rather than instead of it. Turns "the fallback estimate cannot flip a routing decision" from an observation about one corpus into a **proven invariant**: `SubtypePairEstimate` reports `min(indep, rest_max.printings)`, so forcing every big pair INTO the table forces `rest_max.printings` below the floor — and since `printings >= cards` and `printings >= artworks` for any pair, that bounds card and artwork space for free. Derived from the live knob, not hardcoded, and asserted at the point of establishment via `debug_assert`. ARCHIVE_FORMAT_VERSION → 2026090403 | kept | n/a (not this doc's own metric) | **The bug it fixes**: `identity`'s `rest_max.printings` was **1,060** against a boundary of **1,024** — the CAP ITSELF on the wrong side — and all **9** of that dimension's routing-relevant misses read the cap exactly (`id:ubr t:Elf` estimated 1,060 against a true 164). After: cap **509** (2.01x margin), exact hits 5.1% → **10.6%**, **routing-relevant misses across all three dimensions 1 → 0**. `set` and `colors` are **byte-identical** — no set pair reaches the floor (its largest is 503 printings) and colors' 48 qualifying pairs were already kept. Cost **+325 pairs** (identity 286 → 611) = **+8,152 bytes of archive (+0.011%)**; build+load unchanged (interleaved 4-rep min ratio 0.9931). Survey at seed 63 over 9,777 rows: zero plan flips, no detectable ratio change, zero-true-count rate unchanged. Soundness green (883 candidates, none below truth). `cargo test` 305 debug / 302 release (+2), clippy clean both profiles | see "Round 65" narrative below — a space-mismatched safety claim that had sat in the code since Round 34, and why the cheaper zero-cost variant was declined |
 | 66 | **First COST-FEATURE round, not an estimator round.** `gather_composed_page` takes one of three per-card arms and only two walk the candidate's `start..end` span: printing mode pushes every set printing, and the grouping arm (artwork always, card under a non-default prefer) must score every printing per group. The card/**default**-prefer arm breaks at the first set printing (`(start..end).find(is_set)`), because printings are stored prefer-descending so the first set one IS the representative. `compose_scan_printings` charged `printing_matches * COMPOSE_GATHER_SPAN_PER_MATCH` (1.47) in **all three**. Now charges `eval_domain` — the candidate-card count — in the early-break arm only. Deliberately NOT the sibling `groups` predicate, which agrees on card mode but would wrongly strip the multiplier from printing mode. Also wires `--n-queries` into `bench_feature_accuracy.py` (`Budget(sample=N)`, already supported and never exposed) | kept | n/a (not this doc's own metric) | **The direct property, identical population both sides (n=93 `unique=card`/`prefer=default` compose-Gather rows graded against realized `printings_examined`)**: p50 **5.040 → 1.000**, p10 0.79 → 0.16, p90 10.84 → 3.11, mean 7.38 → 1.48. Single rows exact — `f:gladiator`/card charged **80,654** against a realized 15,131, now **15,131** (verified independently). **Controls byte-identical**: card/`prefer=newest` (n=105) and printing/default (n=8) match field-for-field. `bench_feature_accuracy` at matched populations (**112,129 rows both sides, exactly equal**): 146 cells / 59 flagged before AND after, **zero new, zero newly flagged, zero unflagged**; exactly 7 cells move, all `compose_scan_printings`, each at equal n. Ordering holds (87.0→87.1, 95.8→95.7, …). Flips: **3 of 37,771 (0.008%)** on a gather-reaching population, all `GatheredScan → PrintingCompose`, dispatch-priced **2 faster / 1 slower, net +48.67 µs**. Soundness green (6,695 candidates). `cargo test` 305 debug / 302 release, clippy clean both profiles (verified by me — the agent omitted them). Timing flat: same-build controls exceed either cross-build read and the cross-build sign flips | see "Round 66" narrative below — a pinned median that needed slicing rather than smoothing, and the refit this round deliberately did NOT do |
 
+### Round 67 (measurement only, no code change)
+
+A uniform-sampler pass over the COST model rather than the estimator, to decide what to work on next
+rather than to change anything. Three harnesses at seed 66, ~300k plan-rows; raw outputs preserved in
+[measurements/](measurements/). They agree, and they reordered the queue.
+
+**Where routing loss is.** `printing_compose` carries **97%** of all lost time (n=40,484, 7% miss,
+max 957 us) against `candidates`' 3% and everything else ~0%. Broken down by compose paging branch:
+`Perm` **57%**, `OrderbyWalk` **21%** (worst miss rate, 11%), `Decline` 15%, `Gather` **7%** (best
+miss rate, 1%).
+
+**The failure is one-directional: compose is UNDER-picked.** `GatheredScan -> PrintingCompose` is 35%
+of regret and `StreamedSelect -> PrintingCompose` 32% — **67% is compose losing when it should have
+won**, against 14% for compose winning when it should not. And compose's median cost is the BEST of
+the three big plans (1.11, spread 2.8); the damage is a tail (p99 43.7, p100 203, `/printing` p99
+132.6). It loses precisely where it should win.
+
+**Features are not the lever for absolute accuracy, and that needed measuring rather than assuming.**
+Substituting realized executor counters for every estimated feature removes only **+0.021 to +0.099**
+of log error, against a `model form` floor of 0.235-0.862. So no feature fix will move the
+absolute-accuracy numbers. That does not make feature work pointless — regret is about ORDERING, and
+every known feature bias pushes the same way (against compose) — but it does retire the idea that the
+cost model is mainly starved of good estimates. It is mainly the wrong shape.
+
+**The finding that matters most for this arc's stated goal.** The shipped coefficients are already
+absorbing feature bias: `scan_units` fitted/shipped is **4.98/1.72** (GatheredScan) and **9.59/2.13**
+(StreamedSelect) — a 2.9-4.5x gap that matches that feature's own measured ~3x under-count. The whole
+arc existed to unblock a joint refit; this says a refit run NOW would bury the remaining feature error
+in that rate, exactly as `bench_cost_error_attribution.py`'s own doc warns ("a fit will quietly bury
+the error in whichever term correlates with it"). **Fix the features first, then refit** — which is the
+opposite of the order the arc's original framing implied.
+
+**Why this reordered the queue, and how it corrected me.** Both items I had queued at the front touch
+the `Gather` paging branch and `scan_units`. `Gather` is the best-behaved branch in the whole matrix —
+1% miss, 7% share. The concentration is `Perm` + `OrderbyWalk` (78%), priced by `printings_walked`,
+which is badly off exactly there: `<compose OrderbyWalk> / card` p50 **0.26** (spread 40.0), `/artwork`
+p50 **0.25** (spread 38.1), while `<compose Perm> / printing` over-counts in the tail (p99 11.3, p100
+91.3). Pooled `printings_walked` reads p50 0.90 — the pooled view hides both directions, which is the
+same trap Round 66 documented one feature over.
+
+**One methodological note worth keeping.** `bench_cost_error_percentiles.py` and
+`bench_regret_matrix.py` disagreed, and the regret view won. By percentiles, `StreamedSelect` looks
+like the problem (p50 1.57, over-costed 57% at every single slice) and compose looks fine (1.11). By
+regret, compose is 97% of the loss and StreamedSelect's over-cost mostly does not change a decision.
+The harnesses' own docs predict this: "an estimate can be off by 100x on a plan that never wins
+anyway, and correct to 5% on one where the margin decides every query." Rank by regret; use
+percentiles to diagnose the mechanism once regret has chosen the target.
+
 ### Round 66
 
 **The first round in this arc that fixed the COST MODEL rather than an estimate**, and it needed no
