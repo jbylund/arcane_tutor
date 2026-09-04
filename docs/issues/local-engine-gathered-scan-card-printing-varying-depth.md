@@ -222,6 +222,57 @@ total regret by 0.0 ms).
 | 68 | **First EXECUTOR round in this arc — removes real work rather than improving a prediction.** `walk_grouped_page` stepped the permutation and, per card, bit-tested the card's WHOLE printing span and called `prefer_score` on every set printing. But printings are stored prefer-DESCENDING within a card (`from_rows`' load-time sort, ties by illustration_id then scryfall_id), so under `Mode::Card` + `Prefer::Default` the FIRST set printing already IS the chosen representative — every later `prefer_score`, the `touched`/`group_best` bookkeeping and the post-loop group emit were waste. Now takes the same `(start..end).find(is_set)` early break `gather_composed_page` and `push_card_matches` already used. `printings_examined` moved off its unconditional pre-match `(end - start)` to the EXIT POSITION, per arm, with no per-iteration add (the project's hot-path instrumentation rule). Scoped to the only LIVE walk: `walk_card_page_via_popcount_skip` sits behind `COMPOSE_SIGMA_ENABLED` (defaults 0) and the printing/artwork popcount-skip walks have zero production call sites | kept | n/a (not this doc's own metric) | **Row identity is the gate and it passed twice independently.** Agent: 7,776 cells / 374,712 rows byte-identical (3 distinct-ons x 4 prefers x 3 sort cols x both directions x 6 page points x 6 densities), debug AND release, plus 9,000 cells / 235,692 rows matching by sha256 from routed dumps. Me, separately: **21,912 compose cells including 5,920 `Perm`-paging, 750,580 rows, identical sha256** over printing identity — my first attempt used `orderby=rarity` and hit **0 Perm cells**, so it proved nothing until the orderby was varied. **Realized time**: `PrintingCompose` `ns_loop` p50 **0.707** (3,896 → 1,979 ns), interleaved over 6 block pairs, with GatheredScan/StreamedSelect/PlanePopcountOrder/CardRangePopcount controls all reading p50 **1.000**. Plan choice unaffected: **0 changes over 66,414** survey observations, and 0 `paging_taken`/`picked`/`result_total` flips over 595 exact-population paired compose cells. `cargo test` 305 debug / 302 release, clippy clean both profiles (verified by me) | see "Round 68" narrative below — why the end-to-end number is much smaller than the loop number, a density regime the router never reaches, and a cost-feature consequence that is now a queue item |
 | 69 | **Measurement only.** Grades StreamedSelect's two never-graded cost drivers (`perm_walk_span` via the walk term, `stream_scan_units`) against realized counters, answers whether the permutation-less sort columns need their own cost branch, and re-measures the compose walk's per-orderby clump after Round 68 invalidated it | n/a | n/a | **No instrumentation round was needed — item 1's stated blocker was wrong.** Both realized counters (`perm_steps`, `printings_examined`) already exist and are already published. Walk term: pooled median **1.023**, spread 9.6x, split by sort column into **1.9x** (`name`) to **38.8x** (`cmc`) at flat medians (0.918-1.183) — so a per-orderby scalar cannot help in CARD space, and no existing feature predicts the residual (max \|r\| 0.12). `stream_scan_units` is **bimodal**: p25/p50 exactly 1.000, p90 **11.8** (printing 16.7x, artwork 14.0x). Both cost GATES are correct — all 83 walk-gate disagreements (2.79%) are the estimate crossing `STREAM_MIN_MATCHES`, and 720 of 778 scan-gate ones (92.5%) are the plan returning before any loop. `rarity`/`usd` need **no** cost branch: they have no permutation and `streamed_select_applicable` drops the plan from the argmin (offered 0/12 vs 12/12 for `name`/`cmc`). Compose's `Perm`/`OrderbyWalk` shared arm is likewise **correct** (residual medians 1.277 vs 1.449) — but its per-column medians span **0.925-3.579** against one shipped `WALK_LENGTH_BIAS` of 1.45, which CONFIRMS item 5 | see "Round 69" narrative below — a blocker that was already unblocked, and a stale table that validated its own replacement |
 
+### Round 73 (measurement only, no code change) — which terms actually carry the cost
+
+Adds `scripts/bench_term_contributions.py` and answers the question that should have been asked
+before Rounds 69, 70 and 72: of the terms whose features have a 15-35x spread, which ones carry
+enough of the predicted cost for that spread to matter? Exact rather than estimated, because Round
+71's name-keyed `design_row` plus `CURRENT[plan][term]` decomposes `predicted_ns` into its own terms,
+and Round 71's 100% mirror agreement is what makes it the shipped model's decomposition.
+
+**It reorders the queue, and it retires two of my own conclusions.**
+
+| plan | term | aggregate share | picked-only | feature spread | risk |
+|---|---|---|---|---|---|
+| StreamedSelect | `SCAN_PER_ROW` (`stream_scan_units`) | **44.1%** | **29.4%** | 27.1x | **11.96** |
+| GatheredScan | `CARD_PASS+FLOOR` | **58.2%** | 35.1% | ungraded | — |
+| PrintingCompose | `BROADCAST_PER_PRINTING` | 37.1% | 24.5% | ungraded | — |
+| StreamedSelect | `CARD_PASS+FLOOR` | 27.8% | 21.4% | ungraded | — |
+| PrintingCompose | `PROJECT_PER_PRINTING` | 23.1% | **47.6%** | ungraded | — |
+| GatheredScan | `SCAN_PER_ROW` (`scan_units`) | 15.8% | 19.8% | 11.1x | 1.76 |
+| PrintingCompose | `WALK_STEP` (`printings_walked`) | 6.8% | **1.9%** | 21.8x | 1.48 |
+| StreamedSelect | `PERM_STEP` (`stream_perm_steps`) | **0.3%** | 2.2% | 15.5x | **0.04** |
+| PrintingCompose | `GATHER_BITTEST` (`compose_scan_printings`) | **0.3%** | 0.1% | 34.2x | **0.10** |
+
+- **`stream_perm_steps` is worth 0.3% of StreamedSelect's predicted cost.** Rounds 69 and 70 graded
+  it, extracted `cost::stream_perm_steps` for it, and I called its 15.5x spread "the shape error a
+  coefficient refit would bury" and the thing to fix. It carries essentially nothing. The grading and
+  the extraction were still worth having — they closed a mirror bug and a stale-formula bug — but the
+  spread is not a reason to build anything.
+- **Round 72's fix was correct and nearly worthless in cost terms**: `compose_scan_printings` is 0.3%
+  of compose's cost, which is exactly why it produced 0 plan flips. That result now reads as expected
+  rather than as reassuring.
+- **`printings_walked` is 1.9% of compose's PICKED cost**, against the 57% + 21% of regret the matrix
+  attributes to the `Perm`/`OrderbyWalk` paging branches. Those are not the same quantity — regret by
+  branch is a POPULATION, not a term attribution — and this says the cost error on that population
+  cannot be mostly the walk term. Items 4 and 5 need re-justifying on that basis before either is
+  built. It also means Round 72's unfixable `OrderbyWalk` 4x under-count matters less than its size
+  suggests.
+- **The real target is `SCAN_PER_ROW` on StreamedSelect**: 44.1% of predicted cost with a 27.1x
+  spread, a risk of 11.96 against 1.76 for the next graded term. It is the only term that is both
+  large and badly dispersed.
+- **The largest terms in the model are ungraded by anything.** `CARD_PASS+FLOOR` is 58.2% of
+  GatheredScan and 27.8% of StreamedSelect; compose's three build terms
+  (`BROADCAST`/`PROJECT`/`SCATTER`) are ~94% of its picked cost. No harness grades any of them,
+  because `bench_feature_accuracy` grades features against executor counters and these terms are
+  priced on `eval_domain` gated by residual presence, or on printing counts with no counter of their
+  own. That is a bigger gap than any of the spreads.
+
+Read the median column next to the aggregate: `BROADCAST_PER_PRINTING` is 37.1% aggregate at a **0.0%
+median**, i.e. it is a pure tail (the legality broadcast), while compose's `PROJECT_PER_PRINTING` is
+47.6% picked at a 36.2% median and so is broad. A term that is all tail and one that is everywhere
+want different treatment.
+
 ### Round 72
 
 Compose's feature pass, which is queue items 4-6's territory. At n=178,731 feature-rows the pooled
