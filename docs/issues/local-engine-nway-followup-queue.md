@@ -47,17 +47,43 @@ well, and that will inform what else gets done here. Treat this ordering as prov
    should be judged on that basis. The domain size is a true upper bound, so a space can start
    `{ guaranteed: n_cards, estimate: n_cards }` and only ever tighten. That deletes every `Option`,
    makes `printing()` infallible by construction rather than by `expect`, and removes the "absence
-   means unknown, never zero" footgun. The case for doing it is the defect history: that one ambiguity
-   has now produced **two laundering bugs** (Round 59's `And` seed, `narrow_floor`'s still-live read)
-   and **three misread proxies** (Round 62's three sites), and Round 60 measured how normal absence is
-   — **41,838 of 147,660** tree nodes have `printing_guaranteed` absent while `printing` is present.
+   means unknown, never zero" footgun. What `None` actually overloads today is THREE meanings: a
+   genuine unknown (no mechanism proved or guessed anything), a not-applicable (a printing-only
+   mechanism has no card/artwork opinion), and a structural proxy for "did a trusted source produce
+   this" — the third being what Round 62 found misread in three places. Seeding collapses the first two
+   into a number and forces the third to be stated explicitly. Round 60 measured how normal absence is:
+   **41,838 of 147,660** tree nodes have `printing_guaranteed` absent while `printing` is present.
+   - **Corrected 2026-09-05 — this item does NOT fix `narrow_floor`'s laundering, and its case is
+     thinner than first recorded.** The original justification claimed the ambiguity "caused BOTH
+     laundering bugs". It caused one (Round 59's `And` seed, fixed). Seeding neither fixes nor unmasks
+     `narrow_floor`'s: that function filters children through
+     `range_too_broad_to_narrow(c, n_cards)` = `matched > NARROW_FLOOR && matched > n_cards * 0.25`,
+     which a seeded full-domain value fails trivially, so seeded children are discarded before the
+     `min`. The laundering path is untouched — a child with a REAL estimate-only card count below the
+     breadth threshold still gets its guess written into `guaranteed`. Item #2 is required regardless.
+   - **Corrected 2026-09-05 — ONE card gate breaks under seeding, not two.** Site by site:
+     `est_cards`' and `domain_cards`' folds are `card.best().map_or(x, |dc| dc.min(x))`, which is a
+     NO-OP under seeding because `x <= n_cards` already; `card_invariant_domain_exact` is
+     `card.guaranteed == Some(domain_cards)`, a VALUE test that survives (it newly fires only where
+     `domain_cards == n_cards`, i.e. the whole-corpus card-invariant shape the guard exists to catch);
+     only the narrowing exemption `is_and && card.guaranteed.is_some()` is a genuine PRESENCE test, and
+     it becomes unconditionally true for every `And`. Printing space is behaviour-neutral throughout,
+     since `min(domain, x) = x` for any real `x`. So this needs one explicit signal, not two.
+   - **The verification cost is the real reason to be wary.** Rounds 58/59/60 were each verified by
+     BYTE-IDENTICAL survey output, the strongest guard this arc has. Seeding makes that unavailable by
+     construction — 41,838 node-level `printing_guaranteed` absences become values, so `and_trace`
+     diffs are non-empty on purpose. Verification would fall back to semantic-scalars-only plus the
+     `{space} == min(guaranteed, estimate)` fidelity check plus an explicit diff of the one behavioural
+     site: weaker evidence for a change whose entire point is that it changes nothing.
+   - **If it is taken, do it as two commits: the explicit exact-card-source flag FIRST** (that half is
+     behaviour-neutral and byte-identical-verifiable), then the seed — so the seed lands on a codebase
+     where no consumer reads presence any more and is provably inert.
    - **Scope this item does NOT already have covered.** Round 62 replaced the tightening proxy with an
-     explicit flag, which survives seeding — but its own plan claimed the two CARD gates were unblocked
-     too, and that was wrong. Seeding makes `card.guaranteed` unconditionally `Some`, so
-     `card.guaranteed.is_some()` is exactly as vacuous as the `best()` spelling it replaced. Both card
-     gates therefore need a second explicit signal — an "exact card source" flag parallel to
-     `printing_tightened`, set where a trusted card count is written — and that work is part of THIS
-     item. See the ledger's Round 62 section.
+     explicit flag, which survives seeding — but its own plan claimed the CARD gates were unblocked
+     too, and that was wrong. The narrowing exemption needs an "exact card source" flag parallel to
+     `printing_tightened`, set where a trusted card count is written, and that work is part of THIS
+     item. See the ledger's Round 62 section, and the site-by-site correction above for why it is one
+     gate rather than two.
 2. **Untangle `narrow_floor`.** Also a correctness item rather than a performance one. It reads
    `s.card.best()` and writes `result_space.card.lower_guaranteed(f)` — a child's GUESS becoming the
    query's BOUND, the same laundering Round 59 fixed in the `And` seed. Still latent, and Round 63 is
