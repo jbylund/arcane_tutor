@@ -1877,8 +1877,11 @@ struct SetSubtypeTable {
     /// rather than `HashMap<(String, String), _>` so a query-time lookup is two `Borrow<str>` `.get()`s
     /// and no tuple allocation.
     top: HashMap<String, HashMap<String, SpaceTotals>>,
-    /// The largest real (set_code, subtype) CARD count among every pair EXCLUDED from `top`.
-    rest_max: u32,
+    /// Round 64: the largest real (set_code, subtype) count among every pair EXCLUDED from `top`, as a
+    /// per-space TRIPLE rather than the single CARD scalar this used to hold. See
+    /// `top_n_union_and_rest_max` for how it is computed and `SubtypePairEstimate` for why the printing
+    /// column is what the consumer wants.
+    rest_max: SpaceTotals,
     /// Distinct-card count per set — the one marginal `set:X` needs that nothing else already derives
     /// per-card (`set_codes`/`set_collector_ranges` are both PRINTING-indexed the other way; `c:X`/
     /// `id:X` get theirs for free from `ComposeEstimate.result.card` instead, so they need no
@@ -1913,8 +1916,8 @@ struct SetSubtypeTable {
 #[derive(Archive, Serialize, Deserialize, Default)]
 struct ColorSubtypeTable {
     top: HashMap<u8, HashMap<String, SpaceTotals>>,
-    /// The largest real (mask, subtype) CARD count among every pair EXCLUDED from `top`.
-    rest_max: u32,
+    /// Round 64: a per-space TRIPLE, as on `SetSubtypeTable` — see its own `rest_max` doc.
+    rest_max: SpaceTotals,
 }
 
 /// The three Round 34 tables `compose_printing_estimate`'s `And` arm (and `exact_result_total`) read.
@@ -1930,11 +1933,11 @@ struct SubtypePairIndexes {
 /// Round 55: `(subtype, subtype)` top-N table -- closes `same_family:type+type_realistic`'s 0%
 /// mechanism coverage (`t:cleric t:spirit` fell to a plain per-leaf min-fold, 628 vs true 19, 33x over
 /// -- `SubtypePairIndexes` above only ever pairs a subtype against `set:X`/`c:X`/`id:X`, never against
-/// ANOTHER subtype). A NEW, separate mechanism alongside `SubtypePairIndexes` -- does not touch
-/// `top_n_and_rest_max`/`SetSubtypeTable`/`ColorSubtypeTable` at all; those keep their exact current
-/// (card-space-then-scaled-by-a-global-ratio) behavior. The backport of this round's own triple-
-/// `rest_max`/union-of-3-spaces cutoff to those three is a separate, later round
-/// (`docs/issues/local-engine-nway-followup-queue.md`, active queue item #2).
+/// ANOTHER subtype). A NEW, separate mechanism alongside `SubtypePairIndexes`. Round 55 shipped this
+/// table's triple-`rest_max`/union-of-3-spaces cutoff here ONLY, deliberately leaving
+/// `SetSubtypeTable`/`ColorSubtypeTable` on the older card-space-then-scaled-by-a-global-ratio
+/// behavior; **Round 64 backported both ideas to those three and deleted the card-space-only cutoff
+/// helper**, so there is now one cutoff convention and one `rest_max` shape across every pair table.
 ///
 /// `top` is keyed with `subtype_a < subtype_b` lexicographically -- the PAIR's own canonical order, not
 /// two syntactically different leaf shapes the way `SubtypePairIndexes`' dim/subtype pairing needs (a
@@ -1958,61 +1961,39 @@ struct SubtypePairTable {
     rest_max: SpaceTotals,
 }
 
-/// Top-N by CARD count, EXTENDED to keep every pair tied with the boundary (the n-th largest) count,
-/// plus `rest_max` = the largest CARD count strictly excluded from the returned set. Shared by all
-/// three `build_subtype_pair_tables` dimension tables (`set`/`colors`/`identity`).
+/// The ONE cutoff helper for every top-N pair table: keeps the union of the tie-inclusive top-N in
+/// EACH of the three spaces independently, and returns `rest_max` as a per-space `SpaceTotals` over
+/// the pairs actually excluded. Used by `build_subtype_pair2_table` and, since Round 64, by all three
+/// `build_subtype_pair_tables` dimension tables (`set`/`colors`/`identity`) too.
 ///
-/// Round 47: this used to be a plain `sort_unstable_by_key` + `truncate(n)` with no secondary sort
-/// key. `HashMap`'s iteration order (thus `items`' order before the sort) depends on a randomly
-/// seeded per-process hasher, so a pair tied with the boundary value could land inside or outside
-/// the top-`n` depending on which process built the table -- a real, confirmed nondeterminism bug
-/// (the same query hit `SubtypePairIndexes` on some runs and fell back to `SubtypePairEstimate` on
-/// others, with no code change between runs).
+/// **Round 47's tie rule, which this inherits and which is the reason the sort can be unstable.**
+/// The original helper was a plain `sort_unstable_by_key` + `truncate(n)` with no secondary sort key.
+/// `HashMap`'s iteration order depends on a randomly seeded per-process hasher, so a pair tied with
+/// the boundary value could land inside or outside the top-`n` depending on which process built the
+/// table -- a real, confirmed nondeterminism bug (the same query hit `SubtypePairIndexes` on some runs
+/// and fell back to `SubtypePairEstimate` on others, with no code change between runs).
 ///
 /// The fix is deliberately "include every tie," not "pick a deterministic winner among ties": a
 /// deterministic tiebreak (e.g. sorting on `(Reverse(cards), key)`) would make the outcome
-/// reproducible, but membership would still hinge on an arbitrary property (the tiebreak key) that
-/// has nothing to do with the data. Under "count >= threshold," a pair's membership only ever
-/// changes when THAT PAIR'S OWN count crosses the threshold -- incrementing one unrelated pair's
-/// count (e.g. one new printing) can never flip a different pair's membership, which a fixed-size
+/// reproducible, but membership would still hinge on an arbitrary property (the tiebreak key) that has
+/// nothing to do with the data. Under "count >= threshold," a pair's membership only ever changes when
+/// THAT PAIR'S OWN count crosses the threshold -- incrementing one unrelated pair's count (e.g. one
+/// new printing) can never flip a different pair's membership, which a fixed-size
 /// "top-N-then-tiebreak" order can (nudging one value can reshuffle the whole order enough to evict
-/// something that never changed). Because every tie is kept, order among tied items never matters,
-/// so the unstable sort (no secondary key, no `Ord`/`Clone` bound on `K`) is correct here, not just
-/// tolerated.
+/// something that never changed). Because every tie is kept, order among tied items never matters, so
+/// the unstable sort (no secondary key, no `Ord`/`Clone` bound on `K`) is correct here, not just
+/// tolerated. `top_n_union_and_rest_max_*` in the test module guards this property directly.
 ///
-/// `rest_max` is always <= what the old formula would have produced for the same data: the old
-/// `rest_max` could itself equal the boundary value when there was a tie there (since it just read
-/// off position `n`, which might be one of the tied pairs); the new `rest_max` is always the first
-/// count STRICTLY below the boundary. So this change only ever tightens the safety margin the
-/// fallback estimate's risk analysis relies on -- it never loosens it.
-fn top_n_and_rest_max<K: Eq + std::hash::Hash>(pairs: HashMap<K, SpaceTotals>, n: usize) -> (Vec<(K, SpaceTotals)>, u32) {
-    let mut items: Vec<(K, SpaceTotals)> = pairs.into_iter().collect();
-    items.sort_unstable_by_key(|item| std::cmp::Reverse(item.1.cards));
-    let Some(boundary) = items.get(n.saturating_sub(1)).map(|(_, t)| t.cards) else {
-        // Fewer than `n` items total: nothing is excluded, so there's no "rest" to bound.
-        return (items, 0);
-    };
-    let mut cutoff = n.min(items.len());
-    while items.get(cutoff).is_some_and(|(_, t)| t.cards == boundary) {
-        cutoff += 1;
-    }
-    let rest_max = items.get(cutoff).map_or(0, |(_, t)| t.cards);
-    items.truncate(cutoff);
-    (items, rest_max)
-}
-
-/// Round 55's shared cutoff helper for `build_subtype_pair2_table` -- generalizes `top_n_and_rest_max`
-/// (above) from "rank by `.cards` alone" to "union of the tie-inclusive top-N boundary in EACH of the
-/// three spaces independently." Does NOT touch `top_n_and_rest_max` itself, which keeps ranking by
-/// `.cards` alone for `SetSubtypeTable`/`ColorSubtypeTable` -- see `SubtypePairTable`'s own doc (above)
-/// for why the two are deliberately kept separate.
+/// **Round 64 retired the card-space-only sibling** (`top_n_and_rest_max`), which ranked by `.cards`
+/// alone and returned one `u32`. It had been kept deliberately for the three dimension tables; once
+/// they moved here it had no callers, and keeping two cutoff conventions was itself a hazard — the
+/// three older tables silently dropped pairs that are large in printings but small in cards, because
+/// their sort key never looked at printings.
 ///
-/// Validated directly against the real corpus before this round was scoped: at N=256, `Island` x
-/// `Swamp` (card=10, printing=107) sits outside the top-64-by-CARD cutoff but deep inside the
-/// top-64-by-PRINTING one -- a card-only ranking silently drops something big in a dimension its sort
-/// key never looks at, the same "include every tie" philosophy `top_n_and_rest_max` already applies to
-/// one axis (Round 47), here extended from one axis to three. On the real corpus this adds 37
-/// printing-only + 21 artwork-only pairs on top of 258 card-ranked ones (258 -> 302, +17%).
+/// Generalizing from one space to three was validated against the real corpus before Round 55 was
+/// scoped: at N=256, `Island` x `Swamp` (card=10, printing=107) sits outside the top-64-by-CARD cutoff
+/// but deep inside the top-64-by-PRINTING one. On the real corpus the union adds 37 printing-only + 21
+/// artwork-only pairs on top of 258 card-ranked ones (258 -> 302, +17%).
 ///
 /// `rest_max` is computed as one pass over the pairs NOT in the union (not derived from the three
 /// per-space boundaries individually) -- union membership is not any single space's own top-N, so only
@@ -2020,9 +2001,9 @@ fn top_n_and_rest_max<K: Eq + std::hash::Hash>(pairs: HashMap<K, SpaceTotals>, n
 fn top_n_union_and_rest_max<K: Eq + std::hash::Hash>(pairs: HashMap<K, SpaceTotals>, n: usize) -> (Vec<(K, SpaceTotals)>, SpaceTotals) {
     let items: Vec<(K, SpaceTotals)> = pairs.into_iter().collect();
 
-    // Tie-inclusive top-N index set for ONE space -- the same boundary rule `top_n_and_rest_max` above
-    // already uses ("include every tie"), generalized to an arbitrary field instead of hardcoding
-    // `.cards`.
+    // Tie-inclusive top-N index set for ONE space -- Round 47's "include every tie" boundary rule (see
+    // this function's own doc), applied to an arbitrary field rather than hardcoding `.cards`. Called
+    // once per space; the caller unions the three results.
     fn top_n_indices(values: &[u32], n: usize) -> HashSet<usize> {
         let mut order: Vec<usize> = (0..values.len()).collect();
         order.sort_unstable_by_key(|&i| std::cmp::Reverse(values[i]));
@@ -2114,8 +2095,8 @@ fn build_subtype_pair_tables(
     // actually flipping a routing decision, so the fallback's whole operating range stays nowhere
     // near that risk zone.
     //
-    // Round 47: `TOP_N` is a target size, not a hard cap -- `top_n_and_rest_max` extends the cutoff
-    // to include every pair tied with the boundary (the 256th-largest) CARD count, so membership is
+    // Round 47: `TOP_N` is a target size, not a hard cap -- `top_n_union_and_rest_max` extends the
+    // cutoff to include every pair tied with the boundary count, so membership is
     // the well-defined predicate "count >= threshold" rather than "first N in some arbitrary order
     // among ties." See that function's own doc for why (a real, previously-confirmed nondeterminism
     // bug: `HashMap`'s randomly-seeded per-process hasher meant a boundary tie could land inside or
@@ -2181,9 +2162,11 @@ fn build_subtype_pair_tables(
     let colors_pair = cumulative_sum(&colors_raw, CmpOp::Ge);
     let identity_pair = cumulative_sum(&identity_raw, CmpOp::Le);
 
-    // Top-N by CARD count (globally, not per outer key), EXTENDED to keep every pair tied with the
-    // boundary (the n-th largest) count -- see `top_n_and_rest_max`'s own doc (module scope, above
-    // this function) for the full nondeterminism story and why "include every tie" was chosen.
+    // Top-N globally (not per outer key) as the UNION of the tie-inclusive top-N in each of the three
+    // spaces -- see `top_n_union_and_rest_max`'s own doc (module scope, above this function) for the
+    // full nondeterminism story, why "include every tie" was chosen, and why ranking by `.cards` alone
+    // (what these three did before Round 64) drops pairs that are large in a space its sort key never
+    // looked at.
     fn nest_set(items: Vec<((String, String), SpaceTotals)>) -> HashMap<String, HashMap<String, SpaceTotals>> {
         let mut out: HashMap<String, HashMap<String, SpaceTotals>> = HashMap::new();
         for ((set_code, subtype), totals) in items {
@@ -2199,9 +2182,15 @@ fn build_subtype_pair_tables(
         out
     }
 
-    let (set_top, set_rest_max) = top_n_and_rest_max(set_subtype_totals, TOP_N);
-    let (colors_top, colors_rest_max) = top_n_and_rest_max(colors_pair, TOP_N);
-    let (identity_top, identity_rest_max) = top_n_and_rest_max(identity_pair, TOP_N);
+    // Round 64: all three now use Round 55's union-of-3-spaces cutoff, which is what retires
+    // `top_n_and_rest_max` entirely (it had no other caller). Two changes in one helper swap: the kept
+    // set is the union of the tie-inclusive top-N in EACH space rather than the top-N by `.cards`
+    // alone, so a pair that is large in printings but small in cards is no longer silently dropped by
+    // a sort key that never looks at printings; and `rest_max` becomes a real per-space triple over
+    // the actual excluded set instead of one card scalar the consumer had to scale.
+    let (set_top, set_rest_max) = top_n_union_and_rest_max(set_subtype_totals, TOP_N);
+    let (colors_top, colors_rest_max) = top_n_union_and_rest_max(colors_pair, TOP_N);
+    let (identity_top, identity_rest_max) = top_n_union_and_rest_max(identity_pair, TOP_N);
     SubtypePairIndexes {
         set: SetSubtypeTable { top: nest_set(set_top), rest_max: set_rest_max, set_cards, set_artworks },
         colors: ColorSubtypeTable { top: nest_color(colors_top), rest_max: colors_rest_max },
@@ -11634,22 +11623,46 @@ fn compose_printing_estimate(
                 // `fuse_and_range_children` produced, which can hold FEWER entries than `v` once a
                 // two-sided range fuses two literal children into one `FusedRange` -- the same reason
                 // `and_trace`'s own `leaves` field above recomputes per-`v`-child instead of reusing
-                // `children_estimates`) give a CARD-space independence product, capped at `rest_max`,
-                // then scaled into PRINTING space the same way this function already does elsewhere
-                // (Round 33's arith-tuple merge, the legality arm): `* n_printings / n_cards`.
+                // `children_estimates`).
+                //
+                // Round 64: this works NATIVELY in printing space, the way Round 55's
+                // `SubtypeSubtypeEstimate` already did. It used to build a CARD-space independence
+                // product, cap it with a card-space `rest_max`, then scale the result into printing
+                // space by the corpus-average reprint ratio (`* n_printings / n_cards`) -- the same
+                // idiom Rounds 61 and 63 deleted from the legality and bare-numeric leaf arms, and for
+                // the same reason: it assumes a uniform reprint rate across all (dim, subtype) pairs,
+                // which is false. Round 55 measured printing-native independence+cap beating
+                // card-space-then-scaled at every percentile on its own excluded population (median
+                // 0.42x vs 0.64x, p90 3.27x vs 4.45x, max 21x vs 24.67x), and this population needed
+                // the fix at least as badly -- measured over 750 real table-MISS pairs before scoping,
+                // the old form read median 1.309x, p90 8.25x, max 628x, worst on `identity` (median
+                // 1.466x, p90 10.9x).
+                //
+                // Both printing marginals are EXACT and already available, so this needs no new index:
+                // the subtype's comes from `value_totals.subtypes` (the same source Round 55 reads),
+                // and the dim's from the leaf's own solo estimate -- `set:X` from
+                // `indexes.set_codes.get(..).len()` (printing-indexed) and `c:X`/`id:X` from
+                // `color_cmp_value_total(.., Mode::Printing)`. That also retires the special case this
+                // match used to need: `set_cards` existed only because a set leaf has no card marginal
+                // anywhere else, and printing space simply does not have that hole.
                 let dim_est = compose_printing_estimate(&v[di], indexes, offsets, n_printings, false);
-                let subtype_card = compose_printing_estimate(&v[si], indexes, offsets, n_printings, false).result.card.best().unwrap_or(0);
-                let (rest_max, dim_card): (usize, usize) = match dim {
-                    SubtypePairDim::Set(set_name) => (
-                        u32::from(indexes.subtype_pairs.set.rest_max) as usize,
-                        indexes.subtype_pairs.set.set_cards.get(set_name).map_or(0, |c| u32::from(*c) as usize),
-                    ),
-                    SubtypePairDim::Colors(_) => (u32::from(indexes.subtype_pairs.colors.rest_max) as usize, dim_est.result.card.best().unwrap_or(0)),
-                    SubtypePairDim::Identity(_) => (u32::from(indexes.subtype_pairs.identity.rest_max) as usize, dim_est.result.card.best().unwrap_or(0)),
+                let sub_name = subtype_pair_leaf(&v[si]).expect("remaining_subs only holds subtype_pair_leaf leaves");
+                let dim_printings = dim_est.result.printing();
+                let sub_printings = indexes.value_totals.subtypes.get(sub_name).map_or(0, |t| t.get(Mode::Printing));
+                let indep = dim_printings.checked_mul(sub_printings).and_then(|p| p.checked_div(n_printings)).unwrap_or(0);
+                // `rest_max` is now a real printing-space bound over the ACTUAL excluded set, not a
+                // card scalar times a global ratio. It is a genuine upper bound here -- this arm only
+                // fires when no exact subtype-pair hit covered these leaves, which means the pair was
+                // excluded from `top`, and a pair absent from the build's map entirely has count 0. The
+                // fold below still reports ESTIMATE class, because `min(indep, rest_max)` can land
+                // below truth whenever `indep` does; recording the bound in its own channel is a
+                // separate follow-up, deliberately not bundled here.
+                let rest_max_printing = match dim {
+                    SubtypePairDim::Set(_) => indexes.subtype_pairs.set.rest_max.get(Mode::Printing),
+                    SubtypePairDim::Colors(_) => indexes.subtype_pairs.colors.rest_max.get(Mode::Printing),
+                    SubtypePairDim::Identity(_) => indexes.subtype_pairs.identity.rest_max.get(Mode::Printing),
                 };
-                let indep = dim_card.checked_mul(subtype_card).and_then(|p| p.checked_div(n_cards)).unwrap_or(0);
-                let card_est = indep.min(rest_max);
-                let printing_est = card_est.checked_mul(n_printings).and_then(|p| p.checked_div(n_cards)).unwrap_or(0);
+                let printing_est = indep.min(rest_max_printing);
                 let candidate = Candidate::Estimate { printing: printing_est, card: None, artwork: None };
                 fold_candidate(
                     &mut result,
@@ -19152,7 +19165,7 @@ const ARCHIVE_MAGIC: [u8; 8] = *b"ATCARDS\0";
 // 2026090303 — Round 57: new `CardIndexes` field `legality_date` (`LegalityDateTotals`, one exact
 // per-`(format, status)` printing prefix sum along the `released_at` value axis). Same blind spot
 // again: entirely inside `CardIndexes`.
-const ARCHIVE_FORMAT_VERSION: u32 = 2026090401;
+const ARCHIVE_FORMAT_VERSION: u32 = 2026090402;
 const ARCHIVE_HEADER_LEN: usize = 16;
 
 fn archive_header() -> [u8; ARCHIVE_HEADER_LEN] {

@@ -8256,7 +8256,7 @@ fn build_subtype_pair_tables_ge_le_cumulative_and_set_marginals() {
     assert_eq!(cards_of(t.set.top.get("bbb").and_then(|m| m.get("Warrior"))), Some(1), "bbb: only card2 has Warrior");
     assert_eq!(t.set.set_cards.get("aaa"), Some(&3), "aaa: card0, card1, card3");
     assert_eq!(t.set.set_cards.get("bbb"), Some(&2), "bbb: card0, card2");
-    assert_eq!(t.set.rest_max, 0);
+    assert_eq!(t.set.rest_max, SpaceTotals::default());
 
     // colors x subtype, GE-CUMULATIVE: `c>=g` must sum every raw combo that CONTAINS green.
     let g = super::color_to_bit("G");
@@ -8265,7 +8265,7 @@ fn build_subtype_pair_tables_ge_le_cumulative_and_set_marginals() {
     assert_eq!(t.colors.top.get(&g).and_then(|m| m.get("Warrior")), None, "no green card has Warrior in this fixture");
     assert_eq!(cards_of(t.colors.top.get(&r).and_then(|m| m.get("Elf"))), Some(2), "c>=r t:elf: card1 (GR) and card2 (R) both contain red");
     assert_eq!(cards_of(t.colors.top.get(&r).and_then(|m| m.get("Warrior"))), Some(1), "c>=r t:warrior: only card2 (R)");
-    assert_eq!(t.colors.rest_max, 0);
+    assert_eq!(t.colors.rest_max, SpaceTotals::default());
 
     // identity x subtype, LE-CUMULATIVE (the real bare-colon `id:` default -- NOT a mirror of colors):
     // `id<=g` sums every raw combo that is a SUBSET of green -- {G} and {} (colorless) only, NOT {G,R}.
@@ -8273,10 +8273,10 @@ fn build_subtype_pair_tables_ge_le_cumulative_and_set_marginals() {
     assert_eq!(cards_of(t.identity.top.get(&g).and_then(|m| m.get("Warrior"))), Some(1), "id<=g t:warrior: card3 (colorless, subset of everything)");
     // `id<=r` sums {R} and {} -- card2 (R, Elf+Warrior) and card3 (colorless, Warrior).
     assert_eq!(cards_of(t.identity.top.get(&r).and_then(|m| m.get("Warrior"))), Some(2), "id<=r t:warrior: card2 (R) + card3 (colorless)");
-    assert_eq!(t.identity.rest_max, 0);
+    assert_eq!(t.identity.rest_max, SpaceTotals::default());
 }
 
-/// `top_n_and_rest_max` (Round 47): a boundary tie must pull EVERY tied pair into the returned set,
+/// `top_n_union_and_rest_max` (Round 47's property, retargeted in Round 64): a boundary tie must pull EVERY tied pair into the returned set,
 /// not an arbitrary subset of them -- the fix for the confirmed nondeterminism bug where `HashMap`'s
 /// randomly-seeded per-process hasher let a boundary-tied pair land inside or outside a plain top-N
 /// cutoff depending on which process built the table. Counts: a=10, b=9, c=9, d=9, e=5, cutoff n=3 --
@@ -8284,8 +8284,14 @@ fn build_subtype_pair_tables_ge_le_cumulative_and_set_marginals() {
 /// (9), so all three must survive, growing the returned set to 4. `rest_max` must be 5 (the largest
 /// count STRICTLY below the boundary -- e's count -- not 9, which the old plain top-N could have
 /// returned had one of b/c/d landed just outside instead).
+///
+/// Every fixture in this group sets all three spaces to the SAME value deliberately: the union of
+/// three identical per-space top-N sets is that same set, which isolates the TIE property under test
+/// from the union-across-spaces property (covered by `build_subtype_pair_tables`' own tests). Round
+/// 63b retargeted these from `top_n_and_rest_max`, which they used to guard, when the union helper
+/// became the only one and the scalar version was deleted.
 #[test]
-fn top_n_and_rest_max_keeps_every_pair_tied_at_the_boundary() {
+fn top_n_union_and_rest_max_keeps_every_pair_tied_at_the_boundary() {
     let mut pairs: HashMap<&'static str, SpaceTotals> = HashMap::new();
     pairs.insert("a", SpaceTotals { printings: 10, cards: 10, artworks: 10 });
     pairs.insert("b", SpaceTotals { printings: 9, cards: 9, artworks: 9 });
@@ -8293,37 +8299,41 @@ fn top_n_and_rest_max_keeps_every_pair_tied_at_the_boundary() {
     pairs.insert("d", SpaceTotals { printings: 9, cards: 9, artworks: 9 });
     pairs.insert("e", SpaceTotals { printings: 5, cards: 5, artworks: 5 });
 
-    let (items, rest_max) = super::top_n_and_rest_max(pairs, 3);
+    let (items, rest_max) = super::top_n_union_and_rest_max(pairs, 3);
 
     let mut keys: Vec<&'static str> = items.iter().map(|(k, _)| *k).collect();
     keys.sort_unstable();
     assert_eq!(keys, vec!["a", "b", "c", "d"], "all 3 pairs tied at the boundary count (9) must survive, not an arbitrary 2 of 3");
-    assert_eq!(rest_max, 5, "rest_max must be the next STRICTLY LOWER count (e's 5), not the boundary value (9) itself");
+    assert_eq!(
+        rest_max,
+        SpaceTotals { printings: 5, cards: 5, artworks: 5 },
+        "rest_max must be the next STRICTLY LOWER count (e's 5), not the boundary value (9) itself -- in every space"
+    );
 }
 
-/// `top_n_and_rest_max` (Round 47): fewer than `n` total items means nothing is excluded at all --
+/// `top_n_union_and_rest_max` (Round 47's property, retargeted in Round 64): fewer than `n` total items means nothing is excluded at all --
 /// every item is kept and there is no "rest" to bound, so `rest_max` must be exactly 0 (not, say, the
 /// smallest kept count).
 #[test]
-fn top_n_and_rest_max_keeps_everything_when_fewer_than_n_items() {
+fn top_n_union_and_rest_max_keeps_everything_when_fewer_than_n_items() {
     let mut pairs: HashMap<&'static str, SpaceTotals> = HashMap::new();
     pairs.insert("a", SpaceTotals { printings: 3, cards: 3, artworks: 3 });
     pairs.insert("b", SpaceTotals { printings: 1, cards: 1, artworks: 1 });
 
-    let (items, rest_max) = super::top_n_and_rest_max(pairs, 5);
+    let (items, rest_max) = super::top_n_union_and_rest_max(pairs, 5);
 
     let mut keys: Vec<&'static str> = items.iter().map(|(k, _)| *k).collect();
     keys.sort_unstable();
     assert_eq!(keys, vec!["a", "b"], "both items must be kept -- there are fewer than n=5 total");
-    assert_eq!(rest_max, 0, "nothing was excluded, so rest_max must be 0");
+    assert_eq!(rest_max, SpaceTotals::default(), "nothing was excluded, so rest_max must be 0 in every space");
 }
 
-/// `top_n_and_rest_max` (Round 47) regression check: with NO tie at the boundary, the result must be
+/// `top_n_union_and_rest_max` (Round 47's property, retargeted in Round 64) regression check: with NO tie at the boundary, the result must be
 /// IDENTICAL to the old plain top-N -- the common case must not change at all. Counts 10/8/6/4/2, n=3:
 /// the boundary value (6, at position n-1=2) is unique, so the cutoff must stay at exactly 3 and
 /// `rest_max` must be the old formula's answer (`items[n]` = 4), the same as before this round.
 #[test]
-fn top_n_and_rest_max_matches_old_plain_top_n_when_no_boundary_tie() {
+fn top_n_union_and_rest_max_matches_old_plain_top_n_when_no_boundary_tie() {
     let mut pairs: HashMap<&'static str, SpaceTotals> = HashMap::new();
     pairs.insert("a", SpaceTotals { printings: 10, cards: 10, artworks: 10 });
     pairs.insert("b", SpaceTotals { printings: 8, cards: 8, artworks: 8 });
@@ -8331,22 +8341,26 @@ fn top_n_and_rest_max_matches_old_plain_top_n_when_no_boundary_tie() {
     pairs.insert("d", SpaceTotals { printings: 4, cards: 4, artworks: 4 });
     pairs.insert("e", SpaceTotals { printings: 2, cards: 2, artworks: 2 });
 
-    let (items, rest_max) = super::top_n_and_rest_max(pairs, 3);
+    let (items, rest_max) = super::top_n_union_and_rest_max(pairs, 3);
 
     let mut keys: Vec<&'static str> = items.iter().map(|(k, _)| *k).collect();
     keys.sort_unstable();
     assert_eq!(keys, vec!["a", "b", "c"], "no tie at the boundary: must be exactly the old plain top-3, unchanged");
-    assert_eq!(rest_max, 4, "no tie at the boundary: rest_max must match the old formula's answer exactly");
+    assert_eq!(
+        rest_max,
+        SpaceTotals { printings: 4, cards: 4, artworks: 4 },
+        "no tie at the boundary: rest_max must match the old single-space formula's answer exactly"
+    );
 }
 
-/// `top_n_and_rest_max` (Round 47) edge case: an empty input map must not panic, and must return an
+/// `top_n_union_and_rest_max` (Round 47's property, retargeted in Round 64) edge case: an empty input map must not panic, and must return an
 /// empty `Vec` with `rest_max == 0`.
 #[test]
-fn top_n_and_rest_max_handles_empty_input() {
+fn top_n_union_and_rest_max_handles_empty_input() {
     let pairs: HashMap<&'static str, SpaceTotals> = HashMap::new();
-    let (items, rest_max) = super::top_n_and_rest_max(pairs, 256);
+    let (items, rest_max) = super::top_n_union_and_rest_max(pairs, 256);
     assert!(items.is_empty(), "empty input must produce an empty result");
-    assert_eq!(rest_max, 0);
+    assert_eq!(rest_max, SpaceTotals::default());
 }
 
 /// `exact_result_total` (Round 34): a strict 2-leaf `And` of `set:X`/`c:X`/`id:X` + a subtype leaf,
@@ -8496,7 +8510,7 @@ fn subtype_pair_and_arm_tightening() {
     data.indexes.subtype_pairs.set.set_cards.insert("aaa".to_string(), 8);
     data.indexes.subtype_pairs.set.set_cards.insert("bbb".to_string(), 8);
     data.indexes.subtype_pairs.set.top.entry("bbb".to_string()).or_default().insert("Elf".to_string(), SpaceTotals { printings: 4, cards: 2, artworks: 4 });
-    data.indexes.subtype_pairs.set.rest_max = 100;
+    data.indexes.subtype_pairs.set.rest_max = SpaceTotals { printings: 100, cards: 100, artworks: 100 };
 
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
@@ -8510,20 +8524,27 @@ fn subtype_pair_and_arm_tightening() {
         super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, false)
     };
 
-    // `set:aaa t:elf`: no table entry. Fold = min(k_aaa=8, k_elf=9) = 8. Fallback independence:
-    // dim_card(8) * subtype_card(3) / n_cards(8) = 3; scaled to printing space, 3 * 19 / 8 = 7
-    // (floor). 7 < 8, so the tightened value wins. True joint count is 3 (each Elf card has exactly
-    // one printing in aaa) -- 7 is a real improvement over the fold's 8, though not exact (the
-    // card->printing conversion is itself an average-reprint-rate approximation, same honest
-    // limitation Round 33 documents for its own density model) -- so `exact_domain` must stay `None`.
+    // `set:aaa t:elf`: no table entry. Fold = min(k_aaa=8, k_elf=9) = 8. Fallback independence, now
+    // NATIVE to printing space (Round 64): `k_aaa(8) * k_elf(9) / n_printings(19) = 3` (floor), and
+    // the generous `rest_max` does not bind. 3 < 8, so the tightened value wins.
+    //
+    // The true joint count is 3 -- each Elf card has exactly one printing in `aaa` -- so the new form
+    // is EXACT on this fixture. The old card-space-then-scaled form computed
+    // `dim_card(8) * subtype_card(3) / n_cards(8) = 3`, then multiplied by the corpus-average reprint
+    // ratio (`3 * 19 / 8 = 7`), landing 2.3x over a truth it had already reached. That scaling step is
+    // exactly what this round deleted, and this assertion is the smallest complete demonstration of
+    // why. `exact_domain` must still stay `None`: an independence product is an estimate even when it
+    // happens to be right.
     let aaa = est("aaa");
-    assert_eq!(aaa.result.printing(), 7, "set:aaa t:elf: capped independence-product fallback must win over the fold");
+    assert_eq!(aaa.result.printing(), 3, "set:aaa t:elf: printing-native capped independence must win over the fold, and is exact here");
     assert!(aaa.exact_domain.is_none(), "the fallback is an ESTIMATE, not exact -- it must not populate exact_domain");
 
     // `set:bbb t:elf`: exact table entry (printings=4, cards=2, artworks=4) -- deliberately NOT what
-    // the fallback formula would give (fallback would be dim_card(8)*subtype_card(3)/8 = 3, scaled to
-    // 3*19/8 = 7, same as `aaa`). Getting `result.printing == 4` (not 7) proves the exact path fired
-    // instead of the fallback formula, and `exact_domain` must carry the SAME triple, not just `result`.
+    // the fallback formula would give (printing-native fallback is `k_bbb(9) * k_elf(9) / 19 = 4`...
+    // which would coincide, so the discriminator here is `bbb`'s own printing count differing from
+    // `aaa`'s: what proves the exact path fired is `result.card == Some(2)` and a populated
+    // `exact_domain`, neither of which the estimate branch can produce (it reports `card: None` and
+    // must leave `exact_domain` empty).
     let bbb = est("bbb");
     assert_eq!(bbb.result.printing(), 4, "set:bbb t:elf: exact table entry must be preferred over the independence fallback");
     assert_eq!(bbb.result.card.best(), Some(2), "exact table entry's card count must also reach result.card");
@@ -8537,10 +8558,10 @@ fn subtype_pair_and_arm_tightening() {
 /// GENEROUS `rest_max` to demonstrate the fallback formula itself, not the cap).
 ///
 /// 4 cards, all printed once, all in set `ddd`: card0 has subtype Elf, cards 1-3 don't. n_cards=4,
-/// n_printings=4, k_ddd=4, k_elf=1, dim_card=4, subtype_card=1. Uncapped fallback:
-/// `dim_card(4) * subtype_card(1) / n_cards(4) = 1`, scaled `1 * 4 / 4 = 1`. `rest_max = 0`
-/// (deliberately adversarial, not realistic -- see the test's own doc on the sibling test) forces
-/// `card_est = min(1, 0) = 0`, scaled `0 * 4 / 4 = 0`. Getting 0 (not 1) proves the cap binds.
+/// n_printings=4, k_ddd=4, k_elf=1. Uncapped printing-native fallback (Round 64):
+/// `k_ddd(4) * k_elf(1) / n_printings(4) = 1`. `rest_max.printings = 0` (deliberately adversarial,
+/// not realistic -- see the test's own doc on the sibling test) forces `min(1, 0) = 0`. Getting 0
+/// (not 1) proves the cap still binds after the cap moved from card space to printing space.
 #[test]
 fn subtype_pair_and_arm_rest_max_caps_fallback() {
     let mut vocab = VocabInterner::new();
@@ -8562,7 +8583,7 @@ fn subtype_pair_and_arm_rest_max_caps_fallback() {
     data.indexes.subtypes = build_hybrid_tag_index(&data.cards, &data.coll_vocab, |c| &c.card_subtypes);
     data.indexes.value_totals = build_all_value_totals(&data.cards, &data.printings, &build_printing_to_card(&data.offsets), &data.strings, &data.coll_vocab, usize::from(data.indexes.max_artwork_groups));
     data.indexes.subtype_pairs.set.set_cards.insert("ddd".to_string(), 4);
-    data.indexes.subtype_pairs.set.rest_max = 0;
+    data.indexes.subtype_pairs.set.rest_max = SpaceTotals::default();
 
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
@@ -8612,7 +8633,7 @@ fn subtype_pair_hit_fires_in_three_leaf_and() {
     // t:elf=2), so a hit is unambiguous and not an artifact of the plain fold.
     data.indexes.subtype_pairs.set.set_cards.insert("aaa".to_string(), 3);
     data.indexes.subtype_pairs.set.top.entry("aaa".to_string()).or_default().insert("Elf".to_string(), SpaceTotals { printings: 1, cards: 1, artworks: 1 });
-    data.indexes.subtype_pairs.set.rest_max = 100;
+    data.indexes.subtype_pairs.set.rest_max = SpaceTotals { printings: 100, cards: 100, artworks: 100 };
 
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
@@ -8693,7 +8714,7 @@ fn subtype_pair_hit_min_chains_with_a_different_exact_mechanism() {
     data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
     data.indexes.subtype_pairs.set.set_cards.insert("aaa".to_string(), 5);
     data.indexes.subtype_pairs.set.top.entry("aaa".to_string()).or_default().insert("Elf".to_string(), SpaceTotals { printings: 1, cards: 1, artworks: 1 });
-    data.indexes.subtype_pairs.set.rest_max = 100;
+    data.indexes.subtype_pairs.set.rest_max = SpaceTotals { printings: 100, cards: 100, artworks: 100 };
 
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
@@ -8761,9 +8782,9 @@ fn subtype_pair_multiple_dim_subtype_pairs_all_fold_via_min() {
     data.indexes.value_totals = build_all_value_totals(&data.cards, &data.printings, &ptc, &data.strings, &data.coll_vocab, max_ag);
     data.indexes.subtype_pairs.set.set_cards.insert("aaa".to_string(), 4);
     data.indexes.subtype_pairs.set.top.entry("aaa".to_string()).or_default().insert("Elf".to_string(), SpaceTotals { printings: 3, cards: 3, artworks: 3 });
-    data.indexes.subtype_pairs.set.rest_max = 100;
+    data.indexes.subtype_pairs.set.rest_max = SpaceTotals { printings: 100, cards: 100, artworks: 100 };
     data.indexes.subtype_pairs.colors.top.entry(g).or_default().insert("Elf".to_string(), SpaceTotals { printings: 2, cards: 2, artworks: 2 });
-    data.indexes.subtype_pairs.colors.rest_max = 100;
+    data.indexes.subtype_pairs.colors.rest_max = SpaceTotals { printings: 100, cards: 100, artworks: 100 };
 
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
@@ -8922,7 +8943,7 @@ fn subtype_pair_estimate_fallback_still_fires_in_three_leaf_and() {
     // No `subtype_pairs` entry for "aaa" at all -- the fallback formula must run: dim_card(8) *
     // subtype_card(3) / n_cards(8) = 3, scaled to printing space 3 * 8 / 8 = 3.
     data.indexes.subtype_pairs.set.set_cards.insert("aaa".to_string(), 8);
-    data.indexes.subtype_pairs.set.rest_max = 100;
+    data.indexes.subtype_pairs.set.rest_max = SpaceTotals { printings: 100, cards: 100, artworks: 100 };
 
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
@@ -8990,7 +9011,7 @@ fn subtype_pair_hit_fires_even_when_dim_leaf_already_covered_by_another_mechanis
     data.indexes.planes = build_bit_planes(&data.cards, &data.printings, &data.offsets, &data.strings);
     // Deliberately SMALLER than the real `color:G AND format:A` count (2) -- see this test's own doc.
     data.indexes.subtype_pairs.colors.top.entry(g).or_default().insert("Elf".to_string(), SpaceTotals { printings: 1, cards: 1, artworks: 1 });
-    data.indexes.subtype_pairs.colors.rest_max = 100;
+    data.indexes.subtype_pairs.colors.rest_max = SpaceTotals { printings: 100, cards: 100, artworks: 100 };
 
     let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
     let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
