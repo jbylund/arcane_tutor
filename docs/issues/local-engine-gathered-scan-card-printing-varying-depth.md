@@ -222,6 +222,81 @@ total regret by 0.0 ms).
 | 68 | **First EXECUTOR round in this arc — removes real work rather than improving a prediction.** `walk_grouped_page` stepped the permutation and, per card, bit-tested the card's WHOLE printing span and called `prefer_score` on every set printing. But printings are stored prefer-DESCENDING within a card (`from_rows`' load-time sort, ties by illustration_id then scryfall_id), so under `Mode::Card` + `Prefer::Default` the FIRST set printing already IS the chosen representative — every later `prefer_score`, the `touched`/`group_best` bookkeeping and the post-loop group emit were waste. Now takes the same `(start..end).find(is_set)` early break `gather_composed_page` and `push_card_matches` already used. `printings_examined` moved off its unconditional pre-match `(end - start)` to the EXIT POSITION, per arm, with no per-iteration add (the project's hot-path instrumentation rule). Scoped to the only LIVE walk: `walk_card_page_via_popcount_skip` sits behind `COMPOSE_SIGMA_ENABLED` (defaults 0) and the printing/artwork popcount-skip walks have zero production call sites | kept | n/a (not this doc's own metric) | **Row identity is the gate and it passed twice independently.** Agent: 7,776 cells / 374,712 rows byte-identical (3 distinct-ons x 4 prefers x 3 sort cols x both directions x 6 page points x 6 densities), debug AND release, plus 9,000 cells / 235,692 rows matching by sha256 from routed dumps. Me, separately: **21,912 compose cells including 5,920 `Perm`-paging, 750,580 rows, identical sha256** over printing identity — my first attempt used `orderby=rarity` and hit **0 Perm cells**, so it proved nothing until the orderby was varied. **Realized time**: `PrintingCompose` `ns_loop` p50 **0.707** (3,896 → 1,979 ns), interleaved over 6 block pairs, with GatheredScan/StreamedSelect/PlanePopcountOrder/CardRangePopcount controls all reading p50 **1.000**. Plan choice unaffected: **0 changes over 66,414** survey observations, and 0 `paging_taken`/`picked`/`result_total` flips over 595 exact-population paired compose cells. `cargo test` 305 debug / 302 release, clippy clean both profiles (verified by me) | see "Round 68" narrative below — why the end-to-end number is much smaller than the loop number, a density regime the router never reaches, and a cost-feature consequence that is now a queue item |
 | 69 | **Measurement only.** Grades StreamedSelect's two never-graded cost drivers (`perm_walk_span` via the walk term, `stream_scan_units`) against realized counters, answers whether the permutation-less sort columns need their own cost branch, and re-measures the compose walk's per-orderby clump after Round 68 invalidated it | n/a | n/a | **No instrumentation round was needed — item 1's stated blocker was wrong.** Both realized counters (`perm_steps`, `printings_examined`) already exist and are already published. Walk term: pooled median **1.023**, spread 9.6x, split by sort column into **1.9x** (`name`) to **38.8x** (`cmc`) at flat medians (0.918-1.183) — so a per-orderby scalar cannot help in CARD space, and no existing feature predicts the residual (max \|r\| 0.12). `stream_scan_units` is **bimodal**: p25/p50 exactly 1.000, p90 **11.8** (printing 16.7x, artwork 14.0x). Both cost GATES are correct — all 83 walk-gate disagreements (2.79%) are the estimate crossing `STREAM_MIN_MATCHES`, and 720 of 778 scan-gate ones (92.5%) are the plan returning before any loop. `rarity`/`usd` need **no** cost branch: they have no permutation and `streamed_select_applicable` drops the plan from the argmin (offered 0/12 vs 12/12 for `name`/`cmc`). Compose's `Perm`/`OrderbyWalk` shared arm is likewise **correct** (residual medians 1.277 vs 1.449) — but its per-column medians span **0.925-3.579** against one shipped `WALK_LENGTH_BIAS` of 1.45, which CONFIRMS item 5 | see "Round 69" narrative below — a blocker that was already unblocked, and a stale table that validated its own replacement |
 
+### Round 75 — the four largest terms in the model get counters
+
+Round 73 found that the biggest terms in the cost model were graded by nothing at all. This adds the
+counters and grades them, which changes what is known about **58% + 28% + 37% + 23%** of three plans'
+predicted cost. Two counters are new, one already existed under another name, and one is deliberately
+left ungraded.
+
+| term | realized quantity | counter |
+|---|---|---|
+| `CARD_PASS+FLOOR` (both scan plans) | `filter.card_pass` calls | **new** `card_pass_calls` |
+| `BROADCAST_PER_PRINTING` | printings the card->printing pass wrote or cleared | **new** `broadcast_printings` |
+| `PROJECT_PER_PRINTING` | `popcount(pbits)` — both projection passes iterate the composed bitmap's set bits and nothing else | **already existed** as `set_printings` |
+| `SCATTER_PER_PRINTING` | the range slice actually scattered | **none, deliberately** |
+
+**`SCATTER_PER_PRINTING` gets no counter and that is the finding, not an omission.** The acquire
+estimate and the build read the SAME source: the estimate takes `idx.range(lo, hi)` and charges
+`e - s`, while `range_leaf_bits` scatters `idx.range_pids(lo, hi)`, which is `pids[s..e]` off that
+identical call — and both fuse same-index `And` children through
+`fuse_and_range_children(v, indexes, false)`, same third argument. A counter could only ever read
+1.000 by identity, which is worse than no counter because it looks like a measurement. Any error
+there is in the 0.48 ns rate.
+
+**The verdicts, and only one of the four is wrong:**
+
+1. **GatheredScan's `CARD_PASS+FLOOR` — the largest term in the model — is SOUND.** p10 0.883 /
+   p50 **1.000** / p90 2.168 over 9,978 rows, with 64% reading exactly 1.000. It is exact by
+   construction: `residual_tier_ns100` is set from the very `prep.all_match_known` the executor reads,
+   and the call is one per visited candidate. Its residual spread is `eval_domain`'s cardinality
+   error, already graded and separately owned.
+2. **StreamedSelect's `CARD_PASS+FLOOR` is WRONG by exactly 2x on the small-total gather branch.**
+   The term prices ONE pass; `run_query_streamed` re-derives `card_pass` for every matching card in
+   its redo loop, and again per emitting entry of its permutation walk. So the feature is
+   `cards_visited` against a realized `cards_visited + matching_cards`, and the cell shows it as a
+   clean point mass: p10/p25/p50 = **0.50 / 0.50 / 0.50** on the `candidates` route, 0.500 at p10 in
+   all three distinct-ons. **Invisible to the pooled median (0.988) and to the [0.8, 1.25] band** —
+   which is exactly why per-branch slicing exists. `cost.rs`'s own comment ("the loop calls
+   `filter.card_pass` once per `cid`") is false for this plan.
+3. **`BROADCAST_PER_PRINTING` is right where it fires, and is the tightest cell in the toolkit** —
+   p50 1.000 with p90/p10 **1.2** on the compose route, aggregate 0.991. Its 0.0% pooled median is
+   correct: most compose queries have no broadcast leaf. The real error is a per-format tail from
+   `scale(min(legal, illegal))` spreading at corpus-average depth: `f:oldschool` reads 2,962 against a
+   realized 11,725 (**0.25x**), `f:modern` 28,593 against 23,507 (**1.22x**).
+4. **`PROJECT_PER_PRINTING` is right at the median and over-counts in the tail** — p50 1.000,
+   aggregate 1.065, but p99 7.98 and max 50.33, worst on the Gather branch (p75 3.45, p90 8.22). p10
+   is 1.000, so it is exact or over, never under. The shape is right; the error is
+   `est.result.printing()` over-stating the composed bitmap.
+
+**A latent hazard the grading exposed, worth more than three of the four verdicts.** On a `plane`
+acquire both compose build features read **0.00 at every percentile** (656 and 738 rows, 100% of that
+route) while the executor really does compose and project. `mk_plan_feats` seeds
+`broadcast_printings`/`project_printings`/`popcount_words` to 0 and only the `printing_compose`
+acquire branch fills them — so compose is costed with a **free build** on exactly the card-space plane
+leaves it must broadcast down (colour, legality, devotion). Median **99.1 us** of unpriced work per
+row at 1.93 ns/printing, p90 233 us, p99 427 us. The comment at `lib.rs:16927` claims "0 for …
+precomputed planes", which is true only of PRINTING-space planes. **Compose was picked on 0 of those
+767 rows**, so it costs no routing regret today — a hazard, not a defect, and deliberately kept out of
+`MEASURED_SPREAD`'s risk column for that reason, since a risk number for a term compose is charged for
+only when it can win would overstate what routing actually pays.
+
+**Verification.** The `tier_ns > 0.0` gate is now one function (`residual_verified`) called by all
+three arm sites instead of three copies, and `residual_card_pass` is exposed from `cost.rs` following
+the `stream_perm_steps`/`printings_walked` precedent so the harness does not hold its own copy of the
+gate. That refactor is **bit-identical**: `predicted_ns`, `picked` and every feature match across
+builds on all 3,600 prefer-varied survey rows.
+
+Instrumentation was A/B'd per the project rule, since only one addition lands inside a loop body
+(`touched += end - start` per set card in the two broadcast passes; the other counters are computed at
+the publish, Round 68's shape). End-to-end `bench_query_latency_ab --sample 800 --mode realistic`,
+16 runs ABBA x4 with the first block discarded as cold: **B - A = +0.02 us on a 59.93 us mean**,
+per-query B/A p10 0.982 / p50 0.997 / p90 1.018, against same-build controls spanning -0.85 to
++1.38 us. Targeted at the instrumented pass (48 broadcast-heavy cells, compose's `ns_build`, 16 runs
+ABBA at 6/30): B/A p50 **1.006** against a same-build control of 0.995, on cells whose broadcast
+counts run to 88,477 printings per query. `cargo test` 306 debug / 303 release, clippy clean both,
+ruff clean.
+
 ### Round 74 — `scan_all`'s depth discount was card-mode-only, applied to every mode
 
 The largest term in the model with a graded feature behind it (`SCAN_PER_ROW`, 44.1% of

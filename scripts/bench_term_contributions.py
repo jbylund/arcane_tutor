@@ -63,12 +63,38 @@ MIN_ROWS = 30
 #: Measured p90/p10 per (plan, term), from the Round 69-72 grading runs. Keyed by BOTH because
 #: `SCAN_PER_ROW` is a different feature in each plan -- `stream_scan_units` for StreamedSelect,
 #: `scan_units` for GatheredScan -- and keying by term alone silently gives one the other's spread.
+#
+# The four largest ungraded terms this table itself identified gained counters and are now graded, so
+# their `--` is gone: `residual_card_pass` against the realized `card_pass_calls` for both
+# `CARD_PASS+FLOOR` arms, `broadcast_printings` against the printings the build's broadcast passes
+# really wrote or cleared, and `project_printings` against `set_printings` (`popcount(pbits)`, which
+# IS the projection's realized length). `SCATTER_PER_PRINTING` stays `--` on purpose and it means
+# something different there -- see `bench_feature_accuracy.PAIRS`, which explains why that feature is
+# exact by construction and a counter for it could only read 1.000 tautologically.
+#
+# The two compose figures are the `printing_compose` ACQUIRE ROUTE only. Pooled over every route they
+# are `inf`: a `plane` or `candidates` acquire leaves both build features at 0 while the executor
+# still composes and projects, so those rows read a flat 0.00 (656 and 738 of them, 100% of the plane
+# route). That is a real feature error, but compose was picked on 0 of 767 such rows, so folding it
+# into a risk number for a term compose is charged for when it can WIN would overstate what routing
+# actually pays. It is reported as its own finding instead.
 MEASURED_SPREAD = {
     ("StreamedSelect", "PERM_STEP"): 15.5,
     ("StreamedSelect", "SCAN_PER_ROW"): 27.1,
     ("GatheredScan", "SCAN_PER_ROW"): 11.1,
     ("PrintingCompose", "WALK_STEP"): 21.8,
     ("PrintingCompose", "GATHER_BITTEST_PER_PRINTING"): 34.2,
+    # p10 0.883 / p50 1.000 / p90 2.168 over 9,978 rows. Structurally exact -- 64% of rows read
+    # exactly 1.000 -- so the spread is `eval_domain`'s, inherited, not this term's own.
+    ("GatheredScan", "CARD_PASS+FLOOR"): 2.5,
+    # p10 0.500 / p50 0.988 / p90 1.822 over 8,410 rows, and the p10 is not noise: it is the exact
+    # 2x under-count of the small-total redo pass, which re-derives `card_pass` for every matching
+    # card while the term prices one pass. Read that cell, not this median.
+    ("StreamedSelect", "CARD_PASS+FLOOR"): 3.6,
+    # p10 0.915 / p50 1.000 / p90 1.040 over 8,388 rows -- the tightest cell in the whole toolkit.
+    ("PrintingCompose", "BROADCAST_PER_PRINTING"): 1.1,
+    # p10 1.000 / p50 1.000 / p90 2.119 over 5,957 rows: exact or over, never under.
+    ("PrintingCompose", "PROJECT_PER_PRINTING"): 2.1,
 }
 
 

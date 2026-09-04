@@ -151,7 +151,17 @@ PLAN_KEYS = frozenset(
         # `push_card_matches` re-examined in the second, page-selecting pass over every matching
         # card -- the redo `printings_examined` (captured only from the first, counting-only pass)
         # structurally cannot see. Round 31 of the printing-varying-leaf depth ledger.
-        "redo_examined",
+        # `filter.card_pass` invocations, the realized quantity behind `cost::residual_card_pass` --
+        # the residual-gated per-card term whose coefficient is the residual floor, and the largest
+        # single term in the model (58% of GatheredScan's predicted time). Zero for every plan that
+        # verifies no residual. NOT `cards_visited` for StreamedSelect: its small-total redo loop and
+        # its permutation walk each re-derive `card_pass` for a second population.
+        "card_pass_calls",
+        # PrintingCompose only: printings its BUILD's card->printing broadcast passes wrote or
+        # cleared, the realized quantity behind `PlanFeatures::broadcast_printings`. Accumulated by
+        # the passes themselves (`broadcast_card_bits_to_printings`, `legality_leaf_bits_from_absent`)
+        # because they sit under a recursion with no publish site of its own.
+        "broadcast_printings",
         "ns_setup",
         "ns_loop",
         "ns_finish",

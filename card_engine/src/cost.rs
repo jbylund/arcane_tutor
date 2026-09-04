@@ -776,6 +776,33 @@ pub(crate) fn printings_walked(f: &PlanFeatures) -> f64 {
     page_span / match_rate * WALK_LENGTH_BIAS
 }
 
+/// Whether a residual has to be VERIFIED per candidate, i.e. whether the executors call
+/// `filter.card_pass` at all. `residual_tier_ns100 == 0` is exactly `all_match_known` — the narrowing
+/// already proved every candidate matches, so #634 step 1 skips the call outright.
+///
+/// One definition, read by both materializing arms (each gates its `CARD_PASS + max(tier, FLOOR)`
+/// term on it) and by `residual_card_pass` below, rather than three copies of `tier_ns > 0.0`.
+fn residual_verified(f: &PlanFeatures) -> bool {
+    f.residual_tier_ns100 > 0
+}
+
+/// Candidate cards the loop invokes `filter.card_pass` on — the quantity the `CARD_PASS + max(tier,
+/// RESIDUAL_FLOOR)` term of BOTH materializing arms multiplies, and on `GatheredScan` the single
+/// largest term in the whole model (58% of its predicted time, since the coefficient IS the residual
+/// floor). `0` under `all_match_known`, where the arms charge nothing.
+///
+/// Derived rather than stored, and exposed for the same reason `stream_perm_steps` and
+/// `printings_walked` are: a harness recomputing the gate in Python is a second definition of it.
+/// Graded against the realized `card_pass_calls` counter.
+///
+/// **It describes ONE call per visited candidate, which is `GatheredScan`'s loop and only the FIRST
+/// of `StreamedSelect`'s passes.** That plan re-derives `card_pass` in its small-total redo loop and
+/// again per emitting entry of its permutation walk (see `run_query_streamed`), and no term prices
+/// those — which is what the counter exists to size.
+pub(crate) fn residual_card_pass(f: &PlanFeatures) -> u32 {
+    if residual_verified(f) { f.eval_domain } else { 0 }
+}
+
 /// Whether `run_query_streamed`'s small-total gather runs, as the model predicts it: at or below
 /// `STREAM_MIN_MATCHES` it scans all `n_cards` instead of walking, and either way it returns before
 /// both branches when there are no matches or the page starts past the end.
@@ -981,9 +1008,9 @@ pub(crate) fn plan_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
             // the arm's card-mode body read p50 1.90 over-costed.
             eval_domain
                 * (STREAM_LOOP_PER_CARD_NS
-                    + if tier_ns > 0.0 { STREAM_CARD_PASS_NS + tier_ns.max(STREAM_RESIDUAL_FLOOR_NS) } else { 0.0 })
+                    + if residual_verified(f) { STREAM_CARD_PASS_NS + tier_ns.max(STREAM_RESIDUAL_FLOOR_NS) } else { 0.0 })
                 // Only with a residual does P3 walk printings; see STREAM_SCAN_PER_ROW_NS.
-                + if tier_ns > 0.0 { f64::from(f.stream_scan_units) * STREAM_SCAN_PER_ROW_NS } else { 0.0 }
+                + if residual_verified(f) { f64::from(f.stream_scan_units) * STREAM_SCAN_PER_ROW_NS } else { 0.0 }
                 + matches * STREAM_EMIT_PER_MATCH_NS
                 + perm_steps * STREAM_PERM_STEP_NS
                 + f64::from(f.artwork_seen_cards) * STREAM_ARTWORK_SEEN_PER_CARD_NS
@@ -1002,7 +1029,7 @@ pub(crate) fn plan_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
             // `StreamedSelect -> GatheredScan` from 407 lost-time queries to 653.
             eval_domain
                 * (GATHER_LOOP_PER_CARD_NS
-                    + if tier_ns > 0.0 { GATHER_CARD_PASS_NS + tier_ns.max(GATHER_RESIDUAL_FLOOR_NS) } else { 0.0 })
+                    + if residual_verified(f) { GATHER_CARD_PASS_NS + tier_ns.max(GATHER_RESIDUAL_FLOOR_NS) } else { 0.0 })
                 + scan_units * GATHER_SCAN_PER_ROW_NS
                 + matches * GATHER_PUSH_PER_MATCH_NS
                 + page_span * GATHER_SELECT_PER_PAGE_SLOT_NS

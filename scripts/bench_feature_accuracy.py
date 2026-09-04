@@ -82,12 +82,50 @@ MIN_COUNTER = 100
 # `printings_walked` -- one definition, read by the arm and reported to `explain`, rather than a second
 # copy of the formula here. Graded against `perm_steps`, every permutation entry the walk touched
 # including the zero-count skips.
+#
+# `residual_card_pass` is the derived residual-gated per-card term (`eval_domain` when
+# `residual_tier_ns100 > 0`, else 0), exposed by `cost.rs` for the same reason `stream_perm_steps` is:
+# the gate belongs to the arm, and a harness holding its own copy of it is a second definition. It is
+# the largest single term in the model -- 58% of GatheredScan's predicted time and 28% of
+# StreamedSelect's, because its coefficient IS the residual floor -- and nothing graded it before.
+#
+# `broadcast_printings` and `project_printings` are compose's two `LINEAR_PASS` build terms, 37% and
+# 23% of that plan's predicted time. Their counters are what the build really touched:
+# `broadcast_printings` (the counter) is summed by the two card->printing passes themselves, and
+# `set_printings` is `popcount(pbits)`, which IS the projection's realized length -- both
+# `printing_bits_to_card_bits` and `printing_bits_to_artwork_bits` iterate the composed bitmap's set
+# bits and nothing else.
+#
+# `scatter_printings` is deliberately absent, and that is a finding rather than an omission: the
+# acquire estimate and the build read the SAME source for it. `compose_printing_estimate`'s range arm
+# takes `idx.range(lo, hi)` and charges `e - s`; `range_leaf_bits` scatters `idx.range_pids(lo, hi)`,
+# which is `pids[s..e]` off that identical call. Postings leaves are the same story through
+# `len_of`/`bits`, and both sides fuse same-index `And` children with `fuse_and_range_children(v,
+# indexes, false)` -- the same third argument. A counter here could only ever read 1.000 by identity,
+# which is worse than no counter because it looks like a measurement. Any error in that term is in the
+# RATE, not the feature.
 PAIRS = (
     ("matches", "matches_pushed"),
     ("eval_domain", "cards_visited"),
     ("scan_units", "printings_examined"),
     ("stream_perm_steps", "perm_steps"),
+    ("residual_card_pass", "card_pass_calls"),
+    ("broadcast_printings", "broadcast_printings"),
+    ("project_printings", "set_printings"),
 )
+
+#: Plans whose cost arm charges the residual-gated per-card term. Both materializing plans do, at
+#: their own rates (`GATHER_CARD_PASS_NS` + `GATHER_RESIDUAL_FLOOR_NS`, `STREAM_CARD_PASS_NS` +
+#: `STREAM_RESIDUAL_FLOOR_NS`); no other plan verifies a residual at all -- compose composes exact
+#: membership and the two bitmap plans read a precomputed plane -- so their `card_pass_calls` is 0 and
+#: grading them would compare a feature to work the arm never charges for.
+RESIDUAL_TERM_PLANS = frozenset({"GatheredScan", "StreamedSelect"})
+
+#: Distinct-ons where compose runs a printing->result projection pass at all. Printing mode runs none
+#: (the composed bitmap already IS the answer), the arm charges `project_printings = 0` there, and
+#: `set_printings` is nonzero on those rows -- so grading printing mode would divide a correct 0 by a
+#: live counter and report every such query as a 100% under-count of a pass that does not exist.
+PROJECT_MODES = frozenset({"card", "artwork"})
 
 #: Plans whose cost arm charges a permutation-walk term. Only `StreamedSelect` does: `GatheredScan`
 #: publishes `perm_steps: 0` explicitly ("never walks the permutation") and compose's own walks count
@@ -105,13 +143,25 @@ SPAN_COUNTER = "printing_span"
 #: -- they charge NEITHER `matches` nor `eval_domain`, and grading those against a walk that stops at
 #: `page_offset + limit` produced cells reading 100-200x off numbers the model never reads. Only
 #: `Gather` charges all three (`eval_domain`, `compose_scan_printings`, `matches`).
+#: The `build` half of compose's arm, charged on EVERY exit rather than per branch. The bitmap is
+#: composed and projected to the result space before `printing_compose_fastpath` picks a paging branch
+#: at all -- it is what the fastpath times as `ns_build` -- so unlike the page terms these do not
+#: depend on which branch ran. `design_row` adds them the same way: unconditionally, alongside
+#: whichever page term applies.
+COMPOSE_BUILD_CHARGES = frozenset({"broadcast_printings", "project_printings"})
+
 COMPOSE_ARM_CHARGES: dict[str, frozenset[str]] = {
-    "Perm": frozenset({"printings_walked"}),
-    "OrderbyWalk": frozenset({"printings_walked"}),
-    "Gather": frozenset({"eval_domain", "compose_scan_printings", "matches"}),
+    "Perm": frozenset({"printings_walked"}) | COMPOSE_BUILD_CHARGES,
+    "OrderbyWalk": frozenset({"printings_walked"}) | COMPOSE_BUILD_CHARGES,
+    "Gather": frozenset({"eval_domain", "compose_scan_printings", "matches"}) | COMPOSE_BUILD_CHARGES,
     # The walk was available, was attempted, declined, and fell into the gather -- so the gather is
     # what ran and the gather's terms are what to grade.
-    "GatherWalkDeclined": frozenset({"eval_domain", "compose_scan_printings", "matches"}),
+    "GatherWalkDeclined": frozenset({"eval_domain", "compose_scan_printings", "matches"}) | COMPOSE_BUILD_CHARGES,
+    # An empty page (or one starting past the end) returns before any paging branch, so no page term
+    # describes it -- but the BUILD ran, and published its counters, which is exactly why this exit
+    # needs an entry of its own instead of falling through to "grades nothing". `set_printings` is 0
+    # whenever the total is, so those rows drop on `MIN_COUNTER` rather than on this gate.
+    "EmptyPage": COMPOSE_BUILD_CHARGES,
 }
 
 
@@ -188,6 +238,16 @@ def collect(engine: object, sampler: QuerySampler, rng: random.Random, budget: c
                         continue  # this arm charges no scan term for this query; there is nothing to grade
                 if feat == "stream_perm_steps" and plan["plan"] not in WALK_TERM_PLANS:
                     continue  # this plan's arm has no permutation-walk term
+                if feat == "residual_card_pass" and plan["plan"] not in RESIDUAL_TERM_PLANS:
+                    continue  # this plan verifies no residual, so it calls `card_pass` never
+                if feat == "project_printings" and sample.kw["unique"] not in PROJECT_MODES:
+                    continue  # no projection pass exists in printing mode; the arm charges 0 and is right
+                if feat in COMPOSE_BUILD_CHARGES and plan["plan"] != "PrintingCompose":
+                    # A range acquire sets `project_printings`/`scatter_printings` on the SHARED vector
+                    # so a competing compose is costed honestly, but no other plan's arm reads them and
+                    # no other executor publishes the counters. `MIN_COUNTER` would drop these rows on a
+                    # zero counter; saying so here keeps the reason out of a filter's side effect.
+                    continue
                 if plan["plan"] == "PrintingCompose" and not compose_grades(paging, feat):
                     continue  # this branch's arm never multiplies this feature by a rate
                 got = plan.get(counter)
@@ -305,6 +365,28 @@ def main() -> None:
     # the plan set (StreamedSelect needs a sort permutation; PlanePopcountOrder needs its column) and
     # therefore which arm reads the shared vector at all.
     table(rows, lambda r: f"{r['feature']} / orderby={r['orderby']}", "feature by ORDERBY", limit=40)
+    # The residual-gated per-card term. `feature <plan> / distinct-on` above already separates the two
+    # arms; what no table there separates is `prefer`, and this term is exactly where that matters:
+    # `card_pass` is per CARD, so its count should not move with `prefer` at all, and a row here that
+    # does move is the feature failing to see a real difference in how many passes run.
+    residual = [r for r in rows if r["feature"] == "residual_card_pass"]
+    table(
+        residual,
+        lambda r: f"<{r['plan']}> / {r['unique']} / prefer={r['prefer']}",
+        "RESIDUAL per-card term (CARD_PASS+FLOOR) by plan, distinct-on and PREFER",
+        limit=40,
+    )
+    # Compose's two LINEAR_PASS build terms, same slice. The build runs before paging is chosen and
+    # `prefer` reaches none of it, so these rows should be flat across the four values; they are here
+    # because a term at 37% and 23% of a plan's predicted time is worth showing to be insensitive
+    # rather than assumed to be.
+    build = [r for r in rows if r["feature"] in COMPOSE_BUILD_CHARGES]
+    table(
+        build,
+        lambda r: f"{r['feature']} / {r['unique']} / prefer={r['prefer']}",
+        "COMPOSE BUILD terms by distinct-on and PREFER",
+        limit=40,
+    )
     # Compose only pays `scan_units` when it pages by Gather, so judge the feature on those rows.
     compose = [r for r in rows if r["plan"] == "PrintingCompose"]
     table(compose, lambda r: f"{r['feature']} <compose {r['paging']}> / {r['unique']}", "compose only: feature by PAGING branch")

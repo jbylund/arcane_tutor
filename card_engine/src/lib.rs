@@ -8991,16 +8991,23 @@ fn card_bits_span_total(card_bits: &[u64], card_offsets: &AOffsets) -> usize {
 /// only, so it is O(set cards + their printings), not O(n_cards).
 fn broadcast_card_bits_to_printings(card_bits: &[u64], offsets: &AOffsets, n_printings: usize) -> Vec<u64> {
     let mut pbits = vec![0u64; words_per_plane(n_printings)];
+    // Realized `broadcast_printings` for the cost model -- a plain local, noted once below. The
+    // per-card `end - start` the loop already computes for its range bound, so this adds one integer
+    // add per SET CARD and nothing at all per printing. See `PhaseStats::broadcast_printings`.
+    let mut touched = 0u64;
     for (i, &word) in card_bits.iter().enumerate() {
         let mut w = word;
         while w != 0 {
             let c = (((i as u32) << 6) | w.trailing_zeros()) as usize;
             w &= w - 1;
-            for p in u32::from(offsets[c]) as usize..u32::from(offsets[c + 1]) as usize {
+            let (start, end) = (u32::from(offsets[c]) as usize, u32::from(offsets[c + 1]) as usize);
+            touched += (end - start) as u64;
+            for p in start..end {
                 pbits[p >> 6] |= 1u64 << (p & 63);
             }
         }
     }
+    note_broadcast_printings(touched);
     pbits
 }
 
@@ -9176,12 +9183,19 @@ fn legality_leaf_bits_from_absent(
     n_printings: usize,
 ) -> Vec<u64> {
     let mut pbits = all_printing_bits(n_printings);
+    // Same realized `broadcast_printings` quantity as the from-exists side: this branch CLEARS the
+    // sparse illegal set's printings instead of setting the legal set's, and the cost term prices
+    // whichever side ran. A plain local, noted once at the loop's exit.
+    let mut touched = 0u64;
     for cid in bitmap_card_ids(absent) {
         let c = cid as usize;
-        for p in u32::from(offsets[c]) as usize..u32::from(offsets[c + 1]) as usize {
+        let (start, end) = (u32::from(offsets[c]) as usize, u32::from(offsets[c + 1]) as usize);
+        touched += (end - start) as u64;
+        for p in start..end {
             pbits[p >> 6] &= !(1u64 << (p & 63));
         }
     }
+    note_broadcast_printings(touched);
     // Divergent-in-this-format cards (∃ legal ∧ ∃ illegal printing) are exactly `exists ∧ absent`;
     // repair only if there are any (skip the whole pass for a format with none, e.g. commander).
     let divergent = exists.iter().zip(absent.iter()).map(|(&a, &b)| (a & b).count_ones()).sum::<u32>();
@@ -15674,6 +15688,32 @@ pub(crate) struct PhaseStats {
     /// there and is not double-counted here -- see `perm_steps`'s own calibration). Nonzero only on the
     /// exit this field exists to price: the small-total gather-and-quickselect branch, any mode.
     pub(crate) redo_examined: u64,
+    /// `filter.card_pass` invocations this run made -- realized ground truth for
+    /// `cost::residual_card_pass`, the quantity both materializing arms multiply by
+    /// `CARD_PASS + max(tier, RESIDUAL_FLOOR)`. Zero under `all_match_known` (the call is skipped
+    /// outright, #634 step 1) and zero for every executor with no residual to verify (compose composes
+    /// exact membership).
+    ///
+    /// Free on the hot path, which is why it is shaped this way rather than as a loop counter: the
+    /// call happens exactly once per iteration of each pass, gated on one query-wide flag, so the
+    /// count is `if all_match_known { 0 } else { <that pass's iteration count> }` and every one of
+    /// those counts is a local the loop already keeps. Round 68's precedent -- accumulate nothing new
+    /// in the inner loop, publish once at the exit position.
+    ///
+    /// The reason it exists: the term's own doc in `cost.rs` says "the loop calls `filter.card_pass`
+    /// once per `cid`", which is true of `exec_gathered_scan` and NOT of `run_query_streamed`, whose
+    /// small-total redo loop and permutation walk each re-derive it for a second population no term
+    /// prices. That is a claim about the executor, so it is graded against the executor.
+    pub(crate) card_pass_calls: u64,
+    /// Printings `PrintingCompose`'s BUILD broadcast passes wrote or cleared -- realized ground truth
+    /// for `PlanFeatures::broadcast_printings`, charged at `COMPOSE_LINEAR_PASS_PER_PRINTING_NS`. Zero
+    /// for every other executor, and for a compose whose leaves are all ranges/postings/planes.
+    ///
+    /// Accumulated through `note_broadcast_printings` rather than published whole here: the two passes
+    /// that do this work (`broadcast_card_bits_to_printings` and `legality_leaf_bits_from_absent`) sit
+    /// under `compose_printing_bits`' recursion, which has no publish site of its own. See that
+    /// function's slot for why a thread-local accumulator and not a threaded-through argument.
+    pub(crate) broadcast_printings: u64,
     /// Per-query scratch setup, before the match loop starts. Split out because it is neither
     /// prepare nor match and it is NOT negligible: `run_query_streamed` zeroes an `n_cards`-long
     /// counts buffer here (~126 kB on the real corpus) no matter how few candidates it is about to
@@ -15938,7 +15978,7 @@ thread_local! {
     /// `explain_analyze`, which fills them after the take.
     static PHASE_STATS: std::cell::Cell<PhaseStats> = const { std::cell::Cell::new(PhaseStats {
         cards_visited: 0, printing_span: 0, printings_examined: 0, matches_pushed: 0, set_printings: 0, perm_steps: 0,
-        redo_examined: 0, ns_setup: 0,
+        redo_examined: 0, card_pass_calls: 0, broadcast_printings: 0, ns_setup: 0,
         ns_loop: 0, ns_finish: 0, ns_round_total: 0, ns_prepare: 0, result_total: 0, paging_taken: PagingTaken::NotEntered,
     }) };
 
@@ -15978,6 +16018,23 @@ thread_local! {
     static COMPOSE_PHASES: std::cell::Cell<ComposePhases> = const {
         std::cell::Cell::new(ComposePhases { ns_build: 0, ns_paging: 0, set_printings: 0 })
     };
+
+    /// Printings the compose BUILD's card→printing broadcast passes wrote or cleared, ACCUMULATED --
+    /// see `PhaseStats::broadcast_printings`, which is where `take_phase_stats` delivers it.
+    ///
+    /// An accumulator rather than a whole-value publish, and its own slot rather than a field threaded
+    /// through `compose_printing_bits`, because the work is spread over a RECURSION whose leaf
+    /// builders (`legality_leaf_bits`, the `is_broadcast_leaf_shape` arm) each have their own call
+    /// sites in tests and no shared publish point. Threading a `&mut` would have to widen seven leaf
+    /// helpers' signatures to report one number the leaves already compute; an add per BROADCAST LEAF
+    /// (one or two per query, never per card or per printing) does not.
+    ///
+    /// Nothing resets this on the production path, deliberately and for the same reason `PHASE_STATS`
+    /// does not: it would be a store for a reader that does not exist there. It therefore grows across
+    /// a production process's lifetime, which is why the add SATURATES rather than wrapping -- a
+    /// diagnostic reader is preceded by `take_phase_stats`, which zeroes it, so no consumer ever sees
+    /// the accumulated total.
+    static BUILD_BROADCAST_PRINTINGS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 
     /// The routed path's disjoint phase split — see `RoutedPhases`. Its own slot for the same reason
     /// the two above have theirs: `run_query_routed` is the production entry point, and one 24-byte
@@ -16058,6 +16115,13 @@ fn publish_compose_phases(phases: ComposePhases) {
     COMPOSE_PHASES.with(|c| c.set(phases));
 }
 
+/// Add `n` printings to the compose build's realized broadcast count. One call per broadcast LEAF --
+/// the callers accumulate their own per-card widths into a plain local and note the total once, at the
+/// loop's exit position, so nothing new lands in the per-card body. See `BUILD_BROADCAST_PRINTINGS`.
+fn note_broadcast_printings(n: u64) {
+    BUILD_BROADCAST_PRINTINGS.with(|c| c.set(c.get().saturating_add(n)));
+}
+
 /// Last executor run's phase stats, and clear them. `explain_analyze` reads this immediately after a
 /// timed run, having cleared beforehand — see `PHASE_STATS` for why that order is the contract and
 /// why an unpaired read does NOT see zeros.
@@ -16073,6 +16137,11 @@ fn take_phase_stats() -> PhaseStats {
     // taking every slot together is what stops any of them leaking into the next participant.
     let compose = COMPOSE_WORK.with(|c| c.replace(ComposePageWork::default()));
     let compose_phases = COMPOSE_PHASES.with(|c| c.replace(ComposePhases::default()));
+    // Taken unconditionally, not inside the `if compose ran` branch below: the accumulator has to be
+    // zeroed for the NEXT participant whether or not this one composed, which is the same
+    // leak-prevention rule every other slot here follows. Only compose ever adds to it, so a
+    // materializing plan's row reads the 0 it should.
+    stats.broadcast_printings = BUILD_BROADCAST_PRINTINGS.with(|c| c.replace(0));
     if compose.cards_visited | compose.printings_examined | compose.matches_pushed | compose.ns_total != 0 {
         stats.cards_visited = compose.cards_visited;
         stats.printings_examined = compose.printings_examined;
@@ -16175,6 +16244,12 @@ fn exec_gathered_scan<'a>(
             set_printings: 0, // PrintingCompose-only; GatheredScan never composes pbits
             perm_steps: 0, // GatheredScan never walks the permutation
             redo_examined: 0, // StreamedSelect-only; GatheredScan pays one pass, never a redo
+            // One `card_pass` per visited candidate, or none at all -- the call sits directly under
+            // `all_match_known ||`, so the flag decides for the whole query and there is nothing
+            // per-card to count. This is exactly what `cost::residual_card_pass` claims, which makes
+            // GatheredScan the plan the claim is TRUE for.
+            card_pass_calls: if all_match_known { 0 } else { n_cards_visited },
+            broadcast_printings: 0, // PrintingCompose-only; taken from its own slot by take_phase_stats
             ns_setup: (t_loop - t_start).as_nanos() as u64,
             ns_loop: (t_finish - t_loop).as_nanos() as u64,
             ns_finish: (t_end - t_finish).as_nanos() as u64,
@@ -19087,7 +19162,11 @@ fn run_query_streamed<'a>(
     // Publishing helper: the walk below has several early returns, and every one of them must leave
     // the stats behind or the accounting silently attributes this plan's work to nothing. Each takes
     // the closing instant itself, so the emit phase is bounded without a second start marker.
-    let publish = |end: std::time::Instant, perm_steps: u64, redo_examined: u64| {
+    // `second_pass_cards`: cards the exit's own pass ALSO ran `card_pass` on, on top of the counting
+    // pass above. Zero for the empty/past-the-end return, the matching-card count for the small-total
+    // redo, and the emitting-entry count for the permutation walk. Passed in rather than closed over
+    // because each exit computes its own, exactly like `perm_steps`/`redo_examined`.
+    let publish = |end: std::time::Instant, perm_steps: u64, redo_examined: u64, second_pass_cards: u64| {
         let prep_ns = PENDING_PREPARE_NS.with(|c| c.replace(0));
         PHASE_STATS.with(|c| {
             c.set(PhaseStats {
@@ -19098,6 +19177,12 @@ fn run_query_streamed<'a>(
                 set_printings: 0, // PrintingCompose-only; StreamedSelect never composes pbits
                 perm_steps,
                 redo_examined,
+                // The counting pass is one call per visited candidate, exactly as GatheredScan's is;
+                // the exit's own pass adds a SECOND population no cost term describes. Both halves
+                // vanish under `all_match_known`, which is the one flag every `card_pass` site here
+                // sits under.
+                card_pass_calls: if all_match_known { 0 } else { n_cards_visited + second_pass_cards },
+                broadcast_printings: 0, // PrintingCompose-only; taken from its own slot
                 ns_setup: (t_loop - t_start).as_nanos() as u64,
                 ns_loop: (t_finish - t_loop).as_nanos() as u64,
                 ns_finish: (end - t_finish).as_nanos() as u64,
@@ -19109,7 +19194,7 @@ fn run_query_streamed<'a>(
         });
     };
     if total == 0 || page_offset >= total {
-        publish(std::time::Instant::now(), 0, 0);
+        publish(std::time::Instant::now(), 0, 0, 0);
         return (total, Vec::new());
     }
 
@@ -19130,10 +19215,16 @@ fn run_query_streamed<'a>(
         // `card_match_count` call captures into `n_printings_examined` -- so summing it here is free:
         // no new computation, just no longer discarding a return value this loop already produces.
         let mut n_redo_examined = 0u64;
+        // Cards this pass re-derives `card_pass` for -- every card with a nonzero count, since the
+        // call sits directly below the `counts == 0` continue. Counted unconditionally rather than
+        // under `if !all_match_known` so the loop body has one add and no branch; the flag is applied
+        // once, at the publish. See `PhaseStats::card_pass_calls`.
+        let mut n_redo_cards = 0u64;
         for cid in 0..cards.len() as u32 {
             if counts[cid as usize] == 0 {
                 continue;
             }
+            n_redo_cards += 1;
             let card = &cards[cid as usize];
             let all_match = all_match_known
                 || match filter.card_pass(card, strings, &mut residual, &mut residual_is_or, proven_conjuncts) {
@@ -19152,7 +19243,7 @@ fn run_query_streamed<'a>(
             .into_iter()
             .map(|(cid, pid)| (&cards[cid as usize], &printings[pid as usize]))
             .collect();
-        publish(std::time::Instant::now(), 0, n_redo_examined);
+        publish(std::time::Instant::now(), 0, n_redo_examined, n_redo_cards);
         return (total, page);
     }
 
@@ -19174,6 +19265,11 @@ fn run_query_streamed<'a>(
     // outside the segment are NOT counted: they are never stepped, and the counter's job is to grade
     // the cost model against work actually done. A plain local, published once, like the others.
     let mut n_perm_steps = 0u64;
+    // Entries this walk re-derives `card_pass` for: only the ones it actually EMITS from, since both
+    // skip continues above come first. A tiny population next to `n_perm_steps` -- and the point of
+    // counting it is that no cost term charges for it at all. One add, on the branch that already
+    // pays a `card_pass` plus a `push_card_matches` plus a sort, never in the skip path.
+    let mut n_walk_emit_cards = 0u64;
     'walk: for cid in walk.iter().map(|x| u32::from(*x)) {
         n_perm_steps += 1;
         let c = counts[cid as usize] as usize;
@@ -19184,6 +19280,7 @@ fn run_query_streamed<'a>(
             skip -= c;
             continue;
         }
+        n_walk_emit_cards += 1;
         let card = &cards[cid as usize];
         let all_match = all_match_known
             || match filter.card_pass(card, strings, &mut residual, &mut residual_is_or, proven_conjuncts) {
@@ -19207,7 +19304,7 @@ fn run_query_streamed<'a>(
         }
         skip = 0;
     }
-    publish(std::time::Instant::now(), n_perm_steps, 0);
+    publish(std::time::Instant::now(), n_perm_steps, 0, n_walk_emit_cards);
     (total, page)
     }) // COUNTS.with
 }
@@ -19596,6 +19693,11 @@ fn plan_trial_to_pydict<'py>(py: Python<'py>, t: &PlanTrial) -> PyResult<Bound<'
     // StreamedSelect's small-total branch only (0 for every other plan/exit) -- see
     // `PhaseStats::redo_examined`'s own doc for what this counts and why it's free.
     d.set_item("redo_examined", t.phases.redo_examined)?;
+    // Realized ground truth for `cost::residual_card_pass` -- the two materializing plans only. See
+    // `PhaseStats::card_pass_calls` for why StreamedSelect's is not just `cards_visited`.
+    d.set_item("card_pass_calls", t.phases.card_pass_calls)?;
+    // Realized ground truth for `PlanFeatures::broadcast_printings` -- PrintingCompose only.
+    d.set_item("broadcast_printings", t.phases.broadcast_printings)?;
     d.set_item("ns_setup", t.phases.ns_setup)?;
     d.set_item("ns_loop", t.phases.ns_loop)?;
     d.set_item("ns_finish", t.phases.ns_finish)?;
@@ -19753,6 +19855,12 @@ fn acquire_facts_to_pydict<'py>(py: Python<'py>, f: &AcquireFacts) -> PyResult<B
         // this against the realized `perm_steps` is exactly the check. 0 where the arm charges no walk
         // (the small-total gather, or a return before both branches).
         ("stream_perm_steps", cost::stream_perm_steps(g) as u32),
+        // The residual-gated per-card term BOTH materializing arms charge (`CARD_PASS + max(tier,
+        // FLOOR)`), which on GatheredScan is 58% of predicted time. Derived from the same gate the
+        // arms read, and exposed rather than recomputed in Python for the reason above: the gate is
+        // `residual_tier_ns100 > 0`, and a harness holding its own copy of that is a second
+        // definition. Graded against the realized `card_pass_calls`.
+        ("residual_card_pass", cost::residual_card_pass(g)),
     ] {
         d.set_item(k, v)?;
     }
