@@ -22,7 +22,7 @@ use super::{
     CollField, CmpOp, FilterExpr, InlineStr, Interner, ManaCost, OracleCard, Printing, TagIndex,
     TextField, TextSearchField, Tri, SortedTrigramIndex, VocabInterner, ARTIST_NONE, NONE_STR, TYPE_ARTIFACT, TYPE_CREATURE,
     TYPE_ENCHANTMENT, TYPE_INSTANT, TYPE_LAND, TYPE_LEGENDARY, TYPE_PLANESWALKER, TYPE_SNOW, TYPE_SORCERY,
-    AndTraceNode, AndTrace,
+    AndTraceNode, AndTrace, and_trace_group,
 };
 use rkyv::{rancor::Error, Archived};
 use std::collections::HashMap;
@@ -8617,9 +8617,10 @@ fn subtype_pair_hit_fires_in_three_leaf_and() {
     assert_eq!((domain.printing, domain.card, domain.artwork), (1, Some(1), Some(1)));
 
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    assert_and_trace_channel_fidelity(&and_trace);
     let hit = and_trace.considered.iter().find(|g| g.mechanism == "SubtypePairIndexes").expect("SubtypePairIndexes must have been attempted for set:aaa + t:elf despite the third leaf");
     assert!(hit.hit, "the hand-set table entry must be found");
-    assert_eq!(hit.card, Some(1));
+    assert_eq!(hit.card(), Some(1));
 }
 
 /// Round 42: the hit's `exact_domain_cards` must `.min()`-CHAIN with a value a DIFFERENT mechanism
@@ -8695,10 +8696,11 @@ fn subtype_pair_hit_min_chains_with_a_different_exact_mechanism() {
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
 
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    assert_and_trace_channel_fidelity(&and_trace);
     let plane_hit = and_trace.considered.iter().find(|g| g.mechanism == "PlanePopcount").expect("color:G + format:A must combine into one PlanePopcount joint");
-    assert_eq!(plane_hit.card, Some(3), "3 green cards legal in format A");
+    assert_eq!(plane_hit.card(), Some(3), "3 green cards legal in format A");
     let pair_hit = and_trace.considered.iter().find(|g| g.mechanism == "SubtypePairIndexes").expect("set:aaa + t:elf must still be attempted independently");
-    assert_eq!(pair_hit.card, Some(1));
+    assert_eq!(pair_hit.card(), Some(1));
 
     let domain = est.exact_domain.expect("both contributing mechanisms are exact -- exact_domain must be populated");
     assert_eq!(domain.card, Some(1), "the tighter of the two independently-exact candidates (1, not 3) must win via min-chaining");
@@ -8763,10 +8765,11 @@ fn subtype_pair_multiple_dim_subtype_pairs_all_fold_via_min() {
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
 
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    assert_and_trace_channel_fidelity(&and_trace);
     let hits: Vec<_> = and_trace.considered.iter().filter(|g| g.mechanism == "SubtypePairIndexes").collect();
     assert_eq!(hits.len(), 2, "both (set:aaa, t:elf) and (color:G, t:elf) must each get their own trace group");
-    assert!(hits.iter().any(|g| g.card == Some(3)), "the set:aaa hit must appear");
-    assert!(hits.iter().any(|g| g.card == Some(2)), "the color:G hit must appear, tighter than set:aaa's");
+    assert!(hits.iter().any(|g| g.card() == Some(3)), "the set:aaa hit must appear");
+    assert!(hits.iter().any(|g| g.card() == Some(2)), "the color:G hit must appear, tighter than set:aaa's");
 
     let domain = est.exact_domain.expect("both hits are exact");
     assert_eq!(domain.card, Some(2), "the tighter of the two hits (color:G's 2, not set:aaa's 3) must win");
@@ -8813,6 +8816,7 @@ fn subtype_pair_estimate_declines_with_two_uncovered_dims() {
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
 
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    assert_and_trace_channel_fidelity(&and_trace);
     assert!(
         !and_trace.considered.iter().any(|g| g.mechanism == "SubtypePairIndexes" && g.hit),
         "no table entry exists for either pair -- there must be no hit"
@@ -8860,6 +8864,7 @@ fn subtype_pair_estimate_declines_with_two_uncovered_subtypes() {
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
 
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    assert_and_trace_channel_fidelity(&and_trace);
     assert!(!and_trace.considered.iter().any(|g| g.mechanism == "SubtypePairIndexes" && g.hit), "neither pair has a table entry");
     assert!(
         !and_trace.considered.iter().any(|g| g.mechanism == "SubtypePairEstimate"),
@@ -8921,9 +8926,10 @@ fn subtype_pair_estimate_fallback_still_fires_in_three_leaf_and() {
     assert!(est.exact_domain.is_none(), "the fallback is an ESTIMATE, not exact");
 
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    assert_and_trace_channel_fidelity(&and_trace);
     let hit = and_trace.considered.iter().find(|g| g.mechanism == "SubtypePairEstimate").expect("the fallback must have been attempted");
     assert!(hit.hit);
-    assert_eq!(hit.printing, Some(3));
+    assert_eq!(hit.printing(), Some(3));
 }
 
 /// Round 42 (revised): the EXACT-hit scan does NOT filter by `covered` -- a genuine table hit's exact
@@ -8986,15 +8992,16 @@ fn subtype_pair_hit_fires_even_when_dim_leaf_already_covered_by_another_mechanis
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
 
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    assert_and_trace_channel_fidelity(&and_trace);
     let plane_hit = and_trace.considered.iter().find(|g| g.mechanism == "PlanePopcount").expect("color:G + format:A must combine into one PlanePopcount joint");
-    assert_eq!(plane_hit.card, Some(2), "cards 0 and 1: green and legal in format A");
+    assert_eq!(plane_hit.card(), Some(2), "cards 0 and 1: green and legal in format A");
     let pair_hit = and_trace
         .considered
         .iter()
         .find(|g| g.mechanism == "SubtypePairIndexes")
         .expect("color:G + t:elf must still be attempted even though color:G is already covered by PlanePopcount");
     assert!(pair_hit.hit);
-    assert_eq!(pair_hit.card, Some(1));
+    assert_eq!(pair_hit.card(), Some(1));
 
     let domain = est.exact_domain.expect("both PlanePopcount and the table hit are exact");
     assert_eq!(domain.card, Some(1), "the table hit (1) must win over PlanePopcount's own looser count (2), proving the hit scan is not blocked by color:G already being covered");
@@ -9052,8 +9059,9 @@ fn subtype_pair_estimate_fallback_still_declines_when_dim_leaf_already_covered()
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
 
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    assert_and_trace_channel_fidelity(&and_trace);
     let plane_hit = and_trace.considered.iter().find(|g| g.mechanism == "PlanePopcount").expect("color:G + format:A must combine into one PlanePopcount joint");
-    assert_eq!(plane_hit.card, Some(2));
+    assert_eq!(plane_hit.card(), Some(2));
     assert!(
         !and_trace.considered.iter().any(|g| g.mechanism == "SubtypePairIndexes" && g.hit),
         "no table entry exists for (color:G, t:elf) -- there must be no hit"
@@ -9203,9 +9211,10 @@ fn subtype_subtype_exact_hit_fires_bare_and_with_residual_leaf() {
     let domain = est_bare.exact_domain.expect("a table hit is exact -- exact_domain must be populated");
     assert_eq!((domain.printing, domain.card, domain.artwork), (1, Some(1), Some(1)));
     let trace_bare = *est_bare.and_trace.expect("want_trace: true must populate and_trace");
+    assert_and_trace_channel_fidelity(&trace_bare);
     let hit_bare = trace_bare.considered.iter().find(|g| g.mechanism == "SubtypeSubtypeExact").expect("SubtypeSubtypeExact must have been attempted");
     assert!(hit_bare.hit);
-    assert_eq!(hit_bare.card, Some(1));
+    assert_eq!(hit_bare.card(), Some(1));
 
     let with_residual = FilterExpr::And(vec![
         cleric,
@@ -9218,6 +9227,7 @@ fn subtype_subtype_exact_hit_fires_bare_and_with_residual_leaf() {
         "the exact hit must still fire with a third, unrelated leaf present -- a residual scan, not gated to exactly 2 leaves"
     );
     let trace_residual = *est_residual.and_trace.expect("want_trace: true must populate and_trace");
+    assert_and_trace_channel_fidelity(&trace_residual);
     assert!(
         trace_residual.considered.iter().any(|g| g.mechanism == "SubtypeSubtypeExact" && g.hit),
         "must still be attempted despite the third leaf"
@@ -9261,10 +9271,11 @@ fn subtype_subtype_estimate_fires_with_exactly_two_uncovered_leaves() {
     assert!(est.exact_domain.is_none(), "the fallback is an ESTIMATE, not exact -- it must not populate exact_domain");
 
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    assert_and_trace_channel_fidelity(&and_trace);
     let hit = and_trace.considered.iter().find(|g| g.mechanism == "SubtypeSubtypeEstimate").expect("the fallback must have been attempted");
     assert!(hit.hit);
-    assert_eq!(hit.printing, Some(1));
-    assert!(hit.printing.unwrap() <= 100, "the estimate must never exceed rest_max.printings");
+    assert_eq!(hit.printing(), Some(1));
+    assert!(hit.printing().unwrap() <= 100, "the estimate must never exceed rest_max.printings");
 }
 
 /// Round 55: `rest_max` actually binds the fallback, not just exists unused -- the direct analog of
@@ -9329,6 +9340,7 @@ fn subtype_subtype_estimate_declines_with_three_uncovered_leaves() {
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
 
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    assert_and_trace_channel_fidelity(&and_trace);
     assert!(!and_trace.considered.iter().any(|g| g.mechanism == "SubtypeSubtypeExact" && g.hit), "no table entry exists for any of the 3 pairings");
     assert!(
         !and_trace.considered.iter().any(|g| g.mechanism == "SubtypeSubtypeEstimate"),
@@ -14992,10 +15004,11 @@ fn and_arm_arith_tuple_totals_folds_exact_and_populates_exact_domain() {
     assert_eq!(est.result.printing(), 2, "true joint is card1+card3: card2 fails power>=2");
 
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace for a top-level And");
+    assert_and_trace_channel_fidelity(&and_trace);
     let hit = and_trace.considered.iter().find(|g| g.mechanism == "arith_tuple_totals").expect("arith_tuple_totals must have been attempted (2 arith-eligible children)");
     assert!(hit.hit);
     assert_eq!(
-        (hit.printing, hit.card, hit.artwork),
+        (hit.printing(), hit.card(), hit.artwork()),
         (Some(2), Some(2), Some(2)),
         "single-printing-per-card fixture: printing == card == artwork == 2 for the true joint"
     );
@@ -15057,15 +15070,16 @@ fn and_arm_independence_pow_multi_bucket_carries_artwork() {
 
     let est = super::compose_printing_estimate(&filter, &archived.indexes, &archived.offsets, n_printings, true);
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    assert_and_trace_channel_fidelity(&and_trace);
 
     let hit = and_trace
         .considered
         .iter()
         .find(|g| g.mechanism == "Independence" && g.leaves.iter().any(|l| l.contains("Power")) && g.leaves.iter().any(|l| l.contains("SetCode")))
         .expect("Independence must pair the Pow-multi unit against the SetCode unit -- (Pow, SetCode) is a registered safe pair");
-    assert_eq!(hit.printing, Some(10), "round(40 * 25 / 100) == 10");
-    assert_eq!(hit.card, Some(10), "card_indep already computed before this round -- both sides already had a card count");
-    assert_eq!(hit.artwork, Some(10), "artwork_indep must compute for the first time: the Pow-multi unit's own artwork used to be unconditionally None");
+    assert_eq!(hit.printing(), Some(10), "round(40 * 25 / 100) == 10");
+    assert_eq!(hit.card(), Some(10), "card_indep already computed before this round -- both sides already had a card count");
+    assert_eq!(hit.artwork(), Some(10), "artwork_indep must compute for the first time: the Pow-multi unit's own artwork used to be unconditionally None");
 
     // Deliberately NOT assert_min_fold_invariant here: this fixture's own `result.card`/`.artwork`
     // come from the Round 41 leaf-marginal floor (`pow_ge`/`pow_le` each solo, 80/60 cards -- broader
@@ -16032,9 +16046,10 @@ fn subtype_arith_box_fires_alongside_unrelated_leaf_that_stays_uncovered() {
     assert_eq!(est.result.printing(), 4, "t:elf cmc>=5 power>=5, PLUS two unrelated leaves: SubtypeArithBox's own true joint (4) must still win");
 
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    assert_and_trace_channel_fidelity(&and_trace);
     let subtype_hit = and_trace.considered.iter().find(|g| g.mechanism == "SubtypeArithBox").expect("SubtypeArithBox must be attempted despite the two unrelated leaves");
     assert!(subtype_hit.hit, "the Elf+cmc+power box hit is real here, same numbers as subtype_arith_and_arm_tightening's own f3 case");
-    assert_eq!(subtype_hit.printing, Some(4));
+    assert_eq!(subtype_hit.printing(), Some(4));
     assert_eq!(subtype_hit.leaves.len(), 3, "the hit's own leaves are exactly the Elf leaf plus the two arith bounds, not the unrelated pair");
 
     // The real point: Legality x CollectorNumber must still be tried by the Independence registry --
@@ -16042,7 +16057,7 @@ fn subtype_arith_box_fires_alongside_unrelated_leaf_that_stays_uncovered() {
     let indep_hit = and_trace.considered.iter().find(|g| g.mechanism == "Independence").expect("Independence must have been attempted for the untouched Legality+CollectorNumber pair");
     assert!(indep_hit.hit, "independence is a formula, always hit once the shape gate matches");
     let expected_indep = ((40.0 * 25.0) / 48.0_f64).round() as usize;
-    assert_eq!(indep_hit.printing, Some(expected_indep), "round(40 * 25 / 48)");
+    assert_eq!(indep_hit.printing(), Some(expected_indep), "round(40 * 25 / 48)");
 }
 
 /// Round 49 (loosening the independence registry's `covered` gate from leaf-occupancy to
@@ -16130,10 +16145,11 @@ fn independence_now_fires_against_a_different_partner_once_subtype_arith_box_cov
     let f = FilterExpr::And(vec![elf, cmc_ge5, usd_lt10]);
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    assert_and_trace_channel_fidelity(&and_trace);
 
     let box_hit = and_trace.considered.iter().find(|g| g.mechanism == "SubtypeArithBox").expect("SubtypeArithBox must fire on (Elf, cmc>=5)");
     assert!(box_hit.hit);
-    assert_eq!(box_hit.printing, Some(6), "the exact (Elf, cmc>=5) joint, price-blind");
+    assert_eq!(box_hit.printing(), Some(6), "the exact (Elf, cmc>=5) joint, price-blind");
 
     let indep_groups: Vec<_> = and_trace.considered.iter().filter(|g| g.mechanism == "Independence").collect();
     assert_eq!(
@@ -16143,9 +16159,9 @@ fn independence_now_fires_against_a_different_partner_once_subtype_arith_box_cov
          SubtypeArithBox's hit covered both Elf's and cmc's own leaf positions"
     );
     let elf_price = indep_groups.iter().find(|g| g.leaves.iter().any(|l| l.contains("Subtypes"))).expect("(Elf, price) must fire");
-    assert_eq!(elf_price.printing, Some(3), "round(10 * 12 / 40)");
+    assert_eq!(elf_price.printing(), Some(3), "round(10 * 12 / 40)");
     let cmc_price = indep_groups.iter().find(|g| g.leaves.iter().any(|l| l.contains("Cmc"))).expect("(cmc, price) must fire");
-    assert_eq!(cmc_price.printing, Some(2), "round(6 * 12 / 40)");
+    assert_eq!(cmc_price.printing(), Some(2), "round(6 * 12 / 40)");
 
     assert_eq!(
         est.result.printing(), 2,
@@ -16210,10 +16226,11 @@ fn subtype_arith_box_multiple_subtype_leaves_fold_via_min() {
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
 
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    assert_and_trace_channel_fidelity(&and_trace);
     let hits: Vec<_> = and_trace.considered.iter().filter(|g| g.mechanism == "SubtypeArithBox").collect();
     assert_eq!(hits.len(), 2, "both (Elf, cmc>=5) and (Human, cmc>=5) must each get their own trace group");
-    assert!(hits.iter().any(|g| g.printing == Some(2)), "the Elf box hit (2) must appear");
-    assert!(hits.iter().any(|g| g.printing == Some(3)), "the Human box hit (3) must appear, looser than Elf's");
+    assert!(hits.iter().any(|g| g.printing() == Some(2)), "the Elf box hit (2) must appear");
+    assert!(hits.iter().any(|g| g.printing() == Some(3)), "the Human box hit (3) must appear, looser than Elf's");
 
     assert_eq!(est.result.printing(), 2, "the tighter of the two hits (Elf's 2, not Human's 3) must win via min-folding");
     let domain = est.exact_domain.expect("both hits are independently exact bounds on the same And");
@@ -16246,6 +16263,7 @@ fn subtype_arith_box_declines_with_no_arith_children_present() {
     let f = FilterExpr::And(vec![elf, green]);
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    assert_and_trace_channel_fidelity(&and_trace);
     assert!(!and_trace.considered.iter().any(|g| g.mechanism == "SubtypeArithBox"), "no arith-eligible child at all -- the mechanism must not even be attempted");
 }
 
@@ -16340,10 +16358,11 @@ fn subtype_arith_anchored_independence_tightens_the_box_alone() {
     let f = FilterExpr::And(vec![elf, cmc_ge5, usd_lt10]);
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    assert_and_trace_channel_fidelity(&and_trace);
 
     let box_hit = and_trace.considered.iter().find(|g| g.mechanism == "SubtypeArithBox").expect("SubtypeArithBox must fire on (Elf, cmc>=5)");
     assert!(box_hit.hit);
-    assert_eq!(box_hit.printing, Some(3), "the exact (Elf, cmc>=5) joint, price-blind");
+    assert_eq!(box_hit.printing(), Some(3), "the exact (Elf, cmc>=5) joint, price-blind");
 
     let anchored = and_trace
         .considered
@@ -16351,7 +16370,7 @@ fn subtype_arith_anchored_independence_tightens_the_box_alone() {
         .find(|g| g.mechanism == "SubtypeArithAnchoredIndependence")
         .expect("the anchored candidate must fire: exactly one SubtypeArithBox hit, exactly one residual Price leaf");
     assert!(anchored.hit);
-    assert_eq!(anchored.printing, Some(2), "round(3 * 39/50) = round(2.34) = 2");
+    assert_eq!(anchored.printing(), Some(2), "round(3 * 39/50) = round(2.34) = 2");
     assert_eq!(anchored.leaves.len(), 3, "the box's own two explained leaves (Elf, cmc>=5) plus the one contributing residual (usd<10)");
 
     assert_eq!(
@@ -16383,9 +16402,10 @@ fn subtype_arith_anchored_independence_declines_with_two_price_residuals() {
     let f = FilterExpr::And(vec![elf, cmc_ge5, usd_lt10, eur_lt5]);
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    assert_and_trace_channel_fidelity(&and_trace);
 
     let box_hit = and_trace.considered.iter().find(|g| g.mechanism == "SubtypeArithBox").expect("SubtypeArithBox must still fire on (Elf, cmc>=5)");
-    assert_eq!(box_hit.printing, Some(3), "the box's own bound is unaffected by the price-triple guard");
+    assert_eq!(box_hit.printing(), Some(3), "the box's own bound is unaffected by the price-triple guard");
     assert!(
         !and_trace.considered.iter().any(|g| g.mechanism == "SubtypeArithAnchoredIndependence"),
         "two residual Price-classified leaves present (usd<10, eur<5) -- the anchored candidate must decline entirely, not pick one"
@@ -16412,9 +16432,10 @@ fn subtype_arith_anchored_independence_ignores_a_non_price_residual_class() {
     let f = FilterExpr::And(vec![elf, cmc_ge5, legal]);
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    assert_and_trace_channel_fidelity(&and_trace);
 
     let box_hit = and_trace.considered.iter().find(|g| g.mechanism == "SubtypeArithBox").expect("SubtypeArithBox must fire on (Elf, cmc>=5)");
-    assert_eq!(box_hit.printing, Some(3));
+    assert_eq!(box_hit.printing(), Some(3));
     assert!(
         !and_trace.considered.iter().any(|g| g.mechanism == "SubtypeArithAnchoredIndependence"),
         "no Price-classified residual present at all (Legality isn't Price) -- the anchored candidate must not fire"
@@ -16446,13 +16467,14 @@ fn subtype_arith_anchored_independence_fires_despite_an_unclassified_residual_le
     let f = FilterExpr::And(vec![elf, cmc_ge5, usd_lt10, rarity_ge1]);
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    assert_and_trace_channel_fidelity(&and_trace);
 
     let anchored = and_trace
         .considered
         .iter()
         .find(|g| g.mechanism == "SubtypeArithAnchoredIndependence")
         .expect("the unclassified rarity leaf must not block the Price rate from firing");
-    assert_eq!(anchored.printing, Some(2), "same round(3 * 39/50) = 2 as the plain-Price fixture -- the unclassified leaf contributes nothing");
+    assert_eq!(anchored.printing(), Some(2), "same round(3 * 39/50) = 2 as the plain-Price fixture -- the unclassified leaf contributes nothing");
 
     assert_eq!(est.result.printing(), 2, "the anchored candidate still wins the arm's final min-fold");
     let domain = est.exact_domain.expect("the box's own EXACT hit still populates exact_domain");
@@ -16481,20 +16503,103 @@ fn subtype_arith_anchored_independence_multi_subtype_leaves_use_their_own_box_hi
     let f = FilterExpr::And(vec![elf, human, cmc_ge5, usd_lt10]);
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    assert_and_trace_channel_fidelity(&and_trace);
 
     let box_hits: Vec<_> = and_trace.considered.iter().filter(|g| g.mechanism == "SubtypeArithBox").collect();
     assert_eq!(box_hits.len(), 2, "both (Elf, cmc>=5) and (Human, cmc>=5) must each get their own box hit");
-    assert!(box_hits.iter().any(|g| g.printing == Some(3)));
-    assert!(box_hits.iter().any(|g| g.printing == Some(27)));
+    assert!(box_hits.iter().any(|g| g.printing() == Some(3)));
+    assert!(box_hits.iter().any(|g| g.printing() == Some(27)));
 
     let anchored_hits: Vec<_> = and_trace.considered.iter().filter(|g| g.mechanism == "SubtypeArithAnchoredIndependence").collect();
     assert_eq!(anchored_hits.len(), 2, "both subtype leaves must each get their own anchored candidate, using their OWN box hit");
     let elf_anchored = anchored_hits.iter().find(|g| g.leaves.iter().any(|l| l.contains("Elf"))).expect("Elf's own anchored candidate");
-    assert_eq!(elf_anchored.printing, Some(2), "round(3 * 39/50) = 2, from Elf's OWN box hit (3), not Human's (27)");
+    assert_eq!(elf_anchored.printing(), Some(2), "round(3 * 39/50) = 2, from Elf's OWN box hit (3), not Human's (27)");
     let human_anchored = anchored_hits.iter().find(|g| g.leaves.iter().any(|l| l.contains("Human"))).expect("Human's own anchored candidate");
-    assert_eq!(human_anchored.printing, Some(21), "round(27 * 39/50) = round(21.06) = 21, from Human's OWN box hit (27), not Elf's (3)");
+    assert_eq!(human_anchored.printing(), Some(21), "round(27 * 39/50) = round(21.06) = 21, from Human's OWN box hit (27), not Elf's (3)");
 
     assert_eq!(est.result.printing(), 2, "the tighter of the two anchored candidates (Elf's 2, not Human's 21) must win via min-folding");
+}
+
+/// Round 60: which `Candidate` variant a mechanism's own call site folds, and therefore which
+/// CHANNELS its trace group is allowed to have written.
+///
+/// Deliberately a SECOND, independent statement of the mapping. The engine derives a group's channels
+/// from the variant (`Candidate::spaces`), so a check that re-derives them the same way would be
+/// vacuous; this one is written from the mechanism NAME, so a call site that changes variant without
+/// meaning to (Round 59 moved two of them) fails here instead of silently re-describing itself.
+/// `scripts/check_bound_class_soundness.py` keeps the same list on the Python side, for the same
+/// reason.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TraceClass {
+    /// `Candidate::Exact`: a same-set triple, `guaranteed` in all three spaces, `estimate` untouched.
+    Exact,
+    /// `Candidate::PrintingBound`: a real count in printing space only -- BOTH channels of printing,
+    /// neither channel of card/artwork.
+    PrintingBound,
+    /// `Candidate::Estimate`: a guess -- `printing.estimate` only (plus, for `"Independence"` alone,
+    /// the card/artwork estimate channels it also computes; see `Candidate::Estimate`'s own doc).
+    Estimate,
+}
+
+/// Panics on an unrecognized mechanism rather than defaulting: an unclassified mechanism is exactly
+/// the case this check exists to catch.
+fn trace_class_of(mechanism: &str) -> TraceClass {
+    match mechanism {
+        "ArithIdProbe" | "ColorCmcTable" | "PairRangeSum" | "PairTotals" | "PlanePopcount" | "SubtypeArithBox"
+        | "SubtypePairIndexes" | "SubtypeSubtypeExact" | "arith_tuple_totals" | "leaves_are_disjoint" => TraceClass::Exact,
+        "LegalityDateTotals" | "PriceJointTable" => TraceClass::PrintingBound,
+        "ColorCmcAnchoredIndependence" | "Independence" | "SetCollectorRange" | "SubtypeArithAnchoredIndependence"
+        | "SubtypePairEstimate" | "SubtypeSubtypeEstimate" => TraceClass::Estimate,
+        other => panic!("unclassified trace mechanism {other:?} -- add it to trace_class_of AND to check_bound_class_soundness.py"),
+    }
+}
+
+/// Round 60's own fidelity check: every `considered` group must record exactly the channels its
+/// mechanism's `Candidate` variant writes, and `hit == spaces.is_some()` must hold for every group.
+///
+/// The shape is only useful if it faithfully says WHICH channel each mechanism wrote -- a group that
+/// reports a guess in `guaranteed` would make the trace worse than the single collapsed number it
+/// replaces, because it would look like a proof.
+fn assert_and_trace_channel_fidelity(t: &AndTrace) {
+    for g in &t.considered {
+        assert_eq!(g.hit, g.spaces.is_some(), "{}: hit must be exactly spaces.is_some()", g.mechanism);
+        let Some(s) = g.spaces else { continue };
+        assert!(s.printing.best().is_some(), "{}: a hit always carries a printing figure in some channel", g.mechanism);
+        let m = g.mechanism;
+        match trace_class_of(m) {
+            TraceClass::Exact => {
+                let g3 = (s.printing.guaranteed, s.card.guaranteed, s.artwork.guaranteed);
+                assert!(g3.0.is_some() && g3.1.is_some() && g3.2.is_some(), "{m}: an Exact candidate proves all three spaces, got {g3:?}");
+                let e3 = (s.printing.estimate, s.card.estimate, s.artwork.estimate);
+                assert_eq!(e3, (None, None, None), "{m}: Exact writes only guaranteed -- fold_candidate never touches estimate");
+            }
+            TraceClass::PrintingBound => {
+                assert!(s.printing.guaranteed.is_some(), "{m}: a PrintingBound proves printing");
+                assert_eq!(s.printing.guaranteed, s.printing.estimate, "{m}: a real count is simultaneously the bound and the guess");
+                let other = (s.card.guaranteed, s.card.estimate, s.artwork.guaranteed, s.artwork.estimate);
+                assert_eq!(other, (None, None, None, None), "{m}: a PrintingBound claims nothing in card/artwork space");
+            }
+            TraceClass::Estimate => {
+                assert_eq!(s.printing.guaranteed, None, "{m}: a guess must never appear in the guaranteed channel");
+                assert!(s.printing.estimate.is_some(), "{m}: an Estimate's own number lives in the estimate channel");
+                assert_eq!((s.card.guaranteed, s.artwork.guaranteed), (None, None), "{m}: an Estimate proves nothing anywhere");
+                if m != "Independence" {
+                    assert_eq!(
+                        (s.card.estimate, s.artwork.estimate),
+                        (None, None),
+                        "{m}: printing-space only -- `Independence` is the one Estimate carrying card/artwork guesses"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Both of a finished `AndTrace`'s structural invariants at once -- the pre-Round-60 `min_fold`
+/// arithmetic and Round 60's per-channel fidelity. Every fixture that checks one wants both.
+fn assert_and_trace_invariants(t: &AndTrace) {
+    assert_min_fold_invariant(&t.tree);
+    assert_and_trace_channel_fidelity(t);
 }
 
 /// Recursively checks Round 37a's own documented invariant on every `"min_fold"` op node in a tree.
@@ -16514,27 +16619,22 @@ fn subtype_arith_anchored_independence_multi_subtype_leaves_use_their_own_box_hi
 /// present children would give -- `exact_domain_*` is a genuine intersection, so it can only be `<=`
 /// any subset-fold, never higher.
 fn assert_min_fold_invariant(node: &AndTraceNode) {
-    if let AndTraceNode::Op { op: "min_fold", printing, card, artwork, children, .. } = node {
+    if let AndTraceNode::Op { op: "min_fold", children, .. } = node {
         assert!(!children.is_empty(), "a min_fold node with no children should not be constructible");
-        let child_printing = |n: &AndTraceNode| match n {
-            AndTraceNode::Leaf { printing, .. } | AndTraceNode::Op { printing, .. } => *printing,
-        };
-        let child_card = |n: &AndTraceNode| match n {
-            AndTraceNode::Leaf { card, .. } | AndTraceNode::Op { card, .. } => *card,
-        };
-        let child_artwork = |n: &AndTraceNode| match n {
-            AndTraceNode::Leaf { artwork, .. } | AndTraceNode::Op { artwork, .. } => *artwork,
-        };
-        assert_eq!(*printing, children.iter().map(child_printing).min().expect("non-empty"), "min_fold printing must equal min() of its children's printings");
-        if let Some(rc) = card
-            && let Some(cm) = children.iter().filter_map(child_card).min()
+        assert_eq!(
+            node.printing(),
+            children.iter().map(AndTraceNode::printing).min().expect("non-empty"),
+            "min_fold printing must equal min() of its children's printings"
+        );
+        if let Some(rc) = node.card()
+            && let Some(cm) = children.iter().filter_map(AndTraceNode::card).min()
         {
-            assert!(*rc <= cm, "min_fold card ({rc}) must never be LOOSER than folding over its children ({cm})");
+            assert!(rc <= cm, "min_fold card ({rc}) must never be LOOSER than folding over its children ({cm})");
         }
-        if let Some(ra) = artwork
-            && let Some(am) = children.iter().filter_map(child_artwork).min()
+        if let Some(ra) = node.artwork()
+            && let Some(am) = children.iter().filter_map(AndTraceNode::artwork).min()
         {
-            assert!(*ra <= am, "min_fold artwork ({ra}) must never be LOOSER than folding over its children ({am})");
+            assert!(ra <= am, "min_fold artwork ({ra}) must never be LOOSER than folding over its children ({am})");
         }
     }
     if let AndTraceNode::Op { children, .. } = node {
@@ -16615,14 +16715,15 @@ fn and_trace_reports_the_winning_mechanism_and_every_considered_one() {
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
     assert_eq!(est.result.printing(), 4, "ground truth from subtype_arith_and_arm_tightening's own f3 case");
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace for a top-level And");
+    assert_and_trace_channel_fidelity(&and_trace);
 
     // `considered` must show BOTH mechanisms hitting -- the whole point of this field.
     let arith_hit = and_trace.considered.iter().find(|g| g.mechanism == "arith_tuple_totals").expect("arith_tuple_totals must have been attempted (2 arith-eligible children)");
     assert!(arith_hit.hit, "arith_tuple_totals must hit: the corpus's own cmc>=5+power>=5 joint is exactly 4 here too");
-    assert_eq!(arith_hit.printing, Some(4));
+    assert_eq!(arith_hit.printing(), Some(4));
     let subtype_hit = and_trace.considered.iter().find(|g| g.mechanism == "SubtypeArithBox").expect("SubtypeArithBox must have been attempted (Dragon + 2 arith bounds, nothing else)");
     assert!(subtype_hit.hit, "Round 36's table hit is real and exact here (subtype_arith_and_arm_tightening's own f3 assertion)");
-    assert_eq!(subtype_hit.printing, Some(4));
+    assert_eq!(subtype_hit.printing(), Some(4));
 
     // `tree` must show exactly ONE joint_lookup node -- `SubtypeArithBox`, Round 40's class-priority
     // fix (tightest-among-ties, not first-evaluated): both mechanisms tie at the identical value
@@ -16630,19 +16731,23 @@ fn and_trace_reports_the_winning_mechanism_and_every_considered_one() {
     // covers all 3 leaves (Dragon + both arith bounds), `arith_tuple_totals` only the 2 arith leaves.
     // Nothing is left uncovered, so root has exactly one child (the winner itself), not a leftover
     // Dragon leaf sibling the way the pre-Round-40 (first-evaluated) attribution left one.
-    let AndTraceNode::Op { op: "min_fold", children, printing: root_printing, card: root_card, artwork: root_artwork, .. } = &and_trace.tree else {
+    let AndTraceNode::Op { op: "min_fold", children, .. } = &and_trace.tree else {
         panic!("root must be a min_fold op node, got {:?}", match &and_trace.tree { AndTraceNode::Leaf { .. } => "leaf", AndTraceNode::Op { op, .. } => op });
     };
-    assert_eq!(*root_printing, 4);
-    assert_eq!((*root_card, *root_artwork), (est.result.card.best(), est.result.artwork.best()), "root's own numbers must equal the arm's real final answer");
+    assert_eq!(and_trace.tree.printing(), 4);
+    assert_eq!(
+        (and_trace.tree.card(), and_trace.tree.artwork()),
+        (est.result.card.best(), est.result.artwork.best()),
+        "root's own numbers must equal the arm's real final answer"
+    );
     assert_eq!(children.len(), 1, "one joint_lookup (the winner) and nothing left uncovered");
     let winner = children
         .iter()
         .find(|c| matches!(c, AndTraceNode::Op { op: "joint_lookup", .. }))
         .expect("exactly one joint_lookup child");
-    let AndTraceNode::Op { mechanism, printing, children: winner_children, .. } = winner else { unreachable!() };
+    let AndTraceNode::Op { mechanism, children: winner_children, .. } = winner else { unreachable!() };
     assert_eq!(*mechanism, Some("SubtypeArithBox"), "the more complete (3-leaf) exact/bound candidate wins a tie, not whichever ran first");
-    assert_eq!(*printing, 4);
+    assert_eq!(winner.printing(), 4);
     assert_eq!(winner_children.len(), 3, "SubtypeArithBox's own leaves are the Dragon leaf plus both arith children");
     assert!(
         winner_children.iter().any(|c| matches!(c, AndTraceNode::Leaf { expr, .. } if expr.contains("Subtypes"))),
@@ -16653,7 +16758,7 @@ fn and_trace_reports_the_winning_mechanism_and_every_considered_one() {
         assert!(expr.contains("Cmc") || expr.contains("Power") || expr.contains("Subtypes"), "covered leaves must be Dragon/cmc/power, got {expr}");
     }
 
-    assert_min_fold_invariant(&and_trace.tree);
+    assert_and_trace_invariants(&and_trace);
 }
 
 /// Round 37a: `and_trace`'s `tree`/`considered` shape when NO mechanism tightens the query at all --
@@ -16700,21 +16805,22 @@ fn and_trace_is_plain_min_fold_when_no_mechanism_hits() {
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
     assert_eq!(est.result.printing(), 1, "ground truth from subtype_arith_and_arm_miss_leaves_fold_unchanged's own assertion");
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace for a top-level And");
+    assert_and_trace_channel_fidelity(&and_trace);
 
     // `considered` still shows the mechanism was TRIED, just declined -- the point of `hit: false`.
     let subtype_considered = and_trace.considered.iter().find(|g| g.mechanism == "SubtypeArithBox").expect("SubtypeArithBox's shape gate matches (Forest + one arith bound)");
     assert!(!subtype_considered.hit, "Forest has no subtype_arith table entry in this fixture -- a real miss, not an inapplicable shape");
-    assert_eq!(subtype_considered.printing, None);
+    assert_eq!(subtype_considered.printing(), None);
     assert!(!and_trace.considered.iter().any(|g| g.hit), "nothing should have hit at all in this fixture");
 
-    let AndTraceNode::Op { op: "min_fold", children, printing, .. } = &and_trace.tree else {
+    let AndTraceNode::Op { op: "min_fold", children, .. } = &and_trace.tree else {
         panic!("root must be a min_fold op node");
     };
-    assert_eq!(*printing, 1);
+    assert_eq!(and_trace.tree.printing(), 1);
     assert_eq!(children.len(), 2, "both direct children, neither covered by any winning mechanism");
     assert!(children.iter().all(|c| matches!(c, AndTraceNode::Leaf { .. })), "no joint_lookup anywhere -- nothing tightened this query");
 
-    assert_min_fold_invariant(&and_trace.tree);
+    assert_and_trace_invariants(&and_trace);
 }
 
 /// Round 37c: `and_trace_for` must return `None`, not panic, for an `And` whose child is NOT
@@ -16853,9 +16959,10 @@ fn color_cmc_table_and_arm_hit_two_leaf() {
     assert_eq!((domain.printing, domain.card, domain.artwork), (3, Some(3), Some(3)));
 
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    assert_and_trace_channel_fidelity(&and_trace);
     let hit = and_trace.considered.iter().find(|g| g.mechanism == "ColorCmcTable").expect("ColorCmcTable must be attempted for color:G + cmc<=3");
     assert!(hit.hit);
-    assert_eq!((hit.printing, hit.card, hit.artwork), (Some(3), Some(3), Some(3)));
+    assert_eq!((hit.printing(), hit.card(), hit.artwork()), (Some(3), Some(3), Some(3)));
 
     for (label, mode) in [("printing", Mode::Printing), ("card", Mode::Card), ("artwork", Mode::Artwork)] {
         assert_eq!(super::exact_result_total(&f, &archived.indexes, mode), Some(3), "exact_result_total ({label}) must agree with the And-arm hit");
@@ -16915,9 +17022,10 @@ fn color_cmc_table_two_sided_cmc_range_resolves_via_intersection() {
     let est = super::compose_printing_estimate(&two_sided, &archived.indexes, &archived.offsets, n_printings, true);
     assert_eq!(est.result.printing(), 4, "green with 1<=cmc<=5: card0, card1, card2, card3 (card5 is colorless, excluded by green regardless of cmc=0)");
     let and_trace = *est.and_trace.expect("want_trace");
+    assert_and_trace_channel_fidelity(&and_trace);
     let hit = and_trace.considered.iter().find(|g| g.mechanism == "ColorCmcTable").expect("ColorCmcTable must fire for the fused two-child cmc range too");
     assert_eq!(hit.leaves.len(), 3, "must list the color leaf AND both literal cmc children, not just one side");
-    assert_eq!(hit.printing, Some(4));
+    assert_eq!(hit.printing(), Some(4));
 }
 
 /// `exact_domain_*`/`result` are unaffected (no panic, no spurious tightening) when the residual has
@@ -16939,12 +17047,14 @@ fn color_cmc_table_no_op_without_both_leaves_present() {
     let color_only = FilterExpr::And(vec![green.clone(), power_ge0.clone()]);
     let est1 = super::compose_printing_estimate(&color_only, &archived.indexes, &archived.offsets, n_printings, true);
     let trace1 = *est1.and_trace.expect("want_trace");
+    assert_and_trace_channel_fidelity(&trace1);
     assert!(!trace1.considered.iter().any(|g| g.mechanism == "ColorCmcTable"), "no cmc leaf present -- must never be attempted");
 
     // No color/identity leaf at all.
     let cmc_only = FilterExpr::And(vec![cmc_le3, power_ge0]);
     let est2 = super::compose_printing_estimate(&cmc_only, &archived.indexes, &archived.offsets, n_printings, true);
     let trace2 = *est2.and_trace.expect("want_trace");
+    assert_and_trace_channel_fidelity(&trace2);
     assert!(!trace2.considered.iter().any(|g| g.mechanism == "ColorCmcTable"), "no color/identity leaf present -- must never be attempted");
 }
 
@@ -17046,7 +17156,7 @@ fn set_leaf_floor_beats_looser_unrelated_exact_joint() {
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
     let and_trace = est.and_trace.as_ref().expect("want_trace: true must populate and_trace");
     let hit = and_trace.considered.iter().find(|c| c.mechanism == "ColorCmcTable").expect("ColorCmcTable must fire for color:G + cmc<=3");
-    assert_eq!((hit.card, hit.artwork), (Some(3), Some(3)), "the unrelated joint's own card/artwork must be the looser 3, not already floored");
+    assert_eq!((hit.card(), hit.artwork()), (Some(3), Some(3)), "the unrelated joint's own card/artwork must be the looser 3, not already floored");
 
     assert_eq!(est.result.card.best(), Some(1), "must floor on set:aaa's own true card count (1), not ColorCmcTable's looser 3");
     assert_eq!(est.result.artwork.best(), Some(1), "must floor on set:aaa's own true artwork count (1), not ColorCmcTable's looser 3");
@@ -17166,7 +17276,7 @@ fn color_cmc_table_star_shape_wins_the_min_against_independence() {
     let (before_printing, before_domain_card, before_trace) = query(&before_data, green);
     let independence_hits: Vec<_> = before_trace.considered.iter().filter(|g| g.mechanism == "Independence").collect();
     assert_eq!(independence_hits.len(), 2, "both ColorId x Price and Cmc x Price must fire without the new table");
-    assert!(independence_hits.iter().all(|g| g.printing == Some(20)), "round(40 * 50 / 100) == 20 for both");
+    assert!(independence_hits.iter().all(|g| g.printing() == Some(20)), "round(40 * 50 / 100) == 20 for both");
     assert_eq!(before_printing, 20, "pre-fix: the degraded independence fold, well above the true 10");
     assert!(before_domain_card.is_none(), "independence is an ESTIMATE -- it must never populate exact_domain");
 
@@ -17176,10 +17286,10 @@ fn color_cmc_table_star_shape_wins_the_min_against_independence() {
     let (after_printing, after_domain_card, after_trace) = query(&after_data, green);
     let after_independence: Vec<_> = after_trace.considered.iter().filter(|g| g.mechanism == "Independence").collect();
     assert_eq!(after_independence.len(), 2, "both independence candidates must STILL fire -- this mechanism must not starve them by covering their leaves");
-    assert!(after_independence.iter().all(|g| g.printing == Some(20)), "the independence candidates' own numbers are unchanged by this mechanism's presence");
+    assert!(after_independence.iter().all(|g| g.printing() == Some(20)), "the independence candidates' own numbers are unchanged by this mechanism's presence");
     let hit = after_trace.considered.iter().find(|g| g.mechanism == "ColorCmcTable").expect("ColorCmcTable must fire");
-    assert_eq!(hit.printing, Some(10), "the true joint: green AND cmc<=3 is exactly cards 0..=9");
-    assert!(hit.printing < after_independence[0].printing, "the exact joint must beat both independence candidates (20 each) on its own merit");
+    assert_eq!(hit.printing(), Some(10), "the true joint: green AND cmc<=3 is exactly cards 0..=9");
+    assert!(hit.printing() < after_independence[0].printing(), "the exact joint must beat both independence candidates (20 each) on its own merit");
     // Round 56: the anchored companion (exact joint x the residual price rate) folds below the exact
     // joint and now decides the arm -- see this test's own doc for why this fixture is its worst case.
     let anchored = after_trace
@@ -17187,7 +17297,7 @@ fn color_cmc_table_star_shape_wins_the_min_against_independence() {
         .iter()
         .find(|g| g.mechanism == "ColorCmcAnchoredIndependence")
         .expect("Round 56's anchored companion must fire: one ColorCmcTable hit, one residual Price leaf");
-    assert_eq!(anchored.printing, Some(5), "round(10 * 50/100) = 5");
+    assert_eq!(anchored.printing(), Some(5), "round(10 * 50/100) = 5");
     assert_eq!(after_printing, 5, "post-Round-56: the anchored candidate is the smallest and wins the min()-fold on merit");
     assert_eq!(
         after_domain_card,
@@ -17292,10 +17402,11 @@ fn color_cmc_anchored_independence_tightens_the_exact_joint() {
     let f = FilterExpr::And(vec![green_leaf, cmc_le3, cheap]);
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    assert_and_trace_channel_fidelity(&and_trace);
 
     let table_hit = and_trace.considered.iter().find(|g| g.mechanism == "ColorCmcTable").expect("ColorCmcTable must fire on (green, cmc<=3)");
     assert!(table_hit.hit);
-    assert_eq!(table_hit.printing, Some(20), "the exact (green, cmc<=3) joint -- cards 0..=19, price-blind");
+    assert_eq!(table_hit.printing(), Some(20), "the exact (green, cmc<=3) joint -- cards 0..=19, price-blind");
 
     let anchored = and_trace
         .considered
@@ -17303,22 +17414,22 @@ fn color_cmc_anchored_independence_tightens_the_exact_joint() {
         .find(|g| g.mechanism == "ColorCmcAnchoredIndependence")
         .expect("the anchored candidate must fire: one ColorCmcTable hit, exactly one residual Price leaf");
     assert!(anchored.hit);
-    assert_eq!(anchored.printing, Some(10), "round(20 * 50/100) = 10 -- and exactly the true 3-leaf answer for this fixture");
+    assert_eq!(anchored.printing(), Some(10), "round(20 * 50/100) = 10 -- and exactly the true 3-leaf answer for this fixture");
     assert_eq!(anchored.leaves.len(), 3, "the joint's own two explained leaves (green, cmc<=3) plus the one contributing residual (usd<=0.55)");
-    assert!(anchored.card.is_none() && anchored.artwork.is_none(), "printing-space only, like every other estimate-class candidate in this arm");
+    assert!(anchored.card().is_none() && anchored.artwork().is_none(), "printing-space only, like every other estimate-class candidate in this arm");
 
     // (1) No `mark_covered`: both independence candidates must survive this mechanism's presence.
     let independence: Vec<_> = and_trace.considered.iter().filter(|g| g.mechanism == "Independence").collect();
     assert_eq!(independence.len(), 2, "ColorId x Price and Cmc x Price must both still fire -- the anchored candidate must not cover their leaves");
-    assert!(independence.iter().any(|g| g.printing == Some(20)), "round(40 * 50 / 100) == 20 for ColorId x Price");
-    assert!(independence.iter().any(|g| g.printing == Some(25)), "round(50 * 50 / 100) == 25 for Cmc x Price");
+    assert!(independence.iter().any(|g| g.printing() == Some(20)), "round(40 * 50 / 100) == 20 for ColorId x Price");
+    assert!(independence.iter().any(|g| g.printing() == Some(25)), "round(50 * 50 / 100) == 25 for Cmc x Price");
 
     // (2) Wins the fold on merit: strictly smaller than every other candidate in the arm.
     let others: Vec<usize> = and_trace
         .considered
         .iter()
         .filter(|g| g.mechanism != "ColorCmcAnchoredIndependence")
-        .filter_map(|g| g.printing)
+        .filter_map(|g| g.printing())
         .collect();
     assert!(!others.is_empty(), "the arm must have produced other candidates to compare against");
     assert!(others.iter().all(|&p| p > 10), "the anchored candidate must be the strict minimum, so it needs no mark_covered to win: {others:?}");
@@ -17348,13 +17459,14 @@ fn color_cmc_anchored_independence_fires_on_the_identity_table_too() {
     let f = FilterExpr::And(vec![id_green, cmc_le3, usd_cmp(CmpOp::Le, 0.55)]);
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
     let and_trace = *est.and_trace.expect("want_trace");
+    assert_and_trace_channel_fidelity(&and_trace);
 
     let anchored = and_trace
         .considered
         .iter()
         .find(|g| g.mechanism == "ColorCmcAnchoredIndependence")
         .expect("the anchored candidate must fire for an identity leaf, not just a colors leaf");
-    assert_eq!(anchored.printing, Some(10), "round(20 * 50/100) = 10, same as the colors table (colors == identity in this fixture)");
+    assert_eq!(anchored.printing(), Some(10), "round(20 * 50/100) = 10, same as the colors table (colors == identity in this fixture)");
     assert_eq!(est.result.printing(), 10);
 }
 
@@ -17395,9 +17507,10 @@ fn color_cmc_anchored_independence_uses_the_fused_two_sided_price_rate() {
     let f = FilterExpr::And(vec![green_leaf, cmc_le3, usd_ge, usd_le]);
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
     let and_trace = *est.and_trace.expect("want_trace");
+    assert_and_trace_channel_fidelity(&and_trace);
 
     let table_hit = and_trace.considered.iter().find(|g| g.mechanism == "ColorCmcTable").expect("ColorCmcTable must still fire");
-    assert_eq!(table_hit.printing, Some(20), "the exact (green, cmc<=3) joint is unchanged by the price shape");
+    assert_eq!(table_hit.printing(), Some(20), "the exact (green, cmc<=3) joint is unchanged by the price shape");
 
     let anchored = and_trace
         .considered
@@ -17405,7 +17518,7 @@ fn color_cmc_anchored_independence_uses_the_fused_two_sided_price_rate() {
         .find(|g| g.mechanism == "ColorCmcAnchoredIndependence")
         .expect("a two-sided price range fuses into ONE Price source, so the anchored candidate must still fire (not decline as a 2-price residual)");
     assert_eq!(
-        anchored.printing,
+        anchored.printing(),
         Some(6),
         "round(20 * 30/100) = 6 from the FUSED interval -- NOT round(20 * 0.8 * 0.5) = 8 from a product of the two one-sided marginals"
     );
@@ -17433,9 +17546,10 @@ fn color_cmc_anchored_independence_declines_with_two_price_residuals() {
     let f = FilterExpr::And(vec![green_leaf, cmc_le3, cheap_usd, cheap_eur]);
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
     let and_trace = *est.and_trace.expect("want_trace");
+    assert_and_trace_channel_fidelity(&and_trace);
 
     let table_hit = and_trace.considered.iter().find(|g| g.mechanism == "ColorCmcTable").expect("ColorCmcTable must still fire");
-    assert_eq!(table_hit.printing, Some(20), "the table's own bound is unaffected by the price-triple guard");
+    assert_eq!(table_hit.printing(), Some(20), "the table's own bound is unaffected by the price-triple guard");
     assert!(
         !and_trace.considered.iter().any(|g| g.mechanism == "ColorCmcAnchoredIndependence"),
         "two residual Price-classified sources present (usd<=0.55, eur<=2.00) -- the anchored candidate must decline entirely, not pick one"
@@ -17466,8 +17580,9 @@ fn color_cmc_anchored_independence_declines_without_a_price_residual() {
     ] {
         let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
         let and_trace = *est.and_trace.expect("want_trace");
+        assert_and_trace_channel_fidelity(&and_trace);
         let table_hit = and_trace.considered.iter().find(|g| g.mechanism == "ColorCmcTable").expect("ColorCmcTable must fire");
-        assert_eq!(table_hit.printing, Some(20), "{label}: the exact joint");
+        assert_eq!(table_hit.printing(), Some(20), "{label}: the exact joint");
         assert!(
             !and_trace.considered.iter().any(|g| g.mechanism == "ColorCmcAnchoredIndependence"),
             "{label}: no Price-classified residual, so the anchored candidate must not fire"
@@ -17735,10 +17850,11 @@ fn legality_date_totals_answers_an_interior_multi_date_range() {
 
     assert_eq!(est.result.printing(), 500, "the exact interior joint, not either marginal's 1,250/1,400");
     let trace = *est.and_trace.expect("want_trace");
+    assert_and_trace_channel_fidelity(&trace);
     let hit = trace.considered.iter().find(|g| g.mechanism == "LegalityDateTotals").expect("must be attempted");
     assert!(hit.hit);
-    assert_eq!(hit.printing, Some(500));
-    assert_eq!((hit.card, hit.artwork), (None, None), "printing space only -- this table has no card/artwork number to report");
+    assert_eq!(hit.printing(), Some(500));
+    assert_eq!((hit.card(), hit.artwork()), (None, None), "printing space only -- this table has no card/artwork number to report");
     assert_eq!(hit.leaves.len(), 2, "the legality leaf and the one date child");
 }
 
@@ -17772,8 +17888,9 @@ fn legality_date_totals_and_arm_is_exact_for_every_date_leaf_shape() {
         children.extend(date_leaves);
         let est = super::compose_printing_estimate(&FilterExpr::And(children), &archived.indexes, &archived.offsets, n_printings, true);
         let trace = *est.and_trace.expect("want_trace");
+        assert_and_trace_channel_fidelity(&trace);
         let hit = trace.considered.iter().find(|g| g.mechanism == "LegalityDateTotals").unwrap_or_else(|| panic!("{label}: must be attempted"));
-        assert_eq!(hit.printing, Some(want), "{label}: the And arm must report the exact joint");
+        assert_eq!(hit.printing(), Some(want), "{label}: the And arm must report the exact joint");
         assert_eq!(est.result.printing(), want, "{label}: and it must win the min-fold");
         assert_eq!(hit.leaves.len(), 1 + n_date_leaves, "{label}: must list the legality leaf AND every literal date child");
     }
@@ -17819,9 +17936,10 @@ fn legality_date_totals_declines_below_the_floor() {
     let f = FilterExpr::And(vec![banned_b, year_2000]);
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
     let trace = *est.and_trace.expect("want_trace");
+    assert_and_trace_channel_fidelity(&trace);
     let group = trace.considered.iter().find(|g| g.mechanism == "LegalityDateTotals").expect("attempted even when the key is pruned");
     assert!(!group.hit, "the key is under the floor, so this must trace as a MISS");
-    assert_eq!(group.printing, None);
+    assert_eq!(group.printing(), None);
     assert_eq!(
         est.result.printing(),
         solo_a.result.printing().min(solo_b.result.printing()),
@@ -17858,6 +17976,7 @@ fn legality_date_totals_declines_for_a_non_date_range_leaf() {
         let f = FilterExpr::And(vec![legal_in_a(), other]);
         let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
         let trace = *est.and_trace.expect("want_trace");
+        assert_and_trace_channel_fidelity(&trace);
         assert!(
             !trace.considered.iter().any(|g| g.mechanism == "LegalityDateTotals"),
             "{label} is not the released_at axis -- the mechanism must never be attempted",
@@ -17868,8 +17987,9 @@ fn legality_date_totals_declines_for_a_non_date_range_leaf() {
     let f = FilterExpr::And(vec![legal_in_a(), cheap, FilterExpr::YearCmp { op: CmpOp::Le, year: 2000 }]);
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
     let trace = *est.and_trace.expect("want_trace");
+    assert_and_trace_channel_fidelity(&trace);
     let hit = trace.considered.iter().find(|g| g.mechanism == "LegalityDateTotals").expect("a date child IS present");
-    assert_eq!(hit.printing, Some(600), "must resolve `year<=2000`'s window, not `usd<=0.25`'s");
+    assert_eq!(hit.printing(), Some(600), "must resolve `year<=2000`'s window, not `usd<=0.25`'s");
     assert_eq!(hit.leaves.len(), 2, "the legality leaf and the date child only -- the price leaf is not this mechanism's");
 }
 
@@ -17891,6 +18011,7 @@ fn legality_date_totals_is_a_no_op_without_a_legality_leaf() {
     let f = FilterExpr::And(vec![all_colors, year_2010]);
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
     let trace = *est.and_trace.expect("want_trace");
+    assert_and_trace_channel_fidelity(&trace);
     assert!(
         !trace.considered.iter().any(|g| g.mechanism == "LegalityDateTotals"),
         "no legality leaf present -- must never be attempted",
@@ -18026,23 +18147,24 @@ fn and_arm_independence_tightens_color_and_price() {
     assert_eq!(est.result.printing(), 10, "independence must tighten below the plain min-fold (25) to the true joint (10)");
 
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace for a top-level And");
+    assert_and_trace_channel_fidelity(&and_trace);
     let hit = and_trace.considered.iter().find(|g| g.mechanism == "Independence").expect("Independence must have been attempted for this eligible color+price pair");
     assert!(hit.hit, "independence is a formula, always hit once the shape gate matches -- there is no lookup-miss case");
-    assert_eq!(hit.printing, Some(10), "round(40 * 25 / 100) == 10");
-    assert_eq!(hit.card, None, "the price leaf's own card count is always None (the bare-range leaf arm's own doc), so no card independence can compute");
-    assert_eq!(hit.artwork, None);
+    assert_eq!(hit.printing(), Some(10), "round(40 * 25 / 100) == 10");
+    assert_eq!(hit.card(), None, "the price leaf's own card count is always None (the bare-range leaf arm's own doc), so no card independence can compute");
+    assert_eq!(hit.artwork(), None);
 
     let AndTraceNode::Op { op: "min_fold", children, .. } = &and_trace.tree else { panic!("root must be a min_fold op node") };
     let winner = children
         .iter()
         .find(|c| matches!(c, AndTraceNode::Op { op: "independence", .. }))
         .expect("independence must win the tree -- it produced the tightest (and final) number");
-    let AndTraceNode::Op { mechanism, printing, children: winner_children, .. } = winner else { unreachable!() };
+    let AndTraceNode::Op { mechanism, children: winner_children, .. } = winner else { unreachable!() };
     assert_eq!(*mechanism, None, "independence's own op name already says what happened -- no redundant mechanism string");
-    assert_eq!(*printing, 10);
+    assert_eq!(winner.printing(), 10);
     assert_eq!(winner_children.len(), 2, "independence's own leaves are just the color leaf and the price leaf");
 
-    assert_min_fold_invariant(&and_trace.tree);
+    assert_and_trace_invariants(&and_trace);
 }
 
 /// Round 38: a two-sided SAME-field price range reaches `compose_printing_estimate`'s `And` arm as
@@ -18093,14 +18215,15 @@ fn and_arm_independence_uses_the_fused_two_sided_price_range_not_one_side() {
     let filter = FilterExpr::And(vec![green_leaf, lo, hi]);
     let est = super::compose_printing_estimate(&filter, &archived.indexes, &archived.offsets, n_printings, true);
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    assert_and_trace_channel_fidelity(&and_trace);
 
     let hit = and_trace.considered.iter().find(|g| g.mechanism == "Independence").expect("Independence must fire: color + a fused two-sided price range is still exactly one price source");
     assert_eq!(hit.leaves.len(), 3, "must list the color leaf AND both literal price children -- never just one side");
     assert!(hit.leaves.iter().any(|l| l.contains("PriceUsd") && l.contains("Ge")), "the lower bound must be listed: {:?}", hit.leaves);
     assert!(hit.leaves.iter().any(|l| l.contains("PriceUsd") && l.contains("Le")), "the upper bound must be listed: {:?}", hit.leaves);
-    assert_eq!(hit.printing, Some(16), "round(50 * 31 / 100) == 16 -- the TRUE fused [20,50] count, never one side alone (41 or 25)");
+    assert_eq!(hit.printing(), Some(16), "round(50 * 31 / 100) == 16 -- the TRUE fused [20,50] count, never one side alone (41 or 25)");
 
-    assert_min_fold_invariant(&and_trace.tree);
+    assert_and_trace_invariants(&and_trace);
 }
 
 /// Round 38: the independence tightening's shape gate must NOT fire outside {color/identity/cmc} x
@@ -18141,15 +18264,17 @@ fn and_arm_independence_declines_outside_its_shape_gate() {
     let f1 = FilterExpr::And(vec![green_leaf(), pow_ge3]);
     let est1 = super::compose_printing_estimate(&f1, &archived.indexes, &archived.offsets, n_printings, true);
     let trace1 = *est1.and_trace.expect("want_trace");
+    assert_and_trace_channel_fidelity(&trace1);
     assert!(!trace1.considered.iter().any(|g| g.mechanism == "Independence"), "no price-family leaf present at all -- must never fire");
-    assert_min_fold_invariant(&trace1.tree);
+    assert_and_trace_invariants(&trace1);
 
     let eur_ge1 = FilterExpr::NumericCmp { lhs: NumExpr::Field(NumField::PriceEur), op: CmpOp::Ge, rhs: NumExpr::Const(1.0) };
     let f2 = FilterExpr::And(vec![green_leaf(), usd_cmp(CmpOp::Ge, 1.00), eur_ge1]);
     let est2 = super::compose_printing_estimate(&f2, &archived.indexes, &archived.offsets, n_printings, true);
     let trace2 = *est2.and_trace.expect("want_trace");
+    assert_and_trace_channel_fidelity(&trace2);
     assert!(!trace2.considered.iter().any(|g| g.mechanism == "Independence"), "two DIFFERENT price fields present together -- must decline rather than pick one arbitrarily");
-    assert_min_fold_invariant(&trace2.tree);
+    assert_and_trace_invariants(&trace2);
 }
 
 /// Round 40: `legality x cn` (a bare collector-number bound) is a NEWLY-confirmed-safe registry pair
@@ -18206,15 +18331,15 @@ fn and_arm_independence_tightens_legality_and_collector_number() {
     assert_eq!(est.result.printing(), 10, "independence must tighten below the plain min-fold (25) to the true joint (10)");
 
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace for a top-level And");
+    assert_and_trace_channel_fidelity(&and_trace);
     let hit = and_trace.considered.iter().find(|g| g.mechanism == "Independence").expect("Independence must have been attempted for this eligible legality+cn pair");
     assert!(hit.hit);
-    assert_eq!(hit.printing, Some(10), "round(40 * 25 / 100) == 10");
+    assert_eq!(hit.printing(), Some(10), "round(40 * 25 / 100) == 10");
 
     let AndTraceNode::Op { op: "min_fold", children, .. } = &and_trace.tree else { panic!("root must be a min_fold op node") };
     let winner = children.iter().find(|c| matches!(c, AndTraceNode::Op { op: "independence", .. })).expect("independence must win the tree");
-    let AndTraceNode::Op { printing, .. } = winner else { unreachable!() };
-    assert_eq!(*printing, 10);
-    assert_min_fold_invariant(&and_trace.tree);
+    assert_eq!(winner.printing(), 10);
+    assert_and_trace_invariants(&and_trace);
 }
 
 /// Round 40: `legality x set` must NOT be in the registry, regardless of what a quick check on a toy
@@ -18250,11 +18375,12 @@ fn and_arm_independence_registry_declines_legality_and_set() {
     let filter = FilterExpr::And(vec![legal, set_sld]);
     let est = super::compose_printing_estimate(&filter, &archived.indexes, &archived.offsets, n_printings, true);
     let and_trace = *est.and_trace.expect("want_trace");
+    assert_and_trace_channel_fidelity(&and_trace);
     assert!(
         !and_trace.considered.iter().any(|g| g.mechanism == "Independence"),
         "legality x set must never reach the registry, even though the shape otherwise looks eligible"
     );
-    assert_min_fold_invariant(&and_trace.tree);
+    assert_and_trace_invariants(&and_trace);
 }
 
 /// Round 40's class-priority fix (as originally written): an ESTIMATE-class candidate (independence)
@@ -18327,6 +18453,7 @@ fn and_arm_independence_permitted_against_a_different_partner_once_covered_by_an
     let filter = FilterExpr::And(vec![legal, cmc_eq3, cn_le4500]);
     let est = super::compose_printing_estimate(&filter, &archived.indexes, &archived.offsets, n_printings, true);
     let and_trace = *est.and_trace.expect("want_trace");
+    assert_and_trace_channel_fidelity(&and_trace);
 
     let pt_hit = and_trace
         .considered
@@ -18334,7 +18461,7 @@ fn and_arm_independence_permitted_against_a_different_partner_once_covered_by_an
         .find(|g| g.mechanism == "PairTotals" && g.leaves.iter().any(|l| l.contains("Legality")) && g.leaves.iter().any(|l| l.contains("Cmc")))
         .expect("PairTotals must have attempted the legality+cmc pair");
     assert!(pt_hit.hit);
-    assert_eq!(pt_hit.printing, Some(3_000), "the real legal ∧ cmc=3 exact joint is {{3000..=5999}}, 3,000 cards");
+    assert_eq!(pt_hit.printing(), Some(3_000), "the real legal ∧ cmc=3 exact joint is {{3000..=5999}}, 3,000 cards");
 
     let indep_legal_cn = and_trace
         .considered
@@ -18344,7 +18471,7 @@ fn and_arm_independence_permitted_against_a_different_partner_once_covered_by_an
             "independence must now attempt (legal, cn) -- a DIFFERENT subset than PairTotals' own \
              (legal, cmc), so Round 49's identical-subset-only block does not apply to it",
         );
-    assert_eq!(indep_legal_cn.printing, Some(2_700), "round(6000 * 4500 / 10000)");
+    assert_eq!(indep_legal_cn.printing(), Some(2_700), "round(6000 * 4500 / 10000)");
 
     assert!(
         !and_trace.considered.iter().any(|g| g.mechanism == "Independence" && g.leaves.iter().any(|l| l.contains("Cmc"))),
@@ -18359,7 +18486,7 @@ fn and_arm_independence_permitted_against_a_different_partner_once_covered_by_an
          PairTotals' own (legal, cmc) exact joint (3,000) -- expected under Round 49, since these are \
          different subsets, not a regression of Round 40's identical-subset protection"
     );
-    assert_min_fold_invariant(&and_trace.tree);
+    assert_and_trace_invariants(&and_trace);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -18479,7 +18606,7 @@ fn fold_candidate_estimate_never_touches_exact_domain_fields() {
     let mut cards = Some(7usize);
     let mut printing = Some(9usize);
     let mut artworks = Some(11usize);
-    fold_candidate(&mut result, &mut cards, &mut printing, &mut artworks, "SomeEstimate", Candidate::Estimate { printing: 42 });
+    fold_candidate(&mut result, &mut cards, &mut printing, &mut artworks, "SomeEstimate", Candidate::Estimate { printing: 42, card: None, artwork: None });
     assert_eq!(result.printing(), 42, "an Estimate candidate still folds into result via min");
     assert_eq!(cards, Some(7), "an Estimate candidate must never touch exact_domain_cards");
     assert_eq!(printing, Some(9), "an Estimate candidate must never touch exact_domain_printing");
@@ -18531,6 +18658,91 @@ fn fold_candidate_debug_assert_does_not_fire_for_a_consistent_candidate() {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Round 60: `Candidate::spaces` -- the trace's per-channel view of what a mechanism contributed.
+// ---------------------------------------------------------------------------------------------
+
+/// Both channels of all three spaces, as a comparable value (`SpaceMeasure` has no `PartialEq`).
+fn channels(s: SpaceEstimate) -> [(Option<usize>, Option<usize>); 3] {
+    [
+        (s.printing.guaranteed, s.printing.estimate),
+        (s.card.guaranteed, s.card.estimate),
+        (s.artwork.guaranteed, s.artwork.estimate),
+    ]
+}
+
+/// An accumulator with nothing in any channel -- what `Candidate::spaces` describes a fold INTO.
+/// Built by hand because `SpaceEstimate` is deliberately not `Default` (`printing()` would panic on
+/// one), and this is the one place that wants exactly that state.
+fn empty_space_estimate() -> SpaceEstimate {
+    SpaceEstimate { printing: SpaceMeasure::UNKNOWN, card: SpaceMeasure::UNKNOWN, artwork: SpaceMeasure::UNKNOWN }
+}
+
+/// **The fidelity property Round 60 rests on**: `Candidate::spaces()` -- what a trace group reports --
+/// must be exactly what `fold_candidate` writes for that same candidate, channel by channel. If the
+/// two ever diverge, the trace describes a computation the engine did not do, which is worse than the
+/// single collapsed number it replaces.
+///
+/// Folded into an EMPTY accumulator so the result IS the contribution, with nothing pre-existing to
+/// confuse it for. `Candidate::Estimate`'s card/artwork are excluded here (they are reported but
+/// deliberately not folded) and covered by their own test below.
+#[test]
+fn candidate_spaces_matches_fold_candidate() {
+    for candidate in [
+        Candidate::Exact { printings: 50, cards: 10, artworks: 20 },
+        Candidate::Estimate { printing: 42, card: None, artwork: None },
+        Candidate::PrintingBound { printing: 33 },
+    ] {
+        let mut result = empty_space_estimate();
+        let (mut cards, mut printing, mut artworks) = (None, None, None);
+        fold_candidate(&mut result, &mut cards, &mut printing, &mut artworks, "Fixture", candidate);
+        assert_eq!(channels(result), channels(candidate.spaces()), "spaces() must mirror fold_candidate's own channel writes");
+    }
+    // And the three shapes are genuinely different, so the equality above is not vacuous.
+    assert_eq!(channels(Candidate::Exact { printings: 5, cards: 3, artworks: 4 }.spaces()), [
+        (Some(5), None),
+        (Some(3), None),
+        (Some(4), None)
+    ]);
+    assert_eq!(channels(Candidate::Estimate { printing: 5, card: None, artwork: None }.spaces()), [(None, Some(5)), (None, None), (None, None)]);
+    assert_eq!(channels(Candidate::PrintingBound { printing: 5 }.spaces()), [(Some(5), Some(5)), (None, None), (None, None)]);
+}
+
+/// `"Independence"` is the one `Candidate::Estimate` that carries card/artwork numbers: the registry
+/// pairing computes them from both units' own marginals, and its trace group has always reported
+/// them. They must land in the ESTIMATE channel (never `guaranteed` -- an independence product is not
+/// a bound) and must NOT be folded, since lowering `result.card`/`result.artwork` would change
+/// `best()` and is a behaviour change of its own.
+#[test]
+fn independence_candidate_reports_card_artwork_guesses_without_folding_them() {
+    let candidate = Candidate::Estimate { printing: 20, card: Some(7), artwork: Some(9) };
+    let mut result = empty_space_estimate();
+    let (mut cards, mut printing, mut artworks) = (None, None, None);
+    fold_candidate(&mut result, &mut cards, &mut printing, &mut artworks, "Independence", candidate);
+    assert_eq!(channels(result), [(None, Some(20)), (None, None), (None, None)], "the fold still touches printing's estimate and nothing else");
+    assert_eq!(
+        channels(candidate.spaces()),
+        [(None, Some(20)), (None, Some(7)), (None, Some(9))],
+        "the trace REPORTS the two guesses the arm computed, in the estimate channel only"
+    );
+}
+
+/// A MISS carries no cardinality at all, and specifically not a zero: `spaces` is `None`, so every
+/// space reads back `None` and serializes to Python `None`. A zero would read as "proved the answer
+/// is empty", which is the opposite claim -- and `leaves_are_disjoint` shows a real proven zero is a
+/// genuinely different thing that must stay distinguishable from a decline.
+#[test]
+fn and_trace_group_distinguishes_a_miss_from_a_proven_zero() {
+    let miss = and_trace_group(vec!["Leaf".to_string()], "PairTotals", None);
+    assert!(!miss.hit, "hit is derived from the candidate, so a None candidate is a miss");
+    assert!(miss.spaces.is_none(), "a miss has no cardinality in any space");
+    assert_eq!((miss.printing(), miss.card(), miss.artwork()), (None, None, None));
+
+    let zero = and_trace_group(vec!["Leaf".to_string()], "leaves_are_disjoint", Some(Candidate::Exact { printings: 0, cards: 0, artworks: 0 }));
+    assert!(zero.hit && zero.spaces.is_some(), "hit == spaces.is_some(), by construction");
+    assert_eq!((zero.printing(), zero.card(), zero.artwork()), (Some(0), Some(0), Some(0)), "a disjointness proof IS an exact zero");
+}
+
+// ---------------------------------------------------------------------------------------------
 // Round 58: `SpaceMeasure`'s two channels -- a proven bound and a best guess, folded independently.
 // ---------------------------------------------------------------------------------------------
 
@@ -18553,7 +18765,7 @@ fn fold_candidate_undershooting_estimate_never_lowers_guaranteed() {
         artworks: 840,
     });
     // 400 is a 0.48x undershoot of the exact 840 -- the shape Round 55 measured and Round 57 hit again.
-    fold_candidate(&mut result, &mut cards, &mut printing, &mut artworks, "Undershooter", Candidate::Estimate { printing: 400 });
+    fold_candidate(&mut result, &mut cards, &mut printing, &mut artworks, "Undershooter", Candidate::Estimate { printing: 400, card: None, artwork: None });
     assert_eq!(
         result.printing.guaranteed,
         Some(840),
@@ -18576,7 +18788,7 @@ fn fold_candidate_undershooting_estimate_never_lowers_guaranteed() {
 fn fold_candidate_exact_leaves_the_estimate_channel_untouched() {
     let mut result = SpaceEstimate::printing_only(1_000);
     let (mut cards, mut printing, mut artworks) = (None, None, None);
-    fold_candidate(&mut result, &mut cards, &mut printing, &mut artworks, "Guess", Candidate::Estimate { printing: 700 });
+    fold_candidate(&mut result, &mut cards, &mut printing, &mut artworks, "Guess", Candidate::Estimate { printing: 700, card: None, artwork: None });
     fold_candidate(&mut result, &mut cards, &mut printing, &mut artworks, "Exact", Candidate::Exact { printings: 500, cards: 100, artworks: 200 });
     assert_eq!(result.printing.guaranteed, Some(500), "the exact candidate tightened the proven bound to its own 500");
     assert_eq!(result.printing.estimate, Some(700), "and left the earlier guess exactly where it was");
@@ -18647,7 +18859,7 @@ fn exact_domain_is_unchanged_by_the_channel_split() {
     let (mut cards, mut printing, mut artworks) = (None, None, None);
     assert_eq!(result.printing.guaranteed, Some(1_000), "the per-leaf fold seeds result's own printing bound");
     assert!(printing.is_none(), "exact_domain_printing is a DIFFERENT accumulator and starts empty");
-    fold_candidate(&mut result, &mut cards, &mut printing, &mut artworks, "Guess", Candidate::Estimate { printing: 12 });
+    fold_candidate(&mut result, &mut cards, &mut printing, &mut artworks, "Guess", Candidate::Estimate { printing: 12, card: None, artwork: None });
     assert!(
         cards.is_none() && printing.is_none() && artworks.is_none(),
         "an Estimate candidate must never populate any exact_domain accumulator"
@@ -18717,9 +18929,9 @@ fn scan_two_bucket_exact_hit_folds_covers_and_traces_in_order() {
     let g = &trace.considered[0];
     assert_eq!(g.mechanism, "TestMechanism");
     assert!(g.hit);
-    assert_eq!(g.printing, Some(5));
-    assert_eq!(g.card, Some(3));
-    assert_eq!(g.artwork, Some(4));
+    assert_eq!(g.printing(), Some(5));
+    assert_eq!(g.card(), Some(3));
+    assert_eq!(g.artwork(), Some(4));
     assert_eq!(
         g.leaves,
         vec![format!("{:?}", v[0]), format!("{:?}", v[1]), format!("{:?}", v[2])],
@@ -18805,7 +19017,7 @@ fn scan_two_bucket_exact_miss_with_trace_on_miss_true_still_logs_a_group() {
     assert_eq!(trace.considered.len(), 1, "trace_on_miss=true must still log the miss");
     let g = &trace.considered[0];
     assert!(!g.hit);
-    assert!(g.printing.is_none() && g.card.is_none() && g.artwork.is_none());
+    assert!(g.printing().is_none() && g.card().is_none() && g.artwork().is_none());
 }
 
 /// `mark_covered_on_hit: false` (`ColorCmcTable`'s own deliberate choice -- see that call site's
@@ -19411,10 +19623,11 @@ fn price_joint_standalone_and_arm_fold_fires_and_tightens_vs_min_fold_baseline()
     let f = FilterExpr::And(vec![usd_cmp(CmpOp::Lt, 5.0), eur_cmp(CmpOp::Lt, 5.0)]);
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace for a top-level And");
+    assert_and_trace_channel_fidelity(&and_trace);
 
     let hit = and_trace.considered.iter().find(|g| g.mechanism == "PriceJointTable").expect("PriceJointTable must fire on a bare usd+eur And");
     assert!(hit.hit);
-    assert_eq!(hit.printing, Some(30), "must report the true joint exactly (group A)");
+    assert_eq!(hit.printing(), Some(30), "must report the true joint exactly (group A)");
 
     assert_eq!(
         est.result.printing(), 30,
@@ -19461,6 +19674,7 @@ fn price_joint_independence_registry_unit_forms_and_pairs_with_a_third_class() {
     let f = FilterExpr::And(vec![elf, usd_cmp(CmpOp::Lt, 5.0), eur_cmp(CmpOp::Lt, 5.0)]);
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    assert_and_trace_channel_fidelity(&and_trace);
 
     let indep = and_trace
         .considered
@@ -19468,7 +19682,7 @@ fn price_joint_independence_registry_unit_forms_and_pairs_with_a_third_class() {
         .find(|g| g.mechanism == "Independence" && g.leaves.len() == 3)
         .expect("Independence must pair the new (usd, eur) unit (2 leaves) against Type's own solo unit (1 leaf) -- 3 leaves total");
     assert!(indep.hit);
-    assert_eq!(indep.printing, Some(14), "round(45 * 30 / 100) = round(13.5) = 14");
+    assert_eq!(indep.printing(), Some(14), "round(45 * 30 / 100) = round(13.5) = 14");
 
     assert_eq!(
         est.result.printing(), 14,
@@ -19509,10 +19723,11 @@ fn price_joint_usd_tix_standalone_and_arm_fold_fires_and_tightens_vs_min_fold_ba
     let f = FilterExpr::And(vec![usd_lt5, tix_ge]);
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace for a top-level And");
+    assert_and_trace_channel_fidelity(&and_trace);
 
     let hit = and_trace.considered.iter().find(|g| g.mechanism == "PriceJointTable").expect("PriceJointTable must fire on a bare usd+tix And after Round 54");
     assert!(hit.hit);
-    assert_eq!(hit.printing, Some(10), "true joint: usd<5 (i<60) intersect tix>=0.51 (i>=50) = [50,60), 10 printings");
+    assert_eq!(hit.printing(), Some(10), "true joint: usd<5 (i<60) intersect tix>=0.51 (i>=50) = [50,60), 10 printings");
 
     assert_eq!(
         est.result.printing(), 10,
@@ -19550,6 +19765,7 @@ fn price_joint_usd_tix_by_class_registry_unit_forms_and_pairs_with_a_third_class
     let f = FilterExpr::And(vec![elf, usd_cmp(CmpOp::Lt, 5.0), tix_cmp(CmpOp::Ge, 0.51)]);
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    assert_and_trace_channel_fidelity(&and_trace);
 
     let indep = and_trace
         .considered
@@ -19557,7 +19773,7 @@ fn price_joint_usd_tix_by_class_registry_unit_forms_and_pairs_with_a_third_class
         .find(|g| g.mechanism == "Independence" && g.leaves.len() == 3)
         .expect("Independence must pair the new (usd, tix) unit (2 leaves) against Type's own solo unit (1 leaf) -- 3 leaves total");
     assert!(indep.hit);
-    assert_eq!(indep.printing, Some(5), "round(45 * 10 / 100) = round(4.5) = 5");
+    assert_eq!(indep.printing(), Some(5), "round(45 * 10 / 100) = round(4.5) = 5");
 
     assert_eq!(
         est.result.printing(), 5,
@@ -19589,10 +19805,11 @@ fn price_joint_eur_tix_standalone_and_arm_fold_fires_and_tightens_vs_min_fold_ba
     let f = FilterExpr::And(vec![eur_lt5, tix_lt]);
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace for a top-level And");
+    assert_and_trace_channel_fidelity(&and_trace);
 
     let hit = and_trace.considered.iter().find(|g| g.mechanism == "PriceJointTable").expect("PriceJointTable must fire on a bare eur+tix And after Round 54");
     assert!(hit.hit);
-    assert_eq!(hit.printing, Some(30), "true joint: eur<5 (groups A+C) intersect tix<0.51 (i<50) = group A alone, [0,30), 30 printings");
+    assert_eq!(hit.printing(), Some(30), "true joint: eur<5 (groups A+C) intersect tix<0.51 (i<50) = group A alone, [0,30), 30 printings");
 
     assert_eq!(
         est.result.printing(), 30,
@@ -19623,6 +19840,7 @@ fn price_joint_eur_tix_by_class_registry_unit_forms_and_pairs_with_a_third_class
     let f = FilterExpr::And(vec![elf, eur_cmp(CmpOp::Lt, 5.0), tix_cmp(CmpOp::Lt, 0.51)]);
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    assert_and_trace_channel_fidelity(&and_trace);
 
     let indep = and_trace
         .considered
@@ -19631,7 +19849,7 @@ fn price_joint_eur_tix_by_class_registry_unit_forms_and_pairs_with_a_third_class
         .expect("Independence must pair the new (eur, tix) unit (2 leaves) against Type's own solo unit (1 leaf) -- 3 leaves total");
     assert!(indep.hit);
     assert_eq!(
-        indep.printing,
+        indep.printing(),
         Some(14),
         "round(45 * 30 / 100) = round(13.5) = 14 -- coincidentally the SAME number as the usd+eur \
          by_class test above (both anchor on group A's own 30), not a copy-paste bug"
@@ -19707,6 +19925,7 @@ fn price_joint_three_way_usd_eur_tix_still_declines() {
     let f = FilterExpr::And(vec![usd_lt5, eur_lt5, tix_lt1]);
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, true);
     let and_trace = *est.and_trace.expect("want_trace: true must populate and_trace");
+    assert_and_trace_channel_fidelity(&and_trace);
 
     assert!(!and_trace.considered.iter().any(|g| g.mechanism == "PriceJointTable"), "3-way usd+eur+tix must never fire the standalone fold (and_sources.len() == 3, not 2)");
     assert!(
@@ -19939,7 +20158,7 @@ fn fold_candidate_printing_bound_claims_printing_only_and_never_exact_domain() {
     // And the direction that matters most: an undershooting guess arriving afterwards cannot pull the
     // bound down, while the accuracy read still reports the guess. Same property Round 58 established
     // for `Exact`, now for the printing-only variant.
-    fold_candidate(&mut result, &mut cards, &mut printing, &mut artworks, "Undershooter", Candidate::Estimate { printing: 400 });
+    fold_candidate(&mut result, &mut cards, &mut printing, &mut artworks, "Undershooter", Candidate::Estimate { printing: 400, card: None, artwork: None });
     assert_eq!(result.printing.guaranteed, Some(640), "the guess cannot lower a proven bound");
     assert_eq!(result.printing(), 400, "but the accuracy read is still min over both channels");
 }

@@ -9800,10 +9800,72 @@ fn mark_covered(v: &[FilterExpr], leaves: &[&FilterExpr], covered: &mut CoveredS
 /// all (`Exact` with `bound: false`). A variant makes those unrepresentable and makes
 /// `fold_candidate`'s `match` force a future mechanism's author to choose deliberately, which is the
 /// property this whole round is about.
+///
+/// `Copy` (Round 60): a call site builds ONE `Candidate` and uses it twice -- folded via
+/// `fold_candidate`, and reported via `spaces()` on the `AndTraceGroup` -- so the traced channels
+/// cannot drift from the folded ones.
+#[derive(Clone, Copy)]
 enum Candidate {
-    Exact { printings: usize, cards: usize, artworks: usize },
-    Estimate { printing: usize },
-    PrintingBound { printing: usize },
+    Exact {
+        printings: usize,
+        cards: usize,
+        artworks: usize,
+    },
+    Estimate {
+        printing: usize,
+        /// Card/artwork-space GUESSES the same mechanism produced alongside `printing`, REPORTED but
+        /// deliberately NOT folded -- `fold_candidate` touches `result.printing` and nothing else for
+        /// this variant, exactly as it did before Round 60. `None` at every site but `"Independence"`,
+        /// whose registry pairing computes `card_indep`/`artwork_indep` from the two units' own card/
+        /// artwork marginals and has always reported them in its trace group.
+        ///
+        /// They live on the variant (rather than being hand-attached at that one trace site) so
+        /// `spaces()` below stays the single derivation of what a mechanism claimed -- and so the fact
+        /// that the `And` arm computes two card/artwork guesses it then throws away is visible in the
+        /// trace instead of only in this source file. Folding them would change `result.card.best()`
+        /// and is therefore a behaviour change for its own round, not this one.
+        card: Option<usize>,
+        artwork: Option<usize>,
+    },
+    PrintingBound {
+        printing: usize,
+    },
+}
+
+impl Candidate {
+    /// The channels this candidate WRITES, as a `SpaceEstimate` of its own -- the per-space,
+    /// per-channel shape `fold_candidate` below folds into the arm's accumulator, and nothing else.
+    ///
+    /// Round 60: this is what an `AndTraceGroup`/`AndTraceNode` reports, so a trace states which
+    /// CHANNEL each mechanism actually wrote rather than one `best()`-collapsed number. Derived here,
+    /// once, from the variant -- never hand-written at each of the ~17 `AndTraceGroup` construction
+    /// sites, which would rot the moment a mechanism changed variant (Round 59 moved two of them).
+    ///
+    /// Matched arm-for-arm against `fold_candidate` deliberately, and
+    /// `candidate_spaces_matches_fold_candidate` in tests.rs asserts the two agree for every variant.
+    /// `Estimate`'s `card`/`artwork` are the one deliberate divergence -- reported, not folded; see
+    /// that variant's own doc.
+    fn spaces(self) -> SpaceEstimate {
+        match self {
+            // Both `lower_guaranteed`, so the CONTRIBUTION is guaranteed-only in all three spaces --
+            // an exact triple is a proven bound the fold admits, and it leaves `estimate` alone.
+            Candidate::Exact { printings, cards, artworks } => SpaceEstimate {
+                printing: SpaceMeasure { guaranteed: Some(printings), estimate: None },
+                card: SpaceMeasure { guaranteed: Some(cards), estimate: None },
+                artwork: SpaceMeasure { guaranteed: Some(artworks), estimate: None },
+            },
+            Candidate::Estimate { printing, card, artwork } => SpaceEstimate {
+                printing: SpaceMeasure::estimate_only(printing),
+                card: SpaceMeasure { guaranteed: None, estimate: card },
+                artwork: SpaceMeasure { guaranteed: None, estimate: artwork },
+            },
+            // A real count: simultaneously a proven bound and the best guess, which is exactly what
+            // `SpaceMeasure::known` means and what the fold writes (both channels of printing only).
+            Candidate::PrintingBound { printing } => {
+                SpaceEstimate { printing: SpaceMeasure::known(printing), card: SpaceMeasure::UNKNOWN, artwork: SpaceMeasure::UNKNOWN }
+            }
+        }
+    }
 }
 
 /// Folds one mechanism's `Candidate` into the outermost `And` arm's running accumulators --
@@ -9871,7 +9933,10 @@ fn fold_candidate(
             *exact_domain_printing = Some(exact_domain_printing.map_or(printings, |d| d.min(printings)));
             *exact_domain_artworks = Some(exact_domain_artworks.map_or(artworks, |d| d.min(artworks)));
         }
-        Candidate::Estimate { printing } => {
+        // `card`/`artwork` are deliberately NOT read here: they are reported (see `Estimate`'s own
+        // doc and `Candidate::spaces`) but folding them would lower `result.card`/`result.artwork`'s
+        // estimate channel and change `best()`, which is a behaviour change and not this round's.
+        Candidate::Estimate { printing, card: _, artwork: _ } => {
             result.printing.lower_estimate(printing);
         }
         // Round 59: a real count in printing space with no card/artwork counts beside it. Both
@@ -9930,29 +9995,19 @@ fn scan_two_bucket_exact<B: Copy>(
     for &ai in a_positions {
         for (b_positions, b_value) in b_candidates {
             let hit = lookup(&v[ai], *b_value);
+            let candidate = hit.map(|(printings, cards, artworks)| Candidate::Exact { printings, cards, artworks });
             let positions = order_positions(ai, b_positions);
-            if let Some((printings, cards, artworks)) = hit {
-                fold_candidate(result, exact_domain_cards, exact_domain_printing, exact_domain_artworks, mechanism, Candidate::Exact {
-                    printings,
-                    cards,
-                    artworks,
-                });
+            if let Some(c) = candidate {
+                fold_candidate(result, exact_domain_cards, exact_domain_printing, exact_domain_artworks, mechanism, c);
                 if mark_covered_on_hit {
                     let leaves: Vec<&FilterExpr> = positions.iter().map(|&p| &v[p]).collect();
                     mark_covered(v, &leaves, covered);
                 }
             }
-            if (hit.is_some() || trace_on_miss)
+            if (candidate.is_some() || trace_on_miss)
                 && let Some(t) = and_trace.as_mut()
             {
-                t.considered.push(AndTraceGroup {
-                    leaves: positions.iter().map(|&p| format!("{:?}", v[p])).collect(),
-                    mechanism,
-                    hit: hit.is_some(),
-                    printing: hit.map(|(p, _, _)| p),
-                    card: hit.map(|(_, c, _)| c),
-                    artwork: hit.map(|(_, _, a)| a),
-                });
+                t.considered.push(and_trace_group(positions.iter().map(|&p| format!("{:?}", v[p])).collect(), mechanism, candidate));
             }
         }
     }
@@ -10178,12 +10233,15 @@ type CompiledLeaf<'a> = (&'a FilterExpr, PlaneExpr);
 /// and everything it nests for exactly this): the harness this feeds only needs to bucket/dedupe/
 /// compare trace strings, not display them beautifully, so a hand-written pretty-printer is out of
 /// scope.
+///
+/// Round 60: one `SpaceEstimate` rather than three hand-listed `Option<usize>` fields -- it is
+/// exactly that shape, it is `Copy`, and carrying the estimator's own type means a leaf's numbers
+/// stay directly comparable, channel by channel, to the tree node they fold into. Not an `Option`
+/// here (unlike `AndTraceGroup::spaces`): this is a child's own solo estimate, which always exists.
 #[derive(Clone)]
 struct AndTraceLeaf {
     expr: String,
-    card: Option<usize>,
-    printing: Option<usize>,
-    artwork: Option<usize>,
+    spaces: SpaceEstimate,
 }
 
 /// One 2-or-3-child combination the outermost `And` arm's existing fixed sequence of tightening
@@ -10197,14 +10255,54 @@ struct AndTraceLeaf {
 /// tightest one available, so two different mechanisms can both `hit` the identical pair while only
 /// one of them actually produced the number the arm kept. `considered` reports both hits; the tree
 /// reports only the one that won.
+///
+/// Round 60: the three `Option<usize>` numbers become one `Option<SpaceEstimate>` -- the mechanism's
+/// own contribution, per space AND per channel, derived once from its `Candidate` variant
+/// (`Candidate::spaces`) rather than hand-listed at each construction site.
+///
+/// `Option`, and specifically NOT a bare `SpaceEstimate`, for a reason worth stating: a MISS group
+/// carries real information (which leaves were tried, by which mechanism, and that it declined) but
+/// no CARDINALITY at all. `SpaceEstimate::printing()` documents printing as set in at least one
+/// channel and `expect`s it, so a bare one on a miss would either break that invariant or force a
+/// fabricated zero -- and a zero here reads as "proved the answer is empty", the opposite claim.
+/// `hit == spaces.is_some()` therefore holds by construction (`and_trace_group` is the only
+/// constructor) and is asserted in tests.rs.
 #[derive(Clone)]
 struct AndTraceGroup {
     leaves: Vec<String>,
     mechanism: &'static str,
     hit: bool,
-    card: Option<usize>,
-    printing: Option<usize>,
-    artwork: Option<usize>,
+    spaces: Option<SpaceEstimate>,
+}
+
+impl AndTraceGroup {
+    /// The printing-space ACCURACY read (`SpaceMeasure::best()`), `None` on a miss -- what this
+    /// group's `printing` key reported before Round 60 split the channels out beside it.
+    fn printing(&self) -> Option<usize> {
+        self.spaces.and_then(|s| s.printing.best())
+    }
+
+    /// `printing()`, card space. `None` both on a miss AND on a printing-only mechanism.
+    /// `#[cfg(test)]`: production reads this group's card space only through the pydict conversion,
+    /// which goes channel by channel; the suite is what asserts on the collapsed number.
+    #[cfg(test)]
+    fn card(&self) -> Option<usize> {
+        self.spaces.and_then(|s| s.card.best())
+    }
+
+    /// `card()`, artwork space.
+    #[cfg(test)]
+    fn artwork(&self) -> Option<usize> {
+        self.spaces.and_then(|s| s.artwork.best())
+    }
+}
+
+/// The ONLY `AndTraceGroup` constructor: `hit` and `spaces` are both derived from `candidate`, so
+/// they cannot disagree, and the channel assignment comes from `Candidate::spaces` rather than from
+/// whatever each of the ~17 trace sites happened to write by hand. `None` = the mechanism was
+/// attempted and declined.
+fn and_trace_group(leaves: Vec<String>, mechanism: &'static str, candidate: Option<Candidate>) -> AndTraceGroup {
+    AndTraceGroup { leaves, mechanism, hit: candidate.is_some(), spaces: candidate.map(Candidate::spaces) }
 }
 
 /// One node of `AndTrace::tree`. Every node -- leaf or op -- carries its own `card`/`printing`/
@@ -10223,22 +10321,52 @@ struct AndTraceGroup {
 /// cmc paired with exactly one price comparison) -- `mechanism: None` on this variant, since the op
 /// name alone already says what happened (there is exactly one independence formula, unlike
 /// `joint_lookup`'s several named table/scan mechanisms).
+///
+/// Round 60: the three numbers on each variant become one `SpaceEstimate`, so a node reports the
+/// PROVEN bound and the GUESS separately in each space instead of one `best()`-collapsed figure per
+/// space. A bare `SpaceEstimate` (not an `Option`, unlike `AndTraceGroup`'s): every node here is a
+/// real answer -- a leaf's own solo estimate, a winning mechanism's hit, or the arm's own final
+/// `result_space` -- never a decline.
 #[derive(Clone)]
 enum AndTraceNode {
     Leaf {
         expr: String,
-        card: Option<usize>,
-        printing: usize,
-        artwork: Option<usize>,
+        spaces: SpaceEstimate,
     },
     Op {
         op: &'static str,
         mechanism: Option<&'static str>,
-        card: Option<usize>,
-        printing: usize,
-        artwork: Option<usize>,
+        spaces: SpaceEstimate,
         children: Vec<AndTraceNode>,
     },
+}
+
+/// Variant-agnostic reads of a node's own numbers. `#[cfg(test)]` as a block: production reaches a
+/// node only through `and_trace_node_to_pydict`, which matches on the variant and emits both channels
+/// per space; these exist so the suite can assert on a node without re-destructuring it every time.
+#[cfg(test)]
+impl AndTraceNode {
+    /// This node's own three-space numbers, whichever variant it is.
+    fn spaces(&self) -> SpaceEstimate {
+        match self {
+            AndTraceNode::Leaf { spaces, .. } | AndTraceNode::Op { spaces, .. } => *spaces,
+        }
+    }
+
+    /// The printing-space ACCURACY read -- infallible, as `SpaceEstimate::printing` documents.
+    fn printing(&self) -> usize {
+        self.spaces().printing()
+    }
+
+    /// The card-space ACCURACY read; `None` when no mechanism answered this space.
+    fn card(&self) -> Option<usize> {
+        self.spaces().card.best()
+    }
+
+    /// `card()`, artwork space.
+    fn artwork(&self) -> Option<usize> {
+        self.spaces().artwork.best()
+    }
 }
 
 /// Always-on, structured provenance for the OUTERMOST `And` node's `compose_printing_estimate`
@@ -10277,7 +10405,12 @@ struct AndTrace {
 
 impl Default for AndTraceNode {
     fn default() -> Self {
-        AndTraceNode::Op { op: "min_fold", mechanism: None, card: None, printing: 0, artwork: None, children: Vec::new() }
+        // `estimate_only(0)` rather than `printing_only(0)`: this is a placeholder (`AndTrace::tree`
+        // before `and_trace_build_tree` overwrites it) and must not claim a PROVEN count of zero,
+        // which is what a `guaranteed` of 0 asserts. `best()` is 0 either way, so the `printing`
+        // this reports is unchanged from the pre-Round-60 `printing: 0`.
+        let spaces = SpaceEstimate { printing: SpaceMeasure::estimate_only(0), card: SpaceMeasure::UNKNOWN, artwork: SpaceMeasure::UNKNOWN };
+        AndTraceNode::Op { op: "min_fold", mechanism: None, spaces, children: Vec::new() }
     }
 }
 
@@ -10422,8 +10555,8 @@ fn is_estimate_class_mechanism(mechanism: &str) -> bool {
 /// an estimate may fill a gap no exact/bound mechanism reaches, never be preferred over one for an
 /// overlapping subset.
 fn and_trace_build_tree(leaves: &[AndTraceLeaf], considered: &[AndTraceGroup], final_est: SpaceEstimate) -> AndTraceNode {
-    let leaf_node = |l: &AndTraceLeaf| AndTraceNode::Leaf { expr: l.expr.clone(), card: l.card, printing: l.printing.unwrap_or(0), artwork: l.artwork };
-    let ties = |g: &&AndTraceGroup| g.hit && g.printing == Some(final_est.printing());
+    let leaf_node = |l: &AndTraceLeaf| AndTraceNode::Leaf { expr: l.expr.clone(), spaces: l.spaces };
+    let ties = |g: &&AndTraceGroup| g.hit && g.printing() == Some(final_est.printing());
     let winner = considered
         .iter()
         .filter(|g| ties(g) && !is_estimate_class_mechanism(g.mechanism))
@@ -10437,26 +10570,17 @@ fn and_trace_build_tree(leaves: &[AndTraceLeaf], considered: &[AndTraceGroup], f
         // `mechanism: None` because the op name itself already says what happened (there is exactly
         // one independence formula, unlike `joint_lookup`'s several named table/scan mechanisms).
         let (op, mechanism) = if w.mechanism == "Independence" { ("independence", None) } else { ("joint_lookup", Some(w.mechanism)) };
-        children.push(AndTraceNode::Op {
-            op,
-            mechanism,
-            card: w.card,
-            printing: w.printing.unwrap_or(final_est.printing()),
-            artwork: w.artwork,
-            children: covered_children,
-        });
+        // `hit == spaces.is_some()` by construction (`and_trace_group`) and `ties` already required
+        // `hit`, so the fallback is unreachable -- it mirrors the pre-Round-60
+        // `w.printing.unwrap_or(final_est.printing())` default rather than introducing a panic on
+        // what is otherwise a purely diagnostic path.
+        let spaces = w.spaces.unwrap_or(final_est);
+        children.push(AndTraceNode::Op { op, mechanism, spaces, children: covered_children });
         children.extend(leaves.iter().filter(|l| !w.leaves.contains(&l.expr)).map(leaf_node));
     } else {
         children.extend(leaves.iter().map(leaf_node));
     }
-    AndTraceNode::Op {
-        op: "min_fold",
-        mechanism: None,
-        card: final_est.card.best(),
-        printing: final_est.printing(),
-        artwork: final_est.artwork.best(),
-        children,
-    }
+    AndTraceNode::Op { op: "min_fold", mechanism: None, spaces: final_est, children }
 }
 
 fn compose_printing_estimate(
@@ -10528,12 +10652,10 @@ fn compose_printing_estimate(
                     .iter()
                     .map(|c| {
                         let e = compose_printing_estimate(c, indexes, offsets, n_printings, false);
-                        AndTraceLeaf {
-                            expr: format!("{c:?}"),
-                            card: e.result.card.best(),
-                            printing: Some(e.result.printing()),
-                            artwork: e.result.artwork.best(),
-                        }
+                        // Round 60: the child's own `SpaceEstimate` carried through verbatim, both
+                        // channels intact -- it already IS the right shape, and collapsing it to
+                        // three `best()` numbers is exactly what this round removes.
+                        AndTraceLeaf { expr: format!("{c:?}"), spaces: e.result }
                     })
                     .collect(),
                 considered: Vec::new(),
@@ -10633,25 +10755,21 @@ fn compose_printing_estimate(
                 'pairs: for (i, a) in v.iter().enumerate() {
                     for (j, b) in v.iter().enumerate().skip(i + 1) {
                         if leaves_are_disjoint(a, b) {
-                            t.considered.push(AndTraceGroup {
-                                leaves: vec![format!("{a:?}"), format!("{b:?}")],
-                                mechanism: "leaves_are_disjoint",
-                                hit: true,
-                                card: Some(0),
-                                printing: Some(0),
-                                artwork: Some(0),
-                            });
+                            // A disjointness PROOF: an exact zero in all three spaces, which is the
+                            // `Candidate::Exact` shape (`pair_bounded_min` itself returns 0 here).
+                            t.considered.push(and_trace_group(
+                                vec![format!("{a:?}"), format!("{b:?}")],
+                                "leaves_are_disjoint",
+                                Some(Candidate::Exact { printings: 0, cards: 0, artworks: 0 }),
+                            ));
                             break 'pairs;
                         }
                         let hit = ids[i].zip(ids[j]).and_then(|(x, y)| pt.get_all(x, y));
-                        t.considered.push(AndTraceGroup {
-                            leaves: vec![format!("{a:?}"), format!("{b:?}")],
-                            mechanism: "PairTotals",
-                            hit: hit.is_some(),
-                            printing: hit.map(|(p, _, _)| p),
-                            card: hit.map(|(_, c, _)| c),
-                            artwork: hit.map(|(_, _, a)| a),
-                        });
+                        t.considered.push(and_trace_group(
+                            vec![format!("{a:?}"), format!("{b:?}")],
+                            "PairTotals",
+                            hit.map(|(printings, cards, artworks)| Candidate::Exact { printings, cards, artworks }),
+                        ));
                     }
                 }
             }
@@ -10710,7 +10828,7 @@ fn compose_printing_estimate(
                 // looks at. `leaves` lists every element of `v` (not just `a`/`b`, which are POST-fusion
                 // sources and can be fewer than `v`'s literal children -- see `fuse_and_range_children`'s
                 // own doc) since a fused two-sided `cn` range still traces back to 2 literal children.
-                let mut estimate_hit: Option<usize> = None;
+                let mut estimate_hit: Option<Candidate> = None;
                 if let Some((set_name, (q_lo, q_hi))) = shape
                     && let Some(range) = indexes.set_collector_ranges.get(set_name)
                 {
@@ -10733,15 +10851,16 @@ fn compose_printing_estimate(
                             if hi_incl >= lo_incl { hi_incl - lo_incl + 1 } else { 0 }
                         };
                         let estimate = (density * f64::from(overlap)).round() as usize;
+                        let candidate = Candidate::Estimate { printing: estimate, card: None, artwork: None };
                         fold_candidate(
                             &mut result,
                             &mut exact_domain_cards,
                             &mut exact_domain_printing,
                             &mut exact_domain_artworks,
                             "SetCollectorRange",
-                            Candidate::Estimate { printing: estimate },
+                            candidate,
                         );
-                        estimate_hit = Some(estimate);
+                        estimate_hit = Some(candidate);
                         // Round 40: ESTIMATE-class (density, not a bound -- a non-contiguous set, e.g.
                         // Secret Lair Drop, can undershoot; see this mechanism's own doc above), so this
                         // marks `covered` defensively rather than because it's exact -- prevents the
@@ -10757,14 +10876,7 @@ fn compose_printing_estimate(
                 if shape.is_some()
                     && let Some(t) = and_trace.as_mut()
                 {
-                    t.considered.push(AndTraceGroup {
-                        leaves: v.iter().map(|c| format!("{c:?}")).collect(),
-                        mechanism: "SetCollectorRange",
-                        hit: estimate_hit.is_some(),
-                        printing: estimate_hit,
-                        card: None,
-                        artwork: None,
-                    });
+                    t.considered.push(and_trace_group(v.iter().map(|c| format!("{c:?}")).collect(), "SetCollectorRange", estimate_hit));
                 }
             }
             // Round 53 (`docs/issues/local-engine-nway-followup-queue.md`): two price bounds of
@@ -10803,19 +10915,20 @@ fn compose_printing_estimate(
             if let [a, b] = and_sources.as_slice() {
                 let (a, b) = (*a, *b);
                 let pair = resolve_price_joint_pair(a, b, indexes);
-                let mut estimate_hit: Option<usize> = None;
+                let mut estimate_hit: Option<Candidate> = None;
                 if let Some((table, (a_lo, a_hi), (b_lo, b_hi))) = pair
                     && let Some((printing, _card, _artwork)) = table.joint_estimate(a_lo, a_hi, b_lo, b_hi)
                 {
+                    let candidate = Candidate::PrintingBound { printing };
                     fold_candidate(
                         &mut result,
                         &mut exact_domain_cards,
                         &mut exact_domain_printing,
                         &mut exact_domain_artworks,
                         "PriceJointTable",
-                        Candidate::PrintingBound { printing },
+                        candidate,
                     );
-                    estimate_hit = Some(printing);
+                    estimate_hit = Some(candidate);
                     // Round 40's own convention: mark this Estimate-class candidate's own leaves
                     // covered, mirroring `SetCollectorRange`'s own defensive self-mark just above --
                     // prevents some future mechanism from redundantly re-answering the identical price-
@@ -10829,14 +10942,7 @@ fn compose_printing_estimate(
                 if pair.is_some()
                     && let Some(t) = and_trace.as_mut()
                 {
-                    t.considered.push(AndTraceGroup {
-                        leaves: v.iter().map(|c| format!("{c:?}")).collect(),
-                        mechanism: "PriceJointTable",
-                        hit: estimate_hit.is_some(),
-                        printing: estimate_hit,
-                        card: None,
-                        artwork: None,
-                    });
+                    t.considered.push(and_trace_group(v.iter().map(|c| format!("{c:?}")).collect(), "PriceJointTable", estimate_hit));
                 }
             }
             // Second tightening: 2+ cmc/power/toughness children get their TRUE joint (printing,
@@ -10850,14 +10956,15 @@ fn compose_printing_estimate(
             let n_cards = offsets.len() - 1;
             if arith_children.len() >= 2 {
                 let triple = arith_tuple_totals(&arith_children, indexes);
-                if let Some((printings, cards, artworks)) = triple {
+                let arith_candidate = triple.map(|(printings, cards, artworks)| Candidate::Exact { printings, cards, artworks });
+                if let Some(candidate) = arith_candidate {
                     fold_candidate(
                         &mut result,
                         &mut exact_domain_cards,
                         &mut exact_domain_printing,
                         &mut exact_domain_artworks,
                         "arith_tuple_totals",
-                        Candidate::Exact { printings, cards, artworks },
+                        candidate,
                     );
                     // Round 40 (fixed after a real regression a coordinator review caught pre-merge:
                     // `usd>6.03 cmc>=1 cmc<=1` lost Round 38's own price x cmc combination entirely,
@@ -10883,14 +10990,11 @@ fn compose_printing_estimate(
                 // children) is the same one the real tightening above just checked, so a group is
                 // logged whenever that gate matched, hit or miss.
                 if let Some(t) = and_trace.as_mut() {
-                    t.considered.push(AndTraceGroup {
-                        leaves: arith_children.iter().map(|c| format!("{c:?}")).collect(),
-                        mechanism: "arith_tuple_totals",
-                        hit: triple.is_some(),
-                        printing: triple.map(|(p, _, _)| p),
-                        card: triple.map(|(_, c, _)| c),
-                        artwork: triple.map(|(_, _, a)| a),
-                    });
+                    t.considered.push(and_trace_group(
+                        arith_children.iter().map(|c| format!("{c:?}")).collect(),
+                        "arith_tuple_totals",
+                        arith_candidate,
+                    ));
                 }
             }
             // Third tightening: compile each child to a card-space `PlaneExpr` individually and AND the
@@ -11036,28 +11140,26 @@ fn compose_printing_estimate(
             {
                 let mut leaves: Vec<String> = arith_children.iter().map(|c| format!("{c:?}")).collect();
                 leaves.push(format!("{e_filter:?}"));
-                t.considered.push(AndTraceGroup {
+                t.considered.push(and_trace_group(
                     leaves,
-                    mechanism: "PairRangeSum",
-                    hit: pair_range_answer.is_some(),
-                    printing: pair_range_answer.map(|(p, _, _)| p),
-                    card: pair_range_answer.map(|(_, c, _)| c),
-                    artwork: pair_range_answer.map(|(_, _, a)| a),
-                });
+                    "PairRangeSum",
+                    pair_range_answer.map(|(printings, cards, artworks)| Candidate::Exact { printings, cards, artworks }),
+                ));
             }
             if pair_range_answer.is_none() {
                 if existential.is_empty() {
                     if card_invariant.len() >= 2 {
                         let (card_count, bits) = popcount_with_bits(None);
                         if let Some(t) = and_trace.as_mut() {
-                            t.considered.push(AndTraceGroup {
-                                leaves: card_invariant.iter().map(|(c, _)| format!("{c:?}")).collect(),
-                                mechanism: "PlanePopcount",
-                                hit: true,
-                                printing: Some(card_bits_span_total(&bits, offsets)),
-                                card: Some(card_count),
-                                artwork: Some(card_bits_span_total(&bits, &indexes.artwork_base)),
-                            });
+                            t.considered.push(and_trace_group(
+                                card_invariant.iter().map(|(c, _)| format!("{c:?}")).collect(),
+                                "PlanePopcount",
+                                Some(Candidate::Exact {
+                                    printings: card_bits_span_total(&bits, offsets),
+                                    cards: card_count,
+                                    artworks: card_bits_span_total(&bits, &indexes.artwork_base),
+                                }),
+                            ));
                         }
                         best_other = Some((card_count, bits));
                         best_other_leaves = Some(card_invariant.iter().map(|(c, _)| *c).collect());
@@ -11090,14 +11192,15 @@ fn compose_printing_estimate(
                         if let Some(t) = and_trace.as_mut() {
                             let mut leaves: Vec<String> = card_invariant.iter().map(|(c, _)| format!("{c:?}")).collect();
                             leaves.push(format!("{orig:?}"));
-                            t.considered.push(AndTraceGroup {
+                            t.considered.push(and_trace_group(
                                 leaves,
-                                mechanism: "PlanePopcount",
-                                hit: true,
-                                printing: Some(card_bits_span_total(&candidate.1, offsets)),
-                                card: Some(candidate.0),
-                                artwork: Some(card_bits_span_total(&candidate.1, &indexes.artwork_base)),
-                            });
+                                "PlanePopcount",
+                                Some(Candidate::Exact {
+                                    printings: card_bits_span_total(&candidate.1, offsets),
+                                    cards: candidate.0,
+                                    artworks: card_bits_span_total(&candidate.1, &indexes.artwork_base),
+                                }),
+                            ));
                         }
                         if best_other.as_ref().is_none_or(|(c, _)| candidate.0 < *c) {
                             best_other_leaves = Some(card_invariant.iter().map(|(c, _)| *c).chain(std::iter::once(*orig)).collect());
@@ -11180,7 +11283,7 @@ fn compose_printing_estimate(
                 // Round 37a trace: `probe_hit` mirrors what this block already computes when it
                 // fires, purely so the group logged below can report the same numbers -- nothing
                 // here changes `result`/`exact_domain_*`.
-                let mut probe_hit: Option<(usize, usize, usize)> = None; // (printing, card, artwork)
+                let mut probe_hit: Option<Candidate> = None;
                 if let Some(ids) = arith_ids {
                     let joint_ids: Vec<u32> = ids
                         .iter()
@@ -11200,15 +11303,16 @@ fn compose_printing_estimate(
                     let joint_count = joint_ids.len();
                     let joint_printing = span_of(offsets);
                     let joint_artwork = span_of(&indexes.artwork_base);
+                    let candidate = Candidate::Exact { printings: joint_printing, cards: joint_count, artworks: joint_artwork };
                     fold_candidate(
                         &mut result,
                         &mut exact_domain_cards,
                         &mut exact_domain_printing,
                         &mut exact_domain_artworks,
                         "ArithIdProbe",
-                        Candidate::Exact { printings: joint_printing, cards: joint_count, artworks: joint_artwork },
+                        candidate,
                     );
-                    probe_hit = Some((joint_printing, joint_count, joint_artwork));
+                    probe_hit = Some(candidate);
                     // Round 40: a genuine exact joint of best_other's own leaves (however many -- even
                     // just the one lone existential leaf `best_other_leaves` held back from `covered`
                     // above) PLUS the arith leaves probed in here -- e.g. `f:modern cmc>=5 power>=5`
@@ -11223,14 +11327,7 @@ fn compose_printing_estimate(
                 if !arith_children.is_empty()
                     && let Some(t) = and_trace.as_mut()
                 {
-                    t.considered.push(AndTraceGroup {
-                        leaves: arith_children.iter().map(|c| format!("{c:?}")).collect(),
-                        mechanism: "ArithIdProbe",
-                        hit: probe_hit.is_some(),
-                        printing: probe_hit.map(|(p, _, _)| p),
-                        card: probe_hit.map(|(_, c, _)| c),
-                        artwork: probe_hit.map(|(_, _, a)| a),
-                    });
+                    t.considered.push(and_trace_group(arith_children.iter().map(|c| format!("{c:?}")).collect(), "ArithIdProbe", probe_hit));
                 }
             }
             // Round 34 tightening, generalized in Round 42: a `set:X`/`c:X`/`id:X` leaf paired with a
@@ -11347,13 +11444,14 @@ fn compose_printing_estimate(
                 let indep = dim_card.checked_mul(subtype_card).and_then(|p| p.checked_div(n_cards)).unwrap_or(0);
                 let card_est = indep.min(rest_max);
                 let printing_est = card_est.checked_mul(n_printings).and_then(|p| p.checked_div(n_cards)).unwrap_or(0);
+                let candidate = Candidate::Estimate { printing: printing_est, card: None, artwork: None };
                 fold_candidate(
                     &mut result,
                     &mut exact_domain_cards,
                     &mut exact_domain_printing,
                     &mut exact_domain_artworks,
                     "SubtypePairEstimate",
-                    Candidate::Estimate { printing: printing_est },
+                    candidate,
                 );
                 // Round 40: ESTIMATE-class (a capped independence product, not a bound -- this
                 // mechanism's own doc above), marked defensively so the registry scan below never stacks
@@ -11361,14 +11459,11 @@ fn compose_printing_estimate(
                 let pair: [&FilterExpr; 2] = [&v[di], &v[si]];
                 mark_covered(v, &pair, &mut covered);
                 if let Some(t) = and_trace.as_mut() {
-                    t.considered.push(AndTraceGroup {
-                        leaves: vec![format!("{:?}", &v[di]), format!("{:?}", &v[si])],
-                        mechanism: "SubtypePairEstimate",
-                        hit: true,
-                        printing: Some(printing_est),
-                        card: None,
-                        artwork: None,
-                    });
+                    t.considered.push(and_trace_group(
+                        vec![format!("{:?}", &v[di]), format!("{:?}", &v[si])],
+                        "SubtypePairEstimate",
+                        Some(candidate),
+                    ));
                 }
             }
             // Round 55: `(subtype, subtype)` co-occurrence -- a NEW, separate mechanism alongside the
@@ -11400,25 +11495,27 @@ fn compose_printing_estimate(
                     let a = subtype_pair_leaf(&v[pi]).expect("all_sub_positions only holds subtype_pair_leaf leaves");
                     let b = subtype_pair_leaf(&v[pj]).expect("all_sub_positions only holds subtype_pair_leaf leaves");
                     if let Some(totals) = subtype_pair2_exact(a, b, indexes) {
+                        let candidate = Candidate::Exact {
+                            printings: totals.get(Mode::Printing),
+                            cards: totals.get(Mode::Card),
+                            artworks: totals.get(Mode::Artwork),
+                        };
                         fold_candidate(
                             &mut result,
                             &mut exact_domain_cards,
                             &mut exact_domain_printing,
                             &mut exact_domain_artworks,
                             "SubtypeSubtypeExact",
-                            Candidate::Exact { printings: totals.get(Mode::Printing), cards: totals.get(Mode::Card), artworks: totals.get(Mode::Artwork) },
+                            candidate,
                         );
                         let pair: [&FilterExpr; 2] = [&v[pi], &v[pj]];
                         mark_covered(v, &pair, &mut covered);
                         if let Some(t) = and_trace.as_mut() {
-                            t.considered.push(AndTraceGroup {
-                                leaves: vec![format!("{:?}", &v[pi]), format!("{:?}", &v[pj])],
-                                mechanism: "SubtypeSubtypeExact",
-                                hit: true,
-                                printing: Some(totals.get(Mode::Printing)),
-                                card: Some(totals.get(Mode::Card)),
-                                artwork: Some(totals.get(Mode::Artwork)),
-                            });
+                            t.considered.push(and_trace_group(
+                                vec![format!("{:?}", &v[pi]), format!("{:?}", &v[pj])],
+                                "SubtypeSubtypeExact",
+                                Some(candidate),
+                            ));
                         }
                     }
                 }
@@ -11638,13 +11735,14 @@ fn compose_printing_estimate(
                     let explained: Vec<usize> = std::iter::once(ai).chain(arith_positions.iter().copied()).collect();
                     if let Some((price_src, rate)) = anchored_price_residual(&explained) {
                         let anchored_printing = ((box_printing as f64) * rate).round() as usize;
+                        let candidate = Candidate::Estimate { printing: anchored_printing, card: None, artwork: None };
                         fold_candidate(
                             &mut result,
                             &mut exact_domain_cards,
                             &mut exact_domain_printing,
                             &mut exact_domain_artworks,
                             "SubtypeArithAnchoredIndependence",
-                            Candidate::Estimate { printing: anchored_printing },
+                            candidate,
                         );
                         // Round 40's own convention: mark this Estimate-class candidate's own leaves
                         // (the box's own explained positions PLUS the contributing Price leaf)
@@ -11658,14 +11756,7 @@ fn compose_printing_estimate(
                         if let Some(t) = and_trace.as_mut() {
                             let mut leaves: Vec<String> = explained.iter().map(|&p| format!("{:?}", v[p])).collect();
                             leaves.extend(price_leaves.iter().map(|c| format!("{c:?}")));
-                            t.considered.push(AndTraceGroup {
-                                leaves,
-                                mechanism: "SubtypeArithAnchoredIndependence",
-                                hit: true,
-                                printing: Some(anchored_printing),
-                                card: None,
-                                artwork: None,
-                            });
+                            t.considered.push(and_trace_group(leaves, "SubtypeArithAnchoredIndependence", Some(candidate)));
                         }
                     }
                 }
@@ -11723,13 +11814,14 @@ fn compose_printing_estimate(
                 let indep = solo_a.checked_mul(solo_b).and_then(|p| p.checked_div(n_printings)).unwrap_or(0);
                 let rest_max_printing = indexes.subtype_subtype.rest_max.get(Mode::Printing);
                 let printing_est = indep.min(rest_max_printing);
+                let candidate = Candidate::Estimate { printing: printing_est, card: None, artwork: None };
                 fold_candidate(
                     &mut result,
                     &mut exact_domain_cards,
                     &mut exact_domain_printing,
                     &mut exact_domain_artworks,
                     "SubtypeSubtypeEstimate",
-                    Candidate::Estimate { printing: printing_est },
+                    candidate,
                 );
                 // ESTIMATE-class (a capped independence product, not a bound -- this mechanism's own
                 // doc above), marked defensively so the independence registry scan below never stacks
@@ -11737,14 +11829,11 @@ fn compose_printing_estimate(
                 let pair: [&FilterExpr; 2] = [&v[pi], &v[pj]];
                 mark_covered(v, &pair, &mut covered);
                 if let Some(t) = and_trace.as_mut() {
-                    t.considered.push(AndTraceGroup {
-                        leaves: vec![format!("{:?}", &v[pi]), format!("{:?}", &v[pj])],
-                        mechanism: "SubtypeSubtypeEstimate",
-                        hit: true,
-                        printing: Some(printing_est),
-                        card: None,
-                        artwork: None,
-                    });
+                    t.considered.push(and_trace_group(
+                        vec![format!("{:?}", &v[pi]), format!("{:?}", &v[pj])],
+                        "SubtypeSubtypeEstimate",
+                        Some(candidate),
+                    ));
                 }
             }
             // Round 44 tightening: a `color:X`/`id:X` leaf And'd with 1+ literal cmc bound children
@@ -11908,25 +11997,19 @@ fn compose_printing_estimate(
                     let explained: Vec<usize> = std::iter::once(ai).chain(cmc_leaf_positions.iter().copied()).collect();
                     if let Some((price_src, rate)) = anchored_price_residual(&explained) {
                         let anchored_printing = ((joint_printing as f64) * rate).round() as usize;
+                        let candidate = Candidate::Estimate { printing: anchored_printing, card: None, artwork: None };
                         fold_candidate(
                             &mut result,
                             &mut exact_domain_cards,
                             &mut exact_domain_printing,
                             &mut exact_domain_artworks,
                             "ColorCmcAnchoredIndependence",
-                            Candidate::Estimate { printing: anchored_printing },
+                            candidate,
                         );
                         if let Some(t) = and_trace.as_mut() {
                             let mut leaves: Vec<String> = explained.iter().map(|&p| format!("{:?}", v[p])).collect();
                             leaves.extend(anchored_leaves_for(price_src).iter().map(|c| format!("{c:?}")));
-                            t.considered.push(AndTraceGroup {
-                                leaves,
-                                mechanism: "ColorCmcAnchoredIndependence",
-                                hit: true,
-                                printing: Some(anchored_printing),
-                                card: None,
-                                artwork: None,
-                            });
+                            t.considered.push(and_trace_group(leaves, "ColorCmcAnchoredIndependence", Some(candidate)));
                         }
                     }
                 }
@@ -11996,14 +12079,15 @@ fn compose_printing_estimate(
                     };
                     let key = legality_totals_key(*shift, *expected);
                     let hit = indexes.legality_date.range_printings(&indexes.released_at.keys, key, date_lo, date_hi);
-                    if let Some(printing) = hit {
+                    let candidate = hit.map(|printing| Candidate::PrintingBound { printing });
+                    if let Some(c) = candidate {
                         fold_candidate(
                             &mut result,
                             &mut exact_domain_cards,
                             &mut exact_domain_printing,
                             &mut exact_domain_artworks,
                             "LegalityDateTotals",
-                            Candidate::PrintingBound { printing },
+                            c,
                         );
                     }
                     // Traces on a MISS too (like `ColorCmcTable`, unlike `SubtypePairIndexes`): a miss
@@ -12012,14 +12096,7 @@ fn compose_printing_estimate(
                     if let Some(t) = and_trace.as_mut() {
                         let mut leaves: Vec<String> = vec![format!("{:?}", v[ai])];
                         leaves.extend(date_positions.iter().map(|&p| format!("{:?}", v[p])));
-                        t.considered.push(AndTraceGroup {
-                            leaves,
-                            mechanism: "LegalityDateTotals",
-                            hit: hit.is_some(),
-                            printing: hit,
-                            card: None,
-                            artwork: None,
-                        });
+                        t.considered.push(and_trace_group(leaves, "LegalityDateTotals", candidate));
                     }
                 }
             }
@@ -12213,13 +12290,18 @@ fn compose_printing_estimate(
                         .best()
                         .zip(b.est.artwork.best())
                         .map(|(x, y)| if n_artworks == 0 { 0 } else { ((x as f64) * (y as f64) / (n_artworks as f64)).round() as usize });
+                    // The one `Candidate::Estimate` that carries card/artwork guesses: this pairing
+                    // computes them from both units' own marginals, and has always REPORTED them in
+                    // its trace group. `fold_candidate` still folds `printing` and nothing else --
+                    // see `Candidate::Estimate`'s own doc.
+                    let candidate = Candidate::Estimate { printing: printing_indep, card: card_indep, artwork: artwork_indep };
                     fold_candidate(
                         &mut result,
                         &mut exact_domain_cards,
                         &mut exact_domain_printing,
                         &mut exact_domain_artworks,
                         "Independence",
-                        Candidate::Estimate { printing: printing_indep },
+                        candidate,
                     );
                     // Round 38 trace, unchanged shape: `hit: true` always -- independence is a formula
                     // that always produces a value once the registry says the pair is safe, so `hit`
@@ -12227,14 +12309,7 @@ fn compose_printing_estimate(
                     if let Some(t) = and_trace.as_mut() {
                         let mut leaves: Vec<String> = a.leaves.iter().map(|c| format!("{c:?}")).collect();
                         leaves.extend(b.leaves.iter().map(|c| format!("{c:?}")));
-                        t.considered.push(AndTraceGroup {
-                            leaves,
-                            mechanism: "Independence",
-                            hit: true,
-                            printing: Some(printing_indep),
-                            card: card_indep,
-                            artwork: artwork_indep,
-                        });
+                        t.considered.push(and_trace_group(leaves, "Independence", Some(candidate)));
                     }
                 }
             }
@@ -18960,19 +19035,61 @@ fn plan_trial_to_pydict<'py>(py: Python<'py>, t: &PlanTrial) -> PyResult<Bound<'
     Ok(d)
 }
 
-/// The acquire step's per-query facts, as both `explain` and `explain_analyze` report
-/// them under the `"acquire"` key.
-/// One `AndTraceLeaf` as a Python dict -- see `AndTrace`'s own doc for the field shapes.
+/// Round 60: one space's THREE keys on a trace dict -- `{space}` (unchanged: `SpaceMeasure::best()`,
+/// what every existing consumer reads) plus the two channels behind it, `{space}_guaranteed` (the
+/// tightest PROVEN bound) and `{space}_estimate` (the best GUESS).
+///
+/// **Flattened, deliberately, rather than nesting a dict under the existing key.** Turning `printing`
+/// into `{"guaranteed": .., "estimate": ..}` would change an existing key's TYPE and break every
+/// reader, for no gain at a serialization boundary where flattening is normal
+/// (`costbench.py`'s `ACQUIRE_KEYS`/`PLAN_KEYS` are checked as required-but-missing, so extra keys
+/// pass; `nway_estimate_truth_survey.py` stores `and_trace` wholesale).
+///
+/// **An absent channel is `None`, never `0`.** `printing.guaranteed` can legitimately be absent (an
+/// `Or` of two estimate-only leaves -- `SpaceMeasure::add` needs both sides proven), while
+/// `printing.best()` is always present. A `0` there would read as "proved the answer is empty", the
+/// opposite claim. `None`/`Some(usize)` maps to Python `None`/`int` directly, so this holds by
+/// construction.
+///
+/// `m` itself is `Option` for a MISS group, which has no cardinality in any space at all -- every one
+/// of the three keys is then `None`.
+fn set_space_keys(d: &Bound<'_, PyDict>, keys: (&str, &str, &str), m: Option<SpaceMeasure>) -> PyResult<()> {
+    d.set_item(keys.0, m.and_then(SpaceMeasure::best))?;
+    d.set_item(keys.1, m.and_then(|m| m.guaranteed))?;
+    d.set_item(keys.2, m.and_then(|m| m.estimate))?;
+    Ok(())
+}
+
+/// `(collapsed, guaranteed, estimate)` key names per space, as `&'static str` literals rather than
+/// `format!("{space}_guaranteed")` -- measured, not stylistic. `explain()` builds one of these dicts
+/// per trace group AND per tree node (up to 34 groups on the widest real `And` in the survey
+/// catalog), so building six key `String`s per dict cost a measured +12% of `explain()`'s own wall
+/// time on that population: p50 53.4 us with `format!` vs 48.3 us with these literals, against a
+/// 41.6 us pre-Round-60 baseline (300 widest queries, 15 reps, same-build canary within 2%).
+const SPACE_KEYS: [(&str, &str, &str); 3] = [
+    ("card", "card_guaranteed", "card_estimate"),
+    ("printing", "printing_guaranteed", "printing_estimate"),
+    ("artwork", "artwork_guaranteed", "artwork_estimate"),
+];
+
+/// All three spaces of one trace dict -- `None` on a `hit: false` group (see `set_space_keys`).
+/// Emission order (card, printing, artwork) matches what the pre-Round-60 conversion wrote.
+fn set_space_estimate_keys(d: &Bound<'_, PyDict>, s: Option<SpaceEstimate>) -> PyResult<()> {
+    set_space_keys(d, SPACE_KEYS[0], s.map(|s| s.card))?;
+    set_space_keys(d, SPACE_KEYS[1], s.map(|s| s.printing))?;
+    set_space_keys(d, SPACE_KEYS[2], s.map(|s| s.artwork))?;
+    Ok(())
+}
+
 /// One `AndTraceGroup` (an `AndTrace::considered` entry) as a Python dict -- see `AndTrace`'s own doc
 /// for the field shapes.
 fn and_trace_group_to_pydict<'py>(py: Python<'py>, g: &AndTraceGroup) -> PyResult<Bound<'py, PyDict>> {
     let d = PyDict::new(py);
     d.set_item("leaves", g.leaves.clone())?;
     d.set_item("mechanism", g.mechanism)?;
+    // Still emitted alongside `spaces`, even though `hit == spaces.is_some()`: consumers read it.
     d.set_item("hit", g.hit)?;
-    d.set_item("card", g.card)?;
-    d.set_item("printing", g.printing)?;
-    d.set_item("artwork", g.artwork)?;
+    set_space_estimate_keys(&d, g.spaces)?;
     Ok(d)
 }
 
@@ -18981,20 +19098,16 @@ fn and_trace_group_to_pydict<'py>(py: Python<'py>, g: &AndTraceGroup) -> PyResul
 fn and_trace_node_to_pydict<'py>(py: Python<'py>, n: &AndTraceNode) -> PyResult<Bound<'py, PyDict>> {
     let d = PyDict::new(py);
     match n {
-        AndTraceNode::Leaf { expr, card, printing, artwork } => {
+        AndTraceNode::Leaf { expr, spaces } => {
             d.set_item("kind", "leaf")?;
             d.set_item("expr", expr)?;
-            d.set_item("card", card)?;
-            d.set_item("printing", printing)?;
-            d.set_item("artwork", artwork)?;
+            set_space_estimate_keys(&d, Some(*spaces))?;
         }
-        AndTraceNode::Op { op, mechanism, card, printing, artwork, children } => {
+        AndTraceNode::Op { op, mechanism, spaces, children } => {
             d.set_item("kind", "op")?;
             d.set_item("op", op)?;
             d.set_item("mechanism", mechanism)?;
-            d.set_item("card", card)?;
-            d.set_item("printing", printing)?;
-            d.set_item("artwork", artwork)?;
+            set_space_estimate_keys(&d, Some(*spaces))?;
             d.set_item("children", children.iter().map(|c| and_trace_node_to_pydict(py, c)).collect::<PyResult<Vec<_>>>()?)?;
         }
     }
@@ -19011,6 +19124,9 @@ fn and_trace_to_pydict<'py>(py: Python<'py>, t: &AndTrace) -> PyResult<Bound<'py
     Ok(d)
 }
 
+/// The acquire step's per-query facts, as both `explain` and `explain_analyze` report them under the
+/// `"acquire"` key. (Round 60 moved this doc back onto its own function: it had drifted upward onto
+/// the trace conversions during an earlier round.)
 fn acquire_facts_to_pydict<'py>(py: Python<'py>, f: &AcquireFacts) -> PyResult<Bound<'py, PyDict>> {
     let d = PyDict::new(py);
     d.set_item("count_source", f.count_source.label())?;
