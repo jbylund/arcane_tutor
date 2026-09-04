@@ -1,7 +1,17 @@
 # N-Way Estimator Follow-Up Queue
 
-Tracks what's left from the `And`-arm cardinality-estimation arc (Rounds 33-63), in the order we
-intend to tackle it. This doc is the queue, not the depth — the round-by-round numbers live in
+Tracks what's left from the `And`-arm cardinality-estimation arc (Rounds 33-65), in the order we
+intend to tackle it.
+
+**The queue's topic shifted on 2026-09-05, and items 1-2 are a different kind of work from 3-4.** The
+arc existed to unblock a joint refit of the COST MODEL, which had been blocked on bad cardinality
+estimates. Measured against realized counters, that block is gone: `matches` and `eval_domain` now read
+**1.00 at the median on every acquire route**, with a p90/p10 spread of 1.0 on `plane` and `candidates`
+— the route carrying 96.31% of real weighted query time. What the refit is now blocked on is a
+DIFFERENT quantity: how many printings a plan actually walks. Those features were never a function of
+result cardinality, and four rounds of estimator work moved them barely at all (`scan_units` pooled p50
+0.67 -> 0.65, spread 12.4 -> 12.1 across Rounds 62-64). Items 1-2 are cost-feature calibration; items
+3-4 are the estimator's remaining internal hygiene. This doc is the queue, not the depth — the round-by-round numbers live in
 [local-engine-gathered-scan-card-printing-varying-depth.md](local-engine-gathered-scan-card-printing-varying-depth.md),
 and the architecture/design rationale lives in
 [local-engine-nway-compose-independence-search.md](local-engine-nway-compose-independence-search.md).
@@ -30,8 +40,9 @@ payoff still clears the bar; a large build does not. Correctness and maintainabi
 fine — say so explicitly rather than implying a latency win. Round 64 was the last item whose case
 rested on a measured accuracy payoff, and a 2026-09-05 sweep of every estimate-class mechanism found
 the whole lot contributes **9 routing-relevant errors in 9,777 survey rows (0.09%)** — see the
-anchored-independence bullet below for the table. **Everything left in this queue is correctness or
-maintainability work, and there is no known accuracy headroom to chase.**
+anchored-independence bullet below for the table. **There is no known ESTIMATE accuracy headroom left
+to chase** — items 3-4 are the estimator's internal hygiene, and items 1-2 are cost-FEATURE calibration,
+a different quantity that this scope note's time-share table does not govern (see the header note).
 
 Two caveats. The corpus is one sample (2026-08-02) in which bare name lookups dominate by design, and
 a power-user profile skews composable (`f:modern` plus other filters lands squarely in that 0.27%) —
@@ -42,7 +53,34 @@ against a measured 199.3us), which is a cost-model correctness concern that this
 **Planned revisit:** estimates and query planning are to be re-examined over the UNIFORM sampler as
 well, and that will inform what else gets done here. Treat this ordering as provisional until then.
 
-1. **Seed every `SpaceEstimate` with the domain instead of `UNKNOWN`.** **A correctness and
+1. **`compose_scan_printings` reads exactly 1.47 at p50 AND p70 — investigate whether it is a constant
+   rather than a distribution.** The worst-calibrated feature in `bench_feature_accuracy` (pooled
+   p90/p10 = **40.0**, over-counting), and the cheapest thing on this list to diagnose. The suspicious
+   part is not the magnitude but the SHAPE: pooled p50 1.47 / p70 1.50, `/card` p50 1.47 / p70 2.47,
+   `/artwork` p50 1.47 / p70 1.47. A repeated exact 1.47 at two quantiles across two cells looks like a
+   small discrete arithmetic relationship (a feature computed as `n+1` where the counter reads `n`, or
+   a fixed multiplier), not a modelling error. It is also FLAT across Rounds 62-64 (1.47 every round),
+   so nothing recent caused it. Low n (671 pooled, 333 card, 312 artwork), so start by dumping the raw
+   feature/counter PAIRS for those rows and reading the actual values — if they cluster on a couple of
+   integer ratios it is a bug, and if they spread it is a model. Do that before designing anything.
+2. **`scan_units [printing_compose]` under-counts ~3x.** The highest-n miscalibration in the report
+   (32,833 `printing_compose` rows of 51,767 pooled): p50 **0.32-0.38** depending on distinct-on, p10
+   **0.05**, spread 20.0-32.5. `scan_units` prices the MATERIALIZING alternatives when they compete
+   against compose (see its own doc: "What the MATERIALIZING alternatives see"), so under-counting it
+   prices those alternatives too cheap and biases the argmin AGAINST `PrintingCompose`.
+   `scan_units [card_range_popcount] / card` has the same defect at p50 0.43 (spread 8.0).
+   - **Scope it honestly: this is a tail-correctness item, not a real-traffic latency item.** Measured
+     2026-09-05 over the 14,473-query weighted real corpus, `PrintingCompose` was an OPTION on only
+     **86 queries (0.6%)**, won 7, and when it lost it lost by a **median 130x** — with just **2**
+     losses inside 1.5x and 3 inside 3x. So correcting a ~1.5x bias could flip at most 2-3 real
+     queries. It matters for the tails a UNIFORM sampler probes and for the pathological mis-routes
+     (Round 63 hit a plan priced at 0.2us against a measured 199.3us), not for real-traffic latency.
+   - **`bench_feature_accuracy` runs `--mode uniform` and is NOT traffic-weighted** (171,915
+     feature-rows; its own help says uniform "reaches the rare tails where ordering errors hide"). Its
+     "57 flagged cells outside [0.8, 1.25]" therefore overstates real-traffic impact and understates
+     nothing — read it as a correctness instrument, not a latency one. Every flagged cell is
+     `printing_compose` or `card_range_popcount`; nothing on `candidates`/`plane` is flagged at all.
+3. **Seed every `SpaceEstimate` with the domain instead of `UNKNOWN`.** **A correctness and
    maintainability item, not a performance one** — it delivers no accuracy win and no latency win, and
    should be judged on that basis. The domain size is a true upper bound, so a space can start
    `{ guaranteed: n_cards, estimate: n_cards }` and only ever tighten. That deletes every `Option`,
@@ -84,7 +122,7 @@ well, and that will inform what else gets done here. Treat this ordering as prov
      `printing_tightened`, set where a trusted card count is written, and that work is part of THIS
      item. See the ledger's Round 62 section, and the site-by-site correction above for why it is one
      gate rather than two.
-2. **Untangle `narrow_floor`.** Also a correctness item rather than a performance one. It reads
+4. **Untangle `narrow_floor`.** Also a correctness item rather than a performance one. It reads
    `s.card.best()` and writes `result_space.card.lower_guaranteed(f)` — a child's GUESS becoming the
    query's BOUND, the same laundering Round 59 fixed in the `And` seed. Still latent, and Round 63 is
    why it stayed that way: the arm that might have unmasked it now writes an exact triple into BOTH
@@ -96,7 +134,7 @@ well, and that will inform what else gets done here. Treat this ordering as prov
    the tightest sound bound, for a reason belonging to a different question. It also computes a `min`
    (an upper bound) while being named a floor. Round 60 left a candidate set — **4,317 root nodes**
    with `card_guaranteed` tighter than any child's — but that set also contains legitimate
-   `Candidate::Exact` joints, so separating them is the round's actual work. Easiest after #1, when
+   `Candidate::Exact` joints, so separating them is the round's actual work. Easiest after #3, when
    bounds are always present. The joint-witness frame in
    [local-engine-joint-witness-and-empty-short-circuit.md](local-engine-joint-witness-and-empty-short-circuit.md)
    may be the honest replacement for its breadth filter rather than a repair of it.
@@ -106,6 +144,14 @@ Measured and deliberately NOT scheduled. These were active queue items; each was
 measurement rather than by being built, and each is recorded here so it isn't re-nominated from raw
 symptoms. Re-open only with a fresh survey that contradicts the numbers.
 
+- ~~**The 1.95% compose time share might be an artifact of `scan_units` under-counting**~~ —
+  **RAISED AND REFUTED 2026-09-05.** The hypothesis was reasonable: `scan_units` prices the
+  materializing alternatives, it under-counts ~1.5x pooled, so it should push queries away from
+  `PrintingCompose` and thereby deflate compose's own measured share. Measured instead:
+  `PrintingCompose` is an OPTION on **86 of 14,473** real queries (0.6%) and wins 7; when it loses, the
+  median `predicted_ns` ratio to the winner is **130x**, and only **2** losses sit inside 1.5x. A 1.5x
+  correction could flip 2-3 queries. Compose's small share is structural — most real conjunctions carry
+  a name/text leaf or an `Or` and are not composable at all — not a consequence of the miscalibration.
 - ~~**Generalize "anchored independence" further**~~ — **DELETED 2026-09-05: measured, and there is no
   headroom left to generalize into.** This item's own bar was "show a routing-relevant miss the
   min-fold does NOT already clamp". That measurement now exists, over the seed-63 survey's 9,777 rows,
@@ -364,7 +410,7 @@ symptoms. Re-open only with a fresh survey that contradicts the numbers.
   this?" by comparing `candidate` and `result`, which cannot see a tightening that moved only
   `guaranteed` — and Round 59 had made those routine. Two corollaries worth applying before the next
   proxy gets written: an `Option`'s PRESENCE is not a structural signal if any future round might seed
-  the field (domain-seeding makes both card gates vacuous either way — see item #1), and a flag derived
+  the field (domain-seeding makes both card gates vacuous either way — see item #3), and a flag derived
   as `!=` against a field's own earlier value is safer than one threaded through every mutation site,
   because monotone mutators make the comparison exact while a threaded flag goes stale silently when
   someone adds a write.
@@ -462,7 +508,7 @@ symptoms. Re-open only with a fresh survey that contradicts the numbers.
   est.result.printing()`. The flag disagrees with the retired test on 0.3-0.45% of rows, **every one
   `old=False → new=True`** — it only ever finds a bound-only tightening the number comparison was blind
   to. Zero plan flips; `bench_pairwise_ordering` unchanged, `bench_feature_accuracy` 0 cells changed
-  verdict. Two caveats, both live: it does NOT unblock the card half of item #1 (its own plan claimed
+  verdict. Two caveats, both live: it does NOT unblock the card half of item #3 (its own plan claimed
   otherwise and was wrong), and it cost 6 rows on 3 queries, which Round 63 Part 2 then closed.
 - Round 63: two exact numbers that existed and were being discarded. **Part 1** retires the last
   reprint-ratio leaf arm — `NumericSpanTotals`, a per-distinct-value prefix sum over each numeric
