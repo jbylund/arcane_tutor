@@ -1,6 +1,6 @@
 # N-Way Estimator Follow-Up Queue
 
-Tracks what's left from the `And`-arm cardinality-estimation arc (Rounds 33-60), in the order we
+Tracks what's left from the `And`-arm cardinality-estimation arc (Rounds 33-62), in the order we
 intend to tackle it. This doc is the queue, not the depth — the round-by-round numbers live in
 [local-engine-gathered-scan-card-printing-varying-depth.md](local-engine-gathered-scan-card-printing-varying-depth.md),
 and the architecture/design rationale lives in
@@ -34,25 +34,32 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
    to +0.015). This is Round 56's finding recurring: an estimate-class combiner whose inputs became
    exact needs its own anchor. **Do not reach for a fudge factor** — Round 56 swept one on real data and
    rejected it.
-3. **Replace the three presence/equality proxies with explicit structural signals.** Each reads a
-   VALUE to answer a STRUCTURAL question, which is the same anti-pattern in three places:
-   - `est.candidate.printing() == est.result.printing()` — "did any mechanism tighten this?" `result <=
-     candidate` always holds, so inequality does imply tightening, but equality conflates "nothing
-     tightened" with "tightened to coincidentally the same number". Round 58 made it worse unnoticed:
-     `printing()` is `best()`, so it now compares two min-across-channel collapses.
-   - `est.result.card.best().is_some()` (~17155) — "did an `And` produce a card number?"
-   - `est.result.card.best() == Some(domain_cards)` (~16915) — "is the domain exact?"
-   All three are answerable directly: `covered` already tracks what tightened, and the trace records
-   which mechanisms hit. **They must be fixed together and before domain-seeding**, which makes all
-   three vacuous. Touches plan-cost features, so it needs the pairwise-ordering and feature-accuracy
-   guards, not just the estimate survey.
+3. **Give `f:X <numeric>` shapes an exact card count, so the tightened branch stops guessing.** Round
+   62's own regression, and the same "a leaf-accuracy gap only shows once its consumer is honest"
+   pattern that produced item #2. `est.result.card` is `None` on these shapes, so when
+   `printing_tightened` is true `domain_cards_before_card` has nothing exact to fall back on and takes
+   `calibrated_balls_into_bins` instead. Measured cost, 3 queries, `eval_domain` against the realized
+   `cards_visited` it should equal: `cmc=0 f:premodern` 216 → 1,200 (truth 216), `f:penny cmc=0` 480 →
+   1,200 (truth 480), `f:oathbreaker pow=6` 625 → 626 (truth 625). Zero plan flips today, so this is
+   quality-of-estimate, not a routing bug. **The obvious repair is measured and wrong**: gating the
+   tightened branch on `&& exact_cards.is_none()` moves 894 rows and flips 877 plans, reintroducing the
+   `border:white border:black` mispricing `candidate` exists to prevent — the fix belongs at the leaf
+   (produce the card count), not at the consumer (dodge the branch). Overlaps item #1's
+   `bare_numeric_field_count` arm, which is where the card count would come from.
 4. **Seed every `SpaceEstimate` with the domain instead of `UNKNOWN`.** The domain size is a true upper
    bound, so a space can start `{ guaranteed: n_cards, estimate: n_cards }` and only ever tighten. That
    deletes every `Option`, makes `printing()` infallible by construction rather than by `expect`, and
    removes the "absence means unknown, never zero" footgun that caused BOTH laundering bugs found so far
    (Round 59's `And` seed, and `narrow_floor`'s still-live read). Round 60 measured how normal absence
    currently is: **41,838 of 147,660** tree nodes have `printing_guaranteed` absent while `printing` is
-   present. Blocked on #3.
+   present.
+   - **Scope this item did NOT previously account for.** Round 62 replaced the tightening proxy with an
+     explicit flag, which survives seeding — but its own plan claimed the two CARD gates were unblocked
+     too, and that was wrong. Seeding makes `card.guaranteed` unconditionally `Some`, so
+     `card.guaranteed.is_some()` is exactly as vacuous as the `best()` spelling it replaced. Both card
+     gates therefore need a second explicit signal — an "exact card source" flag parallel to
+     `printing_tightened`, set where a trusted card count is written — and that work is part of THIS
+     item, not already done. See the ledger's Round 62 section.
 5. **Untangle `narrow_floor`.** It reads `s.card.best()` and writes `result_space.card.lower_guaranteed(f)`
    — a child's GUESS becoming the query's BOUND, the same laundering Round 59 fixed in the `And` seed.
    Latent today (nothing writes a card-space estimate-only value yet); item #1 could unmask it. It is
@@ -219,6 +226,15 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
   the `And` arm's own seed, where it made the root's `guaranteed` read 36 against a true 100. Recorded on
   `SpaceMeasure` itself. Corollary: `printing.guaranteed.is_some()` is NOT an invariant (an `Or` of two
   estimate-only leaves leaves it absent); `printing.best().is_some()` is.
+- **Answer a structural question with a structural signal recorded where the structure happens, never
+  by comparing two numbers downstream.** Round 62's retired test asked "did any mechanism tighten
+  this?" by comparing `candidate` and `result`, which cannot see a tightening that moved only
+  `guaranteed` — and Round 59 had made those routine. Two corollaries worth applying before the next
+  proxy gets written: an `Option`'s PRESENCE is not a structural signal if any future round might seed
+  the field (domain-seeding makes both card gates vacuous either way — see item #4), and a flag derived
+  as `!=` against a field's own earlier value is safer than one threaded through every mutation site,
+  because monotone mutators make the comparison exact while a threaded flag goes stale silently when
+  someone adds a write.
 - **An estimate-class mechanism must be POSITIONED after every exact mechanism whose leaves it could
   compete for** — not merely made to respect `covered`, which only ever reflects what already ran.
   Round 55 demonstrated this concretely: its fallback, placed (per its own plan) before
@@ -304,6 +320,16 @@ one-line pointer to the round that shipped it, don't duplicate its details here.
   subset, not by the same-binary canary (see the ledger's Round 61 section). Left the two sibling
   reprint-ratio arms (devotion, bare cmc/pow/tou) alone — active item #1 is what remains of them. Its
   only regressions are structural and are now active item #2.
+- Round 62: the three presence/equality proxies in `acquire_plan_features` replaced by explicit
+  structural signals — the two card-trust gates read `est.result.card.guaranteed` (a PROVABLE
+  zero-delta: nothing writes `result.card`'s estimate channel anywhere, so the two spellings are the
+  same `Option` at every node), and a new `ComposeEstimate::printing_tightened` bool, set where a fold
+  actually lowers `result.printing` off its seed, replaces `est.candidate.printing() ==
+  est.result.printing()`. The flag disagrees with the retired test on 0.3-0.45% of rows, **every one
+  `old=False → new=True`** — it only ever finds a bound-only tightening the number comparison was blind
+  to. Zero plan flips; `bench_pairwise_ordering` unchanged, `bench_feature_accuracy` 0 cells changed
+  verdict. Two caveats, both live: it does NOT unblock the card half of item #4 (its own plan claimed
+  otherwise and was wrong), and it costs 6 rows on 3 queries, now active item #3.
 - Harness fix (no round number, a Python-only fix outside the engine): `client/query_sampler.py`'s
   `_count_row` folded oracle/flavor words via `Counter.update(set(...))` — bare-set iteration is
   hash-seed-randomized per process, so tied-frequency co-occurring words could swap `most_common()`'s

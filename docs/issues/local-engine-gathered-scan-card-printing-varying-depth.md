@@ -214,6 +214,52 @@ total regret by 0.0 ms).
 | 59 | Makes `guaranteed` honest, enforcing "a source may claim a bound only if its number is a real count of a real set". **Three** leaf arms demoted to estimate-only (`FilterExpr::Legality`, the broadcast/devotion arm, and — found by auditing every arm rather than the two the plan named — the bare cmc/pow/tou `bare_numeric_field_count` branch), all three reporting `card_count * n_printings / n_cards`. Two mechanisms promoted via a new `Candidate::PrintingBound` variant: `LegalityDateTotals` (exact prefix-sum subtraction) and `PriceJointTable` (any overlap counted in full, hence a structural over-count). Plus the `And` arm's seed fixed — see below, without it the round does nothing above a single leaf. Plus a standing soundness check and the long-standing release-clippy error | kept | n/a (not this doc's own metric) | **Byte-identical**, independently verified by me at seed 777 over 54,321 shared rows: zero differences on `predicted_matches`/`picked_plan`/`and_mechanism`/`count_source`/`n_plans_ran`/`true_total`/`ratio`/`abs_log_ratio` **and on the entire `and_trace` dict**; agent's own run agrees at 64,605 keys. So the straddle table is empty in both directions and all three `unique` values. `cargo test` 299 debug / 296 release (+9). **`clippy --all-targets -- -D warnings` clean in BOTH profiles for the first time in this arc.** New `scripts/check_bound_class_soundness.py`: 5,553 bound-class candidates over 12 mechanisms in my run, none below truth | see "Round 59" narrative below — **two of this round's plan's claims were wrong and are corrected there**, plus the `best()`-laundering rule that generalizes beyond this round |
 | 60 | `and_trace` reports BOTH channels. `AndTraceLeaf`/`AndTraceNode::{Leaf,Op}` carry a bare `SpaceEstimate`, `AndTraceGroup` an `Option<SpaceEstimate>` (`Some` exactly when `hit`, so `hit == spaces.is_some()` holds by construction). Channels derived once at the fold via a new `Candidate::spaces()` matched arm-for-arm against `fold_candidate`, not hand-written at ~17 trace sites. Python boundary flattened and strictly additive: `card`/`printing`/`artwork` keep today's `best()` values, `{space}_guaranteed`/`{space}_estimate` added beside them, absence always `None` and never `0` | kept | n/a (not this doc's own metric) | **Behaviour-neutral, verified by me at seed 6060**: 15 semantic scalar fields over 54,279 shared rows, **0 differing**; `and_trace` with the six added keys stripped, **0 differing** (the whole-dict comparison Rounds 58/59 used now differs by design, since keys were added — not a regression). Fidelity across the whole run: **673,776 space-slots, 0 violations** of `{space} == min(guaranteed, estimate)`. `cargo test` 302 debug / 299 release, clippy clean both profiles. `check_bound_class_soundness.py` reports 5,480 bound-class candidates none below truth, and reports the **identical** count whether reading the new channels or falling back to its name map — the cross-check passing | see "Round 60" narrative below — one deviation (Independence's card/artwork estimates), a real diagnostic-path cost with the probe that isolated it, and the first direct look at what the channels actually contain |
 | 61 | The `Legality` leaf stops guessing: `compose_printing_estimate`'s bare `FilterExpr::Legality` arm reads `ValueTotals::legality`'s exact `.printings` instead of `legal_cards * n_printings / n_cards`. Both columns come off ONE `HashMap` row via a new `legality_space_totals` helper shared with `exact_result_total`'s own `Legality` arm, rather than two walks of that function's shape-dispatch prelude. All four statuses are stored (unlike `PairTotals`, which keeps only legal/not_legal), so `banned:`/`restricted:` become exact too. `broadcast` deliberately keeps the scaled figure — a cost bucket, not a cardinality | kept | n/a (not this doc's own metric) | **The acceptance criterion, met in full**: at the checked-in seed 0, `unsafe:legality+released` rows where `LegalityDateTotals` was exactly right and lost the `.min()` fold go **14 → 0** (14/14 recovered, 0 newly outvoted); the shape's exactly-right rows 299 → 314. At seed 61: 13 → 0. Straddles (>1,024, >=200 abs, >=10% rel) are a near-wash and seed-dependent: seed 0 **1,189 → 1,186** (6 fixed / 3 broken), seed 61 **1,253 → 1,260** (4 fixed / 11 broken). 28 plan flips at seed 0 (0.04%), all in legality shapes. Ratio diagnostic +0.000 (seed 0) / +0.001 (seed 61) — nominally "less accurate", and the per-shape split says why (see narrative). `cargo test` 303 debug / 300 release (+1 test), clippy clean both profiles, `check_bound_class_soundness.py` green (6,655 candidates, none below truth). Timing **−5.7%**: `and_estimate_ns` p50 on 8,247 legality-bearing queries 3,625 → 3,417 ns, against a 31,104-query no-legality control subset flat at 1,917 ns in both builds | see "Round 61" narrative below — the leaf-level error table for all 23 formats, the measurement trap that nearly hid a +9.3% regression, and the shapes that got worse for a structural reason worth queueing |
+| 62 | Replaces three presence/equality proxies in `acquire_plan_features` with explicit structural signals, in two separable commits. **Part 1**: the two card-trust gates (`card_invariant_domain_exact`, and the `is_and` narrowing exemption) read `est.result.card.guaranteed` instead of `.best()` — "came from a trusted exact source" is `guaranteed`'s post-Round-59 definition, while `best()` is the ACCURACY read and answers a different question. **Part 2**: a new `ComposeEstimate::printing_tightened` bool, set where a fold actually lowers `result.printing` off its per-leaf seed and propagated through both the `And` and `Or` folds, replaces `est.candidate.printing() == est.result.printing()` at its two consumers. Derived as one `!=` of the SAME field against its own seed, both channels — not threaded as a `&mut bool` through `fold_candidate`'s ~20 call sites, since `SpaceMeasure`'s only mutators are monotone | kept | n/a (not this doc's own metric) | **Part 1 is a provable zero-delta**, not merely a measured one: nothing writes `result.card`'s estimate channel anywhere in `compose_printing_estimate`, so `card.best()` and `card.guaranteed` are the same `Option<usize>` at every node; the survey diff confirms zero rows moved. **Part 2 is small and one-directional**: the new flag disagrees with the retired test on **123/39,461 (0.3%)** curated and **201/44,396 (0.45%)** random rows, **every one `old=False → new=True`** — i.e. only ever finding a tightening the number comparison was blind to, never losing one. 6 of 252 replayed rows move, on 3 queries, with **zero plan flips anywhere**; `bench_pairwise_ordering` unchanged, `bench_feature_accuracy` 0 cells changed verdict. `cargo test` 303 debug / 300 release, clippy clean both profiles, `check_bound_class_soundness.py` green. Timing flat against both a same-build canary and a no-`And` control subset | see "Round 62" narrative below — the 6 moved rows are all REGRESSIONS and are itemized there, the obvious repair was measured and is catastrophic, and **the round's stated justification (in my own plan) was wrong** in a way that changes what item #3 costs |
+
+### Round 62
+
+**Part 1 does not do what my plan said it does.** I justified it as stopping the queued
+domain-seeding round (#3) from making both card gates unconditionally true. That is wrong.
+Domain-seeding seeds every space `{guaranteed: Some(n_cards), estimate: Some(n_cards)}`, so
+`card.guaranteed.is_some()` becomes just as vacuous as `card.best().is_some()`. Part 1 is a
+readability-and-honesty improvement for today — it makes the gates say the property they actually
+depend on — but it does **not** unblock #3. Only Part 2's explicit flag survives domain-seeding.
+
+The consequence for the queue: **#3 additionally needs sites 2/3 converted to something not
+presence-based at all** — an explicit "exact card source" flag parallel to `printing_tightened`,
+set where a trusted card count is written rather than inferred from `Option`-ness afterwards. That
+is new scope on #3 that was not in its estimate.
+
+**The old test was mis-classifying far less than I claimed.** My plan read Round 60's "the estimate
+is tighter than the bound on 17,628 of 32,745 roots" as implying the numeric test was wrong on
+something like that scale. It isn't: a bound-only tightening is only *hidden* when the bound lands
+above the estimate, so actual disagreement is **123/39,461 (0.3%)**. The gap is real and worth
+closing on its own terms — the test cannot see a class of tightening that Round 59 made routine —
+but it is a correctness fix at the margins, not a broad repair.
+
+**The 6 rows that move all get worse, and here is exactly how.** In every case `eval_domain` was
+*exactly* the realized `cards_visited` before and is not after, while `matches` and the picked plan
+are unchanged:
+
+| query | `eval_domain` | `scan_units` | realized `cards_visited` |
+|---|---|---|---|
+| `cmc=0 f:premodern` | 216 → **1,200** | 3,699 → 1,200 | 216 |
+| `f:penny cmc=0` | 480 → **1,200** | 3,699 → 1,200 | 480 |
+| `f:oathbreaker pow=6` | 625 → **626** | 1,930 → 626 | 625 |
+
+The mechanism: on `f:X <numeric>` shapes `est.result.card` is `None`, so the tightened branch has no
+exact card count to fall back on and takes `calibrated_balls_into_bins` instead. **The exactness
+being lost was preserved by accident** — a bound-only tightening left the retired numeric test
+`false`, which happened to route these to `est_cards`. Landing anyway is the deliberate call: relying
+on that accident is precisely the coupling this arc exists to remove, and the measured consequence
+today is nil (zero plan flips, `bench_pairwise_ordering` unchanged, `bench_feature_accuracy` with 0
+cells changing verdict). The real fix — `est.result.card` being `None` on these shapes — is queued.
+
+**The obvious repair is catastrophic, and was measured rather than assumed.** Gating the tightened
+branch on `&& exact_cards.is_none()` moves **894 rows and flips 877 plans**, reintroducing the
+`border:white border:black` mispricing that `candidate` exists to prevent. The implementing agent
+tried it, measured it, and declined to ship it — the right call, and the reason the 6 rows are being
+accepted rather than papered over.
 
 ### Round 61
 
