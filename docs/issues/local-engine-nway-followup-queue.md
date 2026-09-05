@@ -150,6 +150,69 @@ specifically, which is **65%** of realistic regret and only 24% of uniform's.
 realistic (26% of regret, n=1,664, 60% miss), up from 17% under uniform — which is item 5's
 coefficient territory, not the walk's.
 
+## SUPERSEDING RANK (2026-09-05, Rounds 84-88) — rank by TAIL IMPACT, not error mass
+
+**Everything below this block was ranked by cost-model error mass. That is the wrong ranking and the
+measurements now say so.** Two instruments were added that did not exist when it was written:
+
+- `bench_pick_quality.py` — does the router pick the fastest plan, and did a miss cost anything?
+- `bench_high_loss_features.py` — on the costliest mis-picks, would perfect FEATURES have fixed it?
+
+**What they establish, and it reframes the whole list:**
+
+1. **The router is already right 93.6% of the time (95.9% realistic), losing 3.5% / 2.8% of dispatch
+   time.** So no item here is worth more than a few percent, and any claim otherwise is wrong.
+2. **Misses are concentrated where they are cheap.** Headroom (runner-up ÷ winner) is p50 **1.38** on
+   missed queries against **3.51** on hits — the router wins the queries that matter and loses ties.
+3. **Error mass and tail impact rank DIFFERENTLY, and the tail is where the time is.**
+   `SELECT_PER_PAGE_SLOT` was closed in Round 80 at -0.9% of mass and `PERM_STEP` retired in Round 73
+   at 0.3%; both turned out to be among the worst-behaved terms on the costly tail. **Mass ranks total
+   accuracy; it does not rank what decides a close argmin.**
+4. **55% of the costliest mis-picks are FEATURE problems** — substituting realized counters into both
+   arms flips them to the right plan. That is far more reachable than the aggregate implied, where
+   StreamedSelect's whole feature vector removed 0.0% of its mass.
+5. **The two arms' errors have opposite signs on the tail**, which is why single-arm grading missed
+   them: on those queries the walk and page terms under-count (~0.5x) while StreamedSelect's scan term
+   over-counts (1.68x), and only the pairwise comparison turns that into a 2x latency loss.
+
+### The re-ranked list
+
+**A. `EmptyPage` priced INFINITY** — [own doc](local-engine-empty-page-priced-infinity.md). ~12% of
+queries (empty result), **9.3% of routing loss**, 68.8% time-weighted hit rate. Same gate, other
+direction: 74 queries pay an entire compose build and then refuse, **3.59% of all measured time**.
+Largest single routing item, and it is estimator/dispatch work, not costing — `plan_cost` cannot see
+an empty page because `matches` is an estimate.
+
+**B. The tail's under-counting walk/page terms.** `PERM_STEP` 0.47x, `WALK_STEP` 0.58x on the tail
+against ~0.87-0.91 elsewhere. `SELECT_PER_PAGE_SLOT` was the third and is FIXED (Round 88, off-tail
+p50 0.349 -> 1.000). The remaining two are the same shape and now have a reason to be worked that
+their mass never gave them.
+
+**C. StreamedSelect's `SCAN_PER_ROW` on the tail** — 1.68x where it is 1.000 everywhere else, and the
+only term over-counting where the others under-count. It is the other half of the opposite-sign
+mechanism.
+
+**D. The 36-40% of the tail that perfect features do NOT fix** — rate or model form on near-ties. A
+different kind of work, and nobody has characterised it.
+
+**E. Everything previously ranked 1-9 below**, on its old merits, EXCEPT where superseded:
+- Old item 1's two blockers are **GONE**: `fit_cost_model`'s mirror is at **100.0%** (Rounds 71, 78,
+  80, 83, 88) and it gained `--n-queries` in Round 83. The `fixed` term fragment is unblocked.
+- Old items 4-5 (`printings_walked`) keep their per-orderby evidence but were measured at **1.9% of
+  compose's PICKED cost** in Round 73 — re-argue them on tail impact before building.
+- The mode/sort/prefer axes now have [their own doc](local-engine-cost-model-mode-sort-prefer-axes.md),
+  and its measurement is a **negative**: error mass is flat across all eight sort columns and all five
+  prefers. That case is maintainability, not accuracy, and must be argued as such.
+
+**What NOT to do, measured and recorded so it is not re-proposed:** charging the candidate build into
+the argmin (Round 83 — loses at ANY accuracy, including with a perfect model, and "GatheredScan only"
+was the worst of six variants); refitting `SELECT_PER_PAGE_SLOT`'s rate alone (collinear with
+`GATHER_PUSH_PER_MATCH_NS` on 59% of rows); touching compose's build terms singly (Round 78's four
+constraints).
+
+---
+
+
 **Why this order (2026-09-04).** Ranked by the evidence each item actually has, not by which branch is
 biggest:
 
