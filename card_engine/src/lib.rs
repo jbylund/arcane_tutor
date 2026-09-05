@@ -4150,6 +4150,30 @@ struct SpaceTotals {
 // What it does NOT cover is a range leaf: `RangeCardCounts` would need the mirrored prefix/suffix span
 // aggregate, the same idea at a second table's cost. Coverage of the affected population is therefore
 // partial and unmeasured -- size it before building.
+//
+// **SIZED (Round 79), and the answer is: not on its own.** Measured with
+// `bench_error_attribution_weighted.py`'s own units over an 8,000-query uniform prefer-varied survey,
+// substituting the realized span for every row this column would reach:
+//
+//     SpaceTotals `span` (border / frame / art / is)          1.95% of total model error mass
+//     + the mirrored RangeCardCounts triple (usd/eur/tix/cn/date)   3.78%
+//     every fallback row answered exactly (unreachable ceiling)     9.78%
+//
+// against a `GatheredScan / SCAN_PER_ROW` total of 13.9%. The column reaches 136 of the 715
+// fallback rows and 21% of their error mass, and Round 79's prefer gate removed **2.43 points**
+// with no archive change at all -- more than the column, for none of its cost. Attributing the
+// fallback mass to the dimension that caused it says why:
+//
+//     set:        3.14%   NO TABLE          border:  1.69%   this column
+//     watermark:  1.25%   NO TABLE          frame:   0.71%   this column
+//     r:          0.36%   NO TABLE          is:      0.07%   this column
+//     cn/eur/usd/year/date/tix  2.22% combined         RangeCardCounts mirror
+//
+// `set:` ALONE outweighs the whole column. It and `watermark:` are `TextExact` printing-space
+// dimensions of exactly the shape `ValueTotals` already holds (a `HashMap<String, SpaceTotals>`) and
+// they are simply absent from it. **The archive bump is worth taking when those two dimensions join
+// `ValueTotals` and get a `span` alongside everyone else** -- ~6.3% reachable in one format version
+// instead of 1.95% in this one.
 
 impl ArchivedSpaceTotals {
     fn get(&self, mode: Mode) -> usize {
@@ -16729,8 +16753,22 @@ const COMPOSE_GATHER_SPAN_PER_MATCH: f64 = 1.47;
 const COMPOSE_CANDIDATE_SPAN_BIAS: f64 = 0.7;
 
 /// How much more reprinted a composable predicate's candidate cards are than an average card, for
-/// `scan_all`'s `Mode::Printing`/`Mode::Artwork` branch — which walks each candidate's WHOLE span, so
-/// unlike the card-mode branch it has no first-match depth term to discount by.
+/// `scan_all`'s FULL-SPAN branch — every walk except `Mode::Card` under `Prefer::Default`, which is
+/// the only one with a first-match depth to discount by (`card_first_match_break`).
+///
+/// Round 79 widened the population this serves from `Mode::Printing`/`Mode::Artwork` to
+/// "`!card_first_match_break`", and the constant TRANSFERS rather than needing a refit, which was
+/// checked rather than assumed. Realized `printings_examined / cards_visited` over picked
+/// `GatheredScan` rows, by the cell the walk actually belongs to:
+///
+///     card    | custom prefer   4.60      <-- joins this branch in Round 79
+///     printing| custom prefer   4.41
+///     artwork | custom prefer   4.33
+///     card    | default prefer  1.87      <-- keeps the first-match discount
+///
+/// The three full-span cells agree to within 6% of each other and the newcomer sits inside them,
+/// because they run the SAME loop: `push_card_matches` scores every printing whenever it cannot rely
+/// on store order. A separate constant for the new arm would be fitting the same quantity twice.
 ///
 /// Deliberately NOT folded into `COMPOSE_CANDIDATE_SPAN_BIAS`: that constant is fit on `unique=card`
 /// samples (see its own doc) and multiplies the card-mode depth term, and laundering a card-fitted
@@ -17596,7 +17634,43 @@ fn acquire_plan_features(
         // OTHER side was tighter, the real candidate set is smaller than what `exact_domain` describes,
         // and using its printing span would overstate the span of a set that isn't the one being priced.
         let exact_domain_won = is_and && est.exact_domain.is_some_and(|ed| ed.card == Some(domain_cards));
-        let scan_all = |cards: usize| {
+        // **The one condition under which a candidate card's walk stops at its FIRST matching printing**
+        // instead of burning the card's whole span. Round 79: named once here because THREE independent
+        // sites below were each spelling it `matches!(mode, Mode::Card)` and each therefore wrong under a
+        // custom prefer -- `scan_all`'s depth term, the `card_invariant_domain_exact` fast path, and the
+        // `nothing_to_verify` override.
+        //
+        // From source, not inference: `push_card_matches` has one early-breaking arm per existential-plane
+        // case and both are guarded `matches!(prefer, Prefer::Default)` -- "the custom-prefer paths score
+        // every printing and so examine the whole span, UNCONDITIONALLY" (its own doc), all_match included,
+        // because a custom prefer has no relationship to store order and the max cannot be known without
+        // seeing every candidate printing. `walk_grouped_page` and `gather_composed_page` carry the same
+        // `Mode::Card if matches!(prefer, Prefer::Default)` arm, with `Mode::Card | Mode::Artwork` falling
+        // through to `printings_examined += end - start`.
+        //
+        // This is Round 74's bug on its second axis. That round found `scan_all`'s depth discount was a
+        // card-MODE order statistic applied to every mode and gated it by mode; the same discount is also
+        // a default-PREFER order statistic, and was still applied under every prefer. Measured on 3,372
+        // picked `GatheredScan` rows, realized `printings_examined / printing_span` -- i.e. what fraction
+        // of the candidate span the loop really burned:
+        //
+        //     card | default   0.35-0.75   <-- the discount is real here
+        //     card | custom    1.000
+        //     printing | *     1.000
+        //     artwork  | *     1.000
+        //
+        // Every cell but `card | default` walks the span EXACTLY, and the discount could only under-charge
+        // them: `scan_units / printings_examined` read p50 0.325 on the `card_invariant_domain_exact` fast
+        // path and 0.124 on the depth term, against 1.000 for the same two under the default prefer.
+        let card_first_match_break = matches!(mode, Mode::Card) && matches!(prefer, Prefer::Default);
+        // `first_match_break` is a PARAMETER rather than a capture of the flag above because the two plans
+        // genuinely disagree here and the acquire has to be able to ask each question. See
+        // `stream_scan_base` below: `card_match_count`, which is P3's counting pass, takes no `prefer` at
+        // all and returns `(1, i + 1)` for every `Mode::Card` candidate whatever the prefer is. Round 74's
+        // warning was that fixing ONE plan manufactures a false P3/P4 asymmetry; this asymmetry is real and
+        // measured (realized `printings_examined / printing_span` under `card`/custom prefer: 1.000 for
+        // GatheredScan, 0.51 for StreamedSelect), so the fix has to be able to express it.
+        let scan_all = |cards: usize, first_match_break: bool| {
             if exact_domain_won
                 && let Some(exact_domain) = est.exact_domain
             {
@@ -17680,7 +17754,12 @@ fn acquire_plan_features(
             // multiplying a non-card path is precisely what made this bug invisible, and Round 72 hit
             // the same shape one estimator over (a span multiplier pooled across two regimes, pure
             // over-charge on one). One constant, named for the population it is fit on.
-            if !matches!(mode, Mode::Card) {
+            //
+            // Round 79: the gate is `first_match_break`, not `!matches!(mode, Mode::Card)`. The depth term
+            // models the position of the first matching printing, so it is valid exactly where the loop
+            // stops there -- which is `Mode::Card` AND `Prefer::Default`, never `Mode::Card` alone. See
+            // `card_first_match_break`'s own doc for the source and the measured cells.
+            if !first_match_break {
                 return (((cards as f64) * printings_per_card * COMPOSE_FULL_SPAN_REPRINT_PREMIUM) as usize)
                     .min(n_printings as usize);
             }
@@ -17698,7 +17777,7 @@ fn acquire_plan_features(
                 // would under-charge the scan on exactly the divergent-legality cards the superset exists
                 // for. `f:modern` reads 68,687 against a true 73,783; `banned:modern` 160 against 399.
                 let total = if *EXACT_VALUE_TOTALS { exact_total.unwrap_or(printing_matches) } else { printing_matches };
-                (total, 0, (n_printings as usize).div_ceil(64), domain_cards, scan_all(domain_cards))
+                (total, 0, (n_printings as usize).div_ceil(64), domain_cards, scan_all(domain_cards, card_first_match_break))
             }
             Mode::Card => {
                 // Card mode's result total IS the distinct-card count, which is precisely what
@@ -17712,7 +17791,20 @@ fn acquire_plan_features(
                 // directly whenever the composed field is card-invariant and exact: the executor settles
                 // each such card in exactly one printing, so the average-reprint-rate multiplier is not
                 // an approximation here, it is pricing a rescan that never happens.
-                let scan_units = if card_invariant_domain_exact { domain_cards } else { scan_all(domain_cards) };
+                //
+                // Round 79: "settles each such card in exactly one printing" is true only under
+                // `Prefer::Default`. A custom prefer makes `push_card_matches` score the card's whole span
+                // even when `all_match` is already proven, because the best-prefer printing cannot be known
+                // without seeing them all -- so this fast path was pricing a rescan that DOES happen,
+                // reading p50 0.325 against the realized `printings_examined` (against exactly 1.000, p10
+                // and p90 both 1.000, under the default prefer). Falling through hands the row to
+                // `scan_all`, whose `exact_printing_span` arm answers a card-invariant filter's span
+                // exactly -- the same quantity, without the depth assumption.
+                let scan_units = if card_invariant_domain_exact && card_first_match_break {
+                    domain_cards
+                } else {
+                    scan_all(domain_cards, card_first_match_break)
+                };
                 (est_cards, printing_matches, (n_cards as usize).div_ceil(64), domain_cards, scan_units)
             }
             Mode::Artwork => {
@@ -17749,9 +17841,27 @@ fn acquire_plan_features(
                 let rt = est.result.artwork.best().map_or(rt_before_and_arm, |da| da.min(rt_before_and_arm));
                 // The bitmap `printing_bits_to_artwork_bits` popcounts is n_artworks bits wide, not
                 // n_printings -- 46,112 against 97,206 here, so this was 2.1x over as well.
-                (rt, printing_matches, n_artworks.div_ceil(64), domain_cards, scan_all(domain_cards))
+                (rt, printing_matches, n_artworks.div_ceil(64), domain_cards, scan_all(domain_cards, card_first_match_break))
             }
         };
+        // **P3's counting pass keeps the first-match depth that Round 79 took away from P4**, so where the
+        // two disagree `stream_scan_units` reads this instead of `scan_units`. `None` means "they agree",
+        // which is every mode but `Mode::Card` and every `Mode::Card` row under the default prefer.
+        //
+        // The asymmetry is structural, not a calibration difference. `card_match_count` -- the kernel
+        // `run_query_streamed`'s counting pass calls -- does not take a `prefer` argument AT ALL, and its
+        // `Mode::Card` arm returns `(1, i as u32 + 1)` at the first residual-matching printing however the
+        // query is preferred: it answers "does this card match", which store order settles regardless of
+        // which printing would be SHOWN. P4 has no such luxury, because it must produce the row. Measured
+        // as realized `printings_examined / printing_span` on `unique=card` rows under a custom prefer:
+        // 1.000 for GatheredScan against 0.51 for StreamedSelect.
+        //
+        // Round 74's hazard was the mirror image -- fixing `stream_scan_units` alone while GatheredScan
+        // carried the identical defect would have manufactured an asymmetry that does not exist. The rule
+        // it set is that the two features must differ only where the two kernels differ, and here they do.
+        let stream_scan_base = (!card_first_match_break && matches!(mode, Mode::Card)).then(|| {
+            if card_invariant_domain_exact { domain_cards } else { scan_all(domain_cards, true) }
+        });
         // `eval_domain` and `scan_units` describe what the MATERIALIZING alternatives walk, and when the
         // narrowing does not shrink the candidate set they walk the whole corpus — at which point these are
         // not badly estimated, they are estimating the wrong QUANTITY. `est_cards` is a count of MATCHING
@@ -17825,7 +17935,11 @@ fn acquire_plan_features(
         // for a card-invariant, false-positive-free domain is either that same exact card count (Card
         // mode) or `exact_printing_span`'s exact span of it (Printing/Artwork, gated identically on
         // card-invariance) -- never a value this guard would improve on by falling back to `n_printings`.
-        let (eval_domain, scan_units) = if !(compose_leaf_nothing_to_verify(filter)
+        //
+        // Round 79 threads `stream_scan_base` through unchanged in shape: when this guard fires it
+        // overwrites `scan_units` with a corpus-wide ceiling that describes BOTH plans equally, so the
+        // P3/P4 split computed above no longer applies and is dropped to `None`.
+        let (eval_domain, scan_units, stream_scan_base) = if !(compose_leaf_nothing_to_verify(filter)
             || plane_leaves_nothing_to_verify(filter, mode, plane, indexes)
             || (is_and && est.result.card.guaranteed.is_some())
             || card_invariant_domain_exact)
@@ -17863,9 +17977,9 @@ fn acquire_plan_features(
             } else {
                 n_printings as usize
             };
-            (n_cards as usize, scan_units)
+            (n_cards as usize, scan_units, None)
         } else {
-            (eval_domain, scan_units)
+            (eval_domain, scan_units, stream_scan_base)
         };
         // The tier is what the MATERIALIZING alternatives pay per candidate, so it must be asked about
         // the predicate THEY see (`filter` + `plane`), not about `composed` — and gated exactly as
@@ -17954,8 +18068,15 @@ fn acquire_plan_features(
         // shortcut and the `range_too_broad_to_narrow` exemption above -- reusing it here instead of a
         // fresh, looser condition keeps all three tied to one verified population rather than three
         // separately-trusted ones.
+        //
+        // Round 79: `&& card_first_match_break`. The paragraph above argues, at length and correctly, that
+        // `eval_domain` is right for the `Prefer::Default` regime and `printing_matches` for the one that
+        // "genuinely does walk the full span" -- and then the condition shipped without the prefer half of
+        // it, so every prefer took the default regime's number. The `alone` in the paragraph below is the
+        // tell: the gate was always meant to be a conjunction, and `card_invariant_domain_exact` is the
+        // exactness half of it, never the whole.
         let scan_units = if nothing_to_verify {
-            if card_invariant_domain_exact { eval_domain } else { printing_matches }
+            if card_invariant_domain_exact && card_first_match_break { eval_domain } else { printing_matches }
         } else {
             scan_units
         };
@@ -17998,7 +18119,7 @@ fn acquire_plan_features(
             // examine the boundary printing of the cards it matches, which the share alone would put at
             // zero. Only reachable now when there IS something to verify, which is the case the floor was
             // argued for -- the `tier == 0` arm above is where it used to be wrong.
-            ((scan_units as f64) * share).max(eval_domain as f64) as u32
+            ((stream_scan_base.unwrap_or(scan_units) as f64) * share).max(eval_domain as f64) as u32
         } else {
             // Round 30 of the printing-varying-leaf depth ledger
             // (docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md): the bare
@@ -18085,7 +18206,7 @@ fn acquire_plan_features(
             } else {
                 0
             };
-            scan_units as u32 + redo
+            stream_scan_base.unwrap_or(scan_units) as u32 + redo
         };
         feats.broadcast_printings = broadcast as u32;
         feats.scatter_printings = scatter as u32;

@@ -222,6 +222,84 @@ total regret by 0.0 ms).
 | 68 | **First EXECUTOR round in this arc — removes real work rather than improving a prediction.** `walk_grouped_page` stepped the permutation and, per card, bit-tested the card's WHOLE printing span and called `prefer_score` on every set printing. But printings are stored prefer-DESCENDING within a card (`from_rows`' load-time sort, ties by illustration_id then scryfall_id), so under `Mode::Card` + `Prefer::Default` the FIRST set printing already IS the chosen representative — every later `prefer_score`, the `touched`/`group_best` bookkeeping and the post-loop group emit were waste. Now takes the same `(start..end).find(is_set)` early break `gather_composed_page` and `push_card_matches` already used. `printings_examined` moved off its unconditional pre-match `(end - start)` to the EXIT POSITION, per arm, with no per-iteration add (the project's hot-path instrumentation rule). Scoped to the only LIVE walk: `walk_card_page_via_popcount_skip` sits behind `COMPOSE_SIGMA_ENABLED` (defaults 0) and the printing/artwork popcount-skip walks have zero production call sites | kept | n/a (not this doc's own metric) | **Row identity is the gate and it passed twice independently.** Agent: 7,776 cells / 374,712 rows byte-identical (3 distinct-ons x 4 prefers x 3 sort cols x both directions x 6 page points x 6 densities), debug AND release, plus 9,000 cells / 235,692 rows matching by sha256 from routed dumps. Me, separately: **21,912 compose cells including 5,920 `Perm`-paging, 750,580 rows, identical sha256** over printing identity — my first attempt used `orderby=rarity` and hit **0 Perm cells**, so it proved nothing until the orderby was varied. **Realized time**: `PrintingCompose` `ns_loop` p50 **0.707** (3,896 → 1,979 ns), interleaved over 6 block pairs, with GatheredScan/StreamedSelect/PlanePopcountOrder/CardRangePopcount controls all reading p50 **1.000**. Plan choice unaffected: **0 changes over 66,414** survey observations, and 0 `paging_taken`/`picked`/`result_total` flips over 595 exact-population paired compose cells. `cargo test` 305 debug / 302 release, clippy clean both profiles (verified by me) | see "Round 68" narrative below — why the end-to-end number is much smaller than the loop number, a density regime the router never reaches, and a cost-feature consequence that is now a queue item |
 | 69 | **Measurement only.** Grades StreamedSelect's two never-graded cost drivers (`perm_walk_span` via the walk term, `stream_scan_units`) against realized counters, answers whether the permutation-less sort columns need their own cost branch, and re-measures the compose walk's per-orderby clump after Round 68 invalidated it | n/a | n/a | **No instrumentation round was needed — item 1's stated blocker was wrong.** Both realized counters (`perm_steps`, `printings_examined`) already exist and are already published. Walk term: pooled median **1.023**, spread 9.6x, split by sort column into **1.9x** (`name`) to **38.8x** (`cmc`) at flat medians (0.918-1.183) — so a per-orderby scalar cannot help in CARD space, and no existing feature predicts the residual (max \|r\| 0.12). `stream_scan_units` is **bimodal**: p25/p50 exactly 1.000, p90 **11.8** (printing 16.7x, artwork 14.0x). Both cost GATES are correct — all 83 walk-gate disagreements (2.79%) are the estimate crossing `STREAM_MIN_MATCHES`, and 720 of 778 scan-gate ones (92.5%) are the plan returning before any loop. `rarity`/`usd` need **no** cost branch: they have no permutation and `streamed_select_applicable` drops the plan from the argmin (offered 0/12 vs 12/12 for `name`/`cmc`). Compose's `Perm`/`OrderbyWalk` shared arm is likewise **correct** (residual medians 1.277 vs 1.449) — but its per-column medians span **0.925-3.579** against one shipped `WALK_LENGTH_BIAS` of 1.45, which CONFIRMS item 5 | see "Round 69" narrative below — a blocker that was already unblocked, and a stale table that validated its own replacement |
 
+### Round 79 — Round 74's fix had a second axis: it is a PREFER discount, not just a MODE one
+
+Three agents were sent at GatheredScan's 78.7% of cost-error mass by three routes, plus one at the
+`scan_units` residual. This entry is that fourth lane, which shipped; the diagnosis lanes are in
+Round 80.
+
+**Round 74 gated `scan_all`'s first-match depth discount to `Mode::Card`. That was half the
+condition.** `push_card_matches`' early-breaking arms are guarded
+`matches!(prefer, Prefer::Default)` — printings are stored prefer-descending, so the first set
+printing is the representative ONLY under the default prefer. Under a scoring prefer the kernel must
+examine every printing, and the discount was still being applied. Three independent sites each spelled
+the condition `matches!(mode, Mode::Card)` and were each wrong the same way: the depth term, the
+`card_invariant_domain_exact` fast path, and the `nothing_to_verify` override — whose own comment
+argues for a prefer split and then ships without it. Now named once as `card_first_match_break`.
+
+**The constant transfers rather than needing a refit**, which was checked rather than assumed.
+Realized `printings_examined / cards_visited` on picked GatheredScan rows, by the cell each walk
+belongs to: `card`+custom **4.60** (the newcomer), `printing`+custom 4.41, `artwork`+custom 4.33,
+`card`+default **1.87** (keeps the discount). The three full-span cells agree within 6% because they
+run the same loop; a separate constant would have fitted the same quantity twice.
+
+**It must NOT move StreamedSelect, and does not.** `card_match_count` takes no `prefer` and
+early-breaks regardless — realized `examined/span` under card+custom is 1.000 for GatheredScan against
+0.51 for StreamedSelect. So `scan_all` takes the break as a parameter and `stream_scan_base` asks the
+other question. Verified independently: `stream_scan_units` changed on **0 of 3,600** survey rows and
+all 15 of its cells are byte-identical, while `scan_units` moved on 701. This is the mirror image of
+Round 74's constraint — there, one shared helper had to move both plans; here the kernels genuinely
+differ, and the same discipline says move only one.
+
+| cell | n | p50 | spread |
+|---|---|---|---|
+| `scan_units <GatheredScan> / card` | 791 | 0.700 -> **1.000** | 10.2 -> **6.7** |
+| `scan_units [printing_compose]` | 1,505 | 0.390 -> **1.000** | 10.9 -> 9.2 |
+| `<GatheredScan> / printing` | 811 | 1.000 -> 1.000 | 6.8 -> **4.7** |
+| `<GatheredScan> / artwork` | 809 | 1.000 -> 1.000 | 6.6 -> **3.5** |
+| `card / prefer=default` (control) | 144 | 1.000 -> 1.000 | 17.8 -> 17.8 |
+| all 15 `stream_scan_units` cells | 42-88 | **byte-identical** | **byte-identical** |
+
+Paired at 15,609 feature-rows both sides with 0 cell-n mismatches; 12 flagged cells cleared, 0 newly
+flagged (70 -> 58). One wart, recorded rather than hidden: `card/prefer=oldest` spread 7.8 -> 9.0 while
+its median clears.
+
+**Error mass, re-measured with Round 77's tool and verified independently here:**
+`GatheredScan / SCAN_PER_ROW` **13.8% -> 11.5%** — 2.43 points, **20.3% of the target**, with no
+archive change at all. Flips 28 of 3,600 (0.78%), all away from GatheredScan, dispatch-priced
+common-mode at **net -676 us** (`-> PrintingCompose` 15 rows at -686.8 us, median -33.58;
+`-> StreamedSelect` 13 rows at +10.6 us, median +0.08). Worst single row +103.2 us; best -229.6 us.
+`cargo test` 307 debug / 304 release, clippy clean both profiles.
+
+**The `SpaceTotals.span` column Round 74 specified is SIZED and DECLINED.** Substituting a realized
+span for every row it would reach:
+
+| what gets an exact span | rows | mass removed | share of total |
+|---|---|---|---|
+| `SpaceTotals.span` (`border:`/`frame:`/`art:`/`is:`) | 136 | 71.07 | **1.95%** |
+| + the mirrored `RangeCardCounts` triple | 340 | 138.04 | 3.78% |
+| every fallback row answered exactly (ceiling) | 715 | 356.69 | 9.78% |
+
+It reaches 136 of 715 fallback rows and 21% of their mass — and **the prefer gate above removed 2.43
+points for none of its cost**, more than the column would. Attributing the fallback mass to the
+dimension that caused it says why: **`set:` alone is 3.14% and has no table at all**, `watermark:`
+1.25%, `r:` 0.36% — all `TextExact` printing-space dimensions of exactly `ValueTotals`' shape
+(`HashMap<String, SpaceTotals>`) and simply absent from it, against `border:` 1.69% + `frame:` 0.71% +
+`is:` 0.07% for the whole proposed column. **The archive bump is worth taking when `set:` and
+`watermark:` join `ValueTotals` and get a `span` alongside everyone else** — ~6.3% reachable in one
+format version instead of 1.95%. Recorded on the spec comment so it is not re-derived.
+
+**What the residual 11.5% is.** Two counters decompose it cleanly: `eval_domain / cards_visited` is
+**1.000 in every branch** (the candidate count is exact; 100% of the error is depth), and realized
+`printings_examined / printing_span` is **1.000 in every cell but `card | default prefer`**
+(0.35-0.75). No acquire-side predictor of depth exists — the best of nine is `log domain_cards` at
+r = -0.37. The mass sits in `scan_all`'s full-span fallback (715 rows, 9.4% of total), which prices
+candidates at the corpus-mean depth **3.08** while they actually average **10.1**: narrow
+printing-space predicates select promo and special-set cards. That is a population effect, not a
+mis-fit constant, so a blanket premium refit would be a trade — it would over-charge the broad cell
+Round 74 fitted against and push traffic toward already-over-picked compose. Per-value `span` is the
+right shape, after `set:` and `watermark:` join `ValueTotals`.
+
 ### Round 78 — the -10.2% "cancelling pair" was a defect in Round 77's own tool
 
 Round 77 reported `PrintingCompose / PROJECT_PER_PRINTING` substituting to **-372.43 (-10.2%)** — the
