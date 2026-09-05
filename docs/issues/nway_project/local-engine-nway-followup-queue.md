@@ -90,7 +90,9 @@ And **features are not the lever for absolute cost accuracy**: substituting real
 
 ### The re-ranked list
 
-**A. `EmptyPage` priced INFINITY** — [own doc](local-engine-empty-page-priced-infinity.md). ~12% of queries (empty result), **9.3% of routing loss**, 68.8% time-weighted hit rate. Same gate, other direction: 74 queries pay an entire compose build and then refuse, **3.59% of all measured time**. Largest single routing item, and it is estimator/dispatch work, not costing — `plan_cost` cannot see an empty page because `matches` is an estimate.
+**A0. Structured channels at consumer boundaries — NEW 2026-09-05, and it now gates A** — [own doc](local-engine-structured-space-measure-consumers.md). `best()` flattens a PROVEN bound and a possibly-undershooting guess into one scalar, after which no consumer can tell them apart. Measured consequence: 4 of 8,000 queries report `matches == 0` while the executor returns rows, and an unproven zero collapses all three `unique=` spaces. Staged; stage 1 is a rename with a measured zero-delta and is what item A must land on top of.
+
+**A. `EmptyPage` priced INFINITY** — [own doc](local-engine-empty-page-priced-infinity.md). ~12% of queries (empty result), **9.3% of routing loss**, 68.8% time-weighted hit rate. Same gate, other direction: 74 queries pay an entire compose build and then refuse, **3.59% of all measured time**. Largest single routing item, and it is estimator/dispatch work, not costing — `plan_cost` cannot see an empty page because `matches` is an estimate. **Worked out 2026-09-05**: no exactness flag needed (a `guaranteed` of 0 IS the exact count), Tier 1 measures at **11.4% of queries answerable with zero execution**, and the gate must read `guaranteed` — blocked on A0 for that reason.
 
 **B. StreamedSelect's `SCAN_PER_ROW` — the one term that is both LARGE and WRONG on the tail.** Decomposing the top-40-by-loss queries by which terms carry their predicted cost (both plans in each comparison), against the same decomposition on correctly-picked queries:
 

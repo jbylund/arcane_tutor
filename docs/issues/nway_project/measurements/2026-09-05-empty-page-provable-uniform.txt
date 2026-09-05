@@ -1,0 +1,41 @@
+Engine loaded: 97,812 printings in 2.6s
+
+8,000 queries with both an acquire claim and a realized total, mode=uniform
+  1,857 (23.2%) really return nothing
+
+======================================================================================
+COVERAGE -- of the queries that return nothing, does the acquire already say zero?
+======================================================================================
+  route                     empty queries  acquire says 0   coverage
+  candidates                        1,013             899      88.7%
+  plane                                 9               9     100.0%
+  printing_compose                    777              78      10.0%
+  printing_range_scan                  58               1       1.7%
+  ALL                               1,857             987      53.2%
+
+  by unique= space:
+    artwork           347 proven-zero claims
+    card              330 proven-zero claims
+    printing          310 proven-zero claims
+
+======================================================================================
+SOUNDNESS -- does a zero claim ever LIE? (acquire says 0, executor returns rows)
+======================================================================================
+  *** 4 LIES -- the fastpath would return an empty page for a query with results ***
+    printing_compose              4
+      printing_compose       unique=card      real=1        t:ferret usd>=0.29 usd<=14.62
+      printing_compose       unique=card      real=3        set:drb pow>6
+      printing_compose       unique=card      real=1        c:bu t:whale
+      printing_compose       unique=artwork   real=1        set:phel cn<11
+
+======================================================================================
+THE MISSES -- empty queries the acquire did NOT call zero: what did it claim?
+======================================================================================
+  route                          n  p50 claim  p90 claim
+  printing_compose             699         10        196
+  candidates                   114         12        131
+  printing_range_scan           57     14,876     56,274
+
+  `and_trace` PROVEN channel (top-level And only): 50 of 785 empty rows carry a guaranteed bound of 0
+
+[exited with code 0]
