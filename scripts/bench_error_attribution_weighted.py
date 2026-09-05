@@ -48,6 +48,13 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from client.query_sampler import MODES, QuerySampler  # noqa: E402
 from scripts import costbench  # noqa: E402
+
+# `PROJECT_MODES` / `compose_grades` are the two eligibility gates, IMPORTED rather than restated.
+# `bench_feature_accuracy` already decides "does this arm charge this feature on the branch that ran,
+# in this distinct-on" for the identical feature/counter pairs; a second copy here is exactly the
+# drift `fit_cost_model`'s mirror check exists to catch, and the copy this file did NOT have is what
+# produced a 10.2% finding out of nothing.
+from scripts.bench_feature_accuracy import PROJECT_MODES, compose_grades  # noqa: E402
 from scripts.costbench import load_engine, plan_self_ns  # noqa: E402
 from scripts.fit_cost_model import CURRENT, MIRROR_TOLERANCE, design_row  # noqa: E402
 
@@ -64,6 +71,15 @@ MIN_ROWS = 30
 #: only these terms get a mass rather than an UNGRADED marker. `SCAN_PER_ROW` is a different feature
 #: per plan -- `stream_scan_units` for StreamedSelect, `scan_units` for GatheredScan -- so the key is
 #: (plan, term), the same lesson `bench_term_contributions.MEASURED_SPREAD` records.
+#:
+#: A pair listed here is NOT automatically substitutable on every row -- see `substitutable`. Three of
+#: compose's four entries are charged only on some branches or in some distinct-ons, and substituting a
+#: live counter into a column the arm deliberately zeroes injects work the executor never did. That is
+#: not a hypothetical: ungated, `PROJECT_PER_PRINTING` read **-372** here (10.2% of the whole model's
+#: error mass, ranked as the single largest cancelling term) entirely off 401 `unique=printing` rows
+#: where compose runs no projection at all, `project_printings` is a correct 0, and `set_printings` is
+#: a live diagnostic. Gated, the same term reads **+12** -- a small, ordinary error source, positive in
+#: both projecting modes and on both walk branches.
 TERM_ORACLE: dict[tuple[str, str], tuple[str, str]] = {
     ("GatheredScan", "LOOP_PER_CARD"): ("eval_domain", "cards_visited"),
     ("GatheredScan", "SCAN_PER_ROW"): ("scan_units", "printings_examined"),
@@ -137,15 +153,42 @@ def share_table(rows: list[dict], key: Callable[[dict], object], label: str, err
         )
 
 
-def substitute(usable: list[tuple], plan: str, term: str, feature: str, counter: str) -> tuple[float, int]:
+def substitutable(r: dict, terms: dict, plan: str, term: str, oracle: tuple[str, str]) -> bool:
+    """Whether `oracle`'s counter-for-feature swap on this row measures the FEATURE and nothing else.
+
+    A substitution is only a measurement of a feature where the arm actually multiplies that feature
+    by a rate on the execution that happened. Where it does not, the swap adds cost for work that never
+    ran, and the row's error grows for a reason that has nothing to do with the feature under test --
+    which reads, in the table below, as a large NEGATIVE mass indistinguishable from a real cancelling
+    error. Two gates, both borrowed from `bench_feature_accuracy` so there is one definition of each:
+
+    - **Branch.** Compose charges `printings_walked` only on the walks and `compose_scan_printings`
+      only on the gather. Keyed on `paging_taken` -- what RAN -- never on the acquire's predicted
+      `compose_paging`, or a declined walk is graded as a gather.
+    - **Distinct-on.** Compose's projection pass exists in card and artwork mode only; in printing mode
+      the composed bitmap already IS the answer, `compose_total_for_mode` just popcounts it, and the
+      arm's `project_printings = 0` is exactly right. `set_printings` is nonetheless nonzero there --
+      `printing_compose_fastpath` computes it unconditionally as a diagnostic -- so an ungated swap
+      charges `popcount(pbits) * 1.93 ns` for a pass that does not exist. On `border:black`
+      `unique=printing` that is 85,411 printings, i.e. 165 us added to a query that measures 0.8 us.
+    """
+    feature, counter = oracle
+    real = r["counters"].get(counter)
+    if r["plan"] != plan or term not in terms or r["acq"].get(feature) is None:
+        return False
+    if real is None or real < MIN_COUNTER:
+        return False
+    if feature == "project_printings" and r["unique"] not in PROJECT_MODES:
+        return False
+    return not (plan == "PrintingCompose" and not compose_grades(r["paging"], feature))
+
+
+def substitute(usable: list[tuple], plan: str, term: str, oracle: tuple[str, str]) -> tuple[float, int]:
     """Total cost log-error with one term's feature replaced by its realized counter, and the n."""
     after, n_sub = 0.0, 0
     for r, terms, excess, coeffs in usable:
-        real = r["counters"].get(counter)
-        eligible = (
-            r["plan"] == plan and term in terms and real is not None and real >= MIN_COUNTER and r["acq"].get(feature) is not None
-        )
-        if not eligible:
+        real = r["counters"].get(oracle[1])
+        if not substitutable(r, terms, plan, term, oracle):
             after += log_err(r["predicted"], r["measured"])
             continue
         n_sub += 1
@@ -177,16 +220,23 @@ def per_term(rows: list[dict]) -> None:
     print(f"{len(usable):,} picked rows with a mirror-exact reconstruction ({mirror_bad} excluded on mirror drift)")
     print(f"total cost log-error mass: {base:.1f}\n")
     print(f"  {'plan / term':<52} {'rows':>7} {'mass removed':>13} {'share':>8}")
-    results = []
-    for (plan, term), (feature, counter) in TERM_ORACLE.items():
-        after, n_sub = substitute(usable, plan, term, feature, counter)
-        if n_sub >= MIN_ROWS:
-            results.append((base - after, plan, term, n_sub))
+    results, thin = [], []
+    for (plan, term), oracle in TERM_ORACLE.items():
+        after, n_sub = substitute(usable, plan, term, oracle)
+        (results if n_sub >= MIN_ROWS else thin).append((base - after, plan, term, n_sub))
     for removed, plan, term, n_sub in sorted(results, reverse=True):
         print(f"  {plan + ' / ' + term:<52} {n_sub:>7,} {removed:>13.2f} {100 * removed / base:>7.1f}%")
+    # Named rather than dropped. A term whose eligible population collapsed is UNGRADED on this
+    # sample, which is a different answer from "small mass" and must not read as one -- compose's
+    # gather terms land here on any run where the router picks the walk branches.
+    print(f"\n  Too few eligible rows to grade on this sample (UNGRADED, not clean; need {MIN_ROWS}):")
+    for _, plan, term, n_sub in sorted(thin, key=lambda x: (x[1], x[2])):
+        print(f"    {plan + ' / ' + term:<50} {n_sub:>7,} rows")
     print("\n  Positive = substituting truth REMOVES error, so the feature is a real source.")
     print("  Negative = the feature's error was CANCELLING another term's; fixing it alone makes the")
     print("  arm worse, which is exactly what Round 76 measured and shipped anyway on correctness grounds.")
+    print("  Before reading a negative cell as a cancellation, check `substitutable`: an ungated swap")
+    print("  charges work the executor never ran, and that is the OTHER way a cell goes negative.")
 
     ungraded = collections.Counter()
     for r, terms, _, coeffs in usable:

@@ -222,6 +222,71 @@ total regret by 0.0 ms).
 | 68 | **First EXECUTOR round in this arc — removes real work rather than improving a prediction.** `walk_grouped_page` stepped the permutation and, per card, bit-tested the card's WHOLE printing span and called `prefer_score` on every set printing. But printings are stored prefer-DESCENDING within a card (`from_rows`' load-time sort, ties by illustration_id then scryfall_id), so under `Mode::Card` + `Prefer::Default` the FIRST set printing already IS the chosen representative — every later `prefer_score`, the `touched`/`group_best` bookkeeping and the post-loop group emit were waste. Now takes the same `(start..end).find(is_set)` early break `gather_composed_page` and `push_card_matches` already used. `printings_examined` moved off its unconditional pre-match `(end - start)` to the EXIT POSITION, per arm, with no per-iteration add (the project's hot-path instrumentation rule). Scoped to the only LIVE walk: `walk_card_page_via_popcount_skip` sits behind `COMPOSE_SIGMA_ENABLED` (defaults 0) and the printing/artwork popcount-skip walks have zero production call sites | kept | n/a (not this doc's own metric) | **Row identity is the gate and it passed twice independently.** Agent: 7,776 cells / 374,712 rows byte-identical (3 distinct-ons x 4 prefers x 3 sort cols x both directions x 6 page points x 6 densities), debug AND release, plus 9,000 cells / 235,692 rows matching by sha256 from routed dumps. Me, separately: **21,912 compose cells including 5,920 `Perm`-paging, 750,580 rows, identical sha256** over printing identity — my first attempt used `orderby=rarity` and hit **0 Perm cells**, so it proved nothing until the orderby was varied. **Realized time**: `PrintingCompose` `ns_loop` p50 **0.707** (3,896 → 1,979 ns), interleaved over 6 block pairs, with GatheredScan/StreamedSelect/PlanePopcountOrder/CardRangePopcount controls all reading p50 **1.000**. Plan choice unaffected: **0 changes over 66,414** survey observations, and 0 `paging_taken`/`picked`/`result_total` flips over 595 exact-population paired compose cells. `cargo test` 305 debug / 302 release, clippy clean both profiles (verified by me) | see "Round 68" narrative below — why the end-to-end number is much smaller than the loop number, a density regime the router never reaches, and a cost-feature consequence that is now a queue item |
 | 69 | **Measurement only.** Grades StreamedSelect's two never-graded cost drivers (`perm_walk_span` via the walk term, `stream_scan_units`) against realized counters, answers whether the permutation-less sort columns need their own cost branch, and re-measures the compose walk's per-orderby clump after Round 68 invalidated it | n/a | n/a | **No instrumentation round was needed — item 1's stated blocker was wrong.** Both realized counters (`perm_steps`, `printings_examined`) already exist and are already published. Walk term: pooled median **1.023**, spread 9.6x, split by sort column into **1.9x** (`name`) to **38.8x** (`cmc`) at flat medians (0.918-1.183) — so a per-orderby scalar cannot help in CARD space, and no existing feature predicts the residual (max \|r\| 0.12). `stream_scan_units` is **bimodal**: p25/p50 exactly 1.000, p90 **11.8** (printing 16.7x, artwork 14.0x). Both cost GATES are correct — all 83 walk-gate disagreements (2.79%) are the estimate crossing `STREAM_MIN_MATCHES`, and 720 of 778 scan-gate ones (92.5%) are the plan returning before any loop. `rarity`/`usd` need **no** cost branch: they have no permutation and `streamed_select_applicable` drops the plan from the argmin (offered 0/12 vs 12/12 for `name`/`cmc`). Compose's `Perm`/`OrderbyWalk` shared arm is likewise **correct** (residual medians 1.277 vs 1.449) — but its per-column medians span **0.925-3.579** against one shipped `WALK_LENGTH_BIAS` of 1.45, which CONFIRMS item 5 | see "Round 69" narrative below — a blocker that was already unblocked, and a stale table that validated its own replacement |
 
+### Round 78 — the -10.2% "cancelling pair" was a defect in Round 77's own tool
+
+Round 77 reported `PrintingCompose / PROJECT_PER_PRINTING` substituting to **-372.43 (-10.2%)** — the
+single largest entry in its table — and concluded that compose's arm must contain a compensating
+error, with a standing instruction not to touch its build terms until the partner was identified. **A
+lane sent to find that partner found there is none.** The number was manufactured by the tool.
+
+**The defect.** `bench_error_attribution_weighted`'s oracle substituted `set_printings` for
+`project_printings` on every row. But `compose_total_for_mode` is `Mode::Printing => popcount(pbits)`:
+**no projection pass exists in printing mode**, `card_bits` is built only under `Mode::Card`, artwork
+projects via `printing_bits_to_artwork_bits`, and the arm's `project_printings = 0` there is exactly
+right. `set_printings` is nonetheless nonzero on those rows — `printing_compose_fastpath` computes it
+unconditionally as a diagnostic, as its own comment says. So the swap charged `popcount(pbits) x 1.93
+ns` for a pass that never runs. On `border:black`/`printing`/`usd_high`: 85,411 set printings,
+predicted 1.83 us, measured 0.79 us, **substituted 166.67 us**. All 401 of the negative rows are
+`unique=printing`; artwork (+11.05) and card (+1.07) were positive all along.
+
+**`bench_feature_accuracy` already had the gate, with a comment predicting this exact failure** —
+`PROJECT_MODES`, "grading printing mode would divide a correct 0 by a live counter and report every
+such query as a 100% under-count of a pass that does not exist." Round 77's tool was the only ungated
+consumer of the pair in the tree; `bench_term_contributions` copies the gated numbers. The fix imports
+`PROJECT_MODES` and `compose_grades` rather than restating them, so there is one definition of each.
+
+**A second instance the same gate catches.** `GATHER_BITTEST_PER_PRINTING` was substituting
+`printings_examined` into a column the arm zeroes on **969 of its 982 "eligible" rows** — only 13
+actually took `Gather` — manufacturing a phantom **+30.72 (0.8%)**. Gated, it correctly reports 13 rows
+and is marked UNGRADED. So the defect inflated a positive as well as a negative; a phantom is not
+signed.
+
+**What survives.** `GatheredScan / SCAN_PER_ROW` is unchanged at **13.8%** — the headline finding and
+the whole GatheredScan attribution never touched compose's gates. `WALK_STEP` 1.1% -> 1.2%.
+`PROJECT_PER_PRINTING` goes -372.43 (rank 13/13) -> **+12.38 (rank 5/12)**, and is stable positive
+across `unique`, `paging_taken`, `prefer` and both seeds.
+
+**Ruled out explicitly, so it is not re-proposed.** Pairwise substitution over compose's terms shows
+**no** pair with the joint-removes/each-alone-adds signature; once gated every compose term is positive
+alone, leaving nothing to cancel. Rate sweeps put `BROADCAST_PER_PRINTING` and `SCATTER_PER_PRINTING`
+at exactly their shipped values on both seeds. The named suspect — that Gather-only
+`COMPOSE_BUILD_PER_PRINTING_NS` leaves the walks with a free build — sweeps to **0.02 / 0.00 ns per
+printing** against 0.0835, under one point of mass. And Round 75's plane-acquire free build cannot
+appear in a picked-rows attribution at all: compose was picked on **0** plane rows.
+
+**Four constraints recorded for anyone touching compose's arm**, which is the durable output of the
+lane:
+
+1. **`project_printings = 0` in `Mode::Printing` is correct** — do not "fix" it toward
+   `popcount(pbits)`. That charges up to ~190 us for work that does not exist, on the plan carrying
+   ~75% of routing regret. `set_printings` is the truth for this feature in card/artwork **only**.
+2. **Build terms and page terms live on different populations.** `BROADCAST`/`PROJECT` are charged on
+   every exit, `WALK_STEP` only on the walks, `GATHER_*` only on the gather. Never grade or refit a
+   page term on rows whose `paging_taken` is a different branch.
+3. **`BROADCAST_PER_PRINTING` and `PROJECT_PER_PRINTING` are ONE constant in `cost.rs`**
+   (`COMPOSE_LINEAR_PASS_PER_PRINTING_NS = 1.93`) split into two mirror columns. A fit reporting two
+   different values is reporting a number the engine cannot hold: move both or neither.
+4. **`POPCOUNT_PER_WORD x popcount_words` is a per-mode constant on this corpus**
+   (`n_{printings,cards,artworks}/64`), collinear with `FIXED`. A fitted move in it is not a rate
+   finding.
+
+**The general lesson, which is why this is a round rather than a footnote.** An oracle substitution
+only measures a feature where the arm actually multiplies that feature by a rate **on the execution
+that happened**. Everywhere else it adds cost for work that never ran, and the row's error grows for a
+reason unrelated to the feature under test — which reads, in a mass table, as a large negative
+indistinguishable from a real cancellation. The tool now says so in `substitutable`'s own doc, and
+names UNGRADED terms rather than silently dropping them.
+
 ### Round 77 (measurement only) — error ranked by MASS, and it reorders everything
 
 Adds `scripts/bench_error_attribution_weighted.py`. Every other tool here reports error as a
@@ -257,16 +322,24 @@ splits almost perfectly evenly (33.5 / 33.3 / 33.2%), so this is not a mode prob
 The reconstruction is checked against the engine's own `predicted_ns` per row (0 of 5,381 excluded on
 mirror drift, so Round 71's 100% mirror holds).
 
+**Two of this table's rows were wrong when first published, and Round 78 corrects them** — the tool
+substituted counters into columns the arm zeroes, which injects work the executor never ran. The
+corrected numbers are below; see Round 78 for the defect. `GatheredScan / SCAN_PER_ROW`, the headline,
+is unaffected.
+
 | plan / term | rows | mass removed | share |
 |---|---|---|---|
-| **`GatheredScan / SCAN_PER_ROW`** | 2,160 | **501.25** | **13.8%** |
-| `PrintingCompose / WALK_STEP` | 982 | 39.52 | 1.1% |
-| `PrintingCompose / GATHER_BITTEST_PER_PRINTING` | 982 | 24.36 | 0.7% |
-| `GatheredScan / CARD_PASS+FLOOR` | 600 | 20.25 | 0.6% |
-| `StreamedSelect / SCAN_PER_ROW` | 152 | 12.52 | 0.3% |
-| `StreamedSelect / PERM_STEP` | 594 | 8.97 | 0.2% |
-| `StreamedSelect / CARD_PASS+FLOOR` | 159 | **-1.32** | -0.0% |
-| **`PrintingCompose / PROJECT_PER_PRINTING`** | 1,083 | **-372.43** | **-10.2%** |
+| **`GatheredScan / SCAN_PER_ROW`** | 2,164 | **510.61** | **13.8%** |
+| `PrintingCompose / WALK_STEP` | 969 | 45.40 | 1.2% |
+| `GatheredScan / CARD_PASS+FLOOR` | 600 | 18.83 | 0.5% |
+| `StreamedSelect / PERM_STEP` | 594 | 15.81 | 0.4% |
+| `PrintingCompose / PROJECT_PER_PRINTING` | 682 | 12.38 | 0.3% |
+| `StreamedSelect / SCAN_PER_ROW` | 152 | 10.98 | 0.3% |
+| `GatheredScan / LOOP_PER_CARD` | 1,176 | 9.93 | 0.3% |
+| `PrintingCompose / BROADCAST_PER_PRINTING` | 341 | 4.78 | 0.1% |
+| `StreamedSelect / CARD_PASS+FLOOR` | 159 | **-2.44** | -0.1% |
+| `StreamedSelect / LOOP_PER_CARD` | 898 | -10.03 | -0.3% |
+| `PrintingCompose / GATHER_BITTEST_PER_PRINTING` | 13 | — | UNGRADED |
 
 Three things follow.
 
@@ -274,14 +347,16 @@ Three things follow.
   magnitude above anything else — and this is AFTER Round 74 moved its cell from p50 0.400 to 1.000.
   Round 74 fixed the median; the mass lives in the remaining ~6.6x spread, which is exactly the "bias fixed,
   variance remains" state every term in this model is now in.
-- **`PROJECT_PER_PRINTING` is NEGATIVE at -10.2%: substituting truth makes compose's arm markedly
-  WORSE.** Its feature error is cancelling another term's, so compose's arm has a compensating error
-  and fixing this term alone would break the cancellation. Round 75 measured this feature as "exact or
-  over, never under" (p10 1.000), which is consistent — it is systematically over, and something else
-  in the arm is systematically under. **Nothing about compose's build terms should be touched until
-  that pair is identified.**
+- **There is no cancelling pair in compose's arm.** The first version of this entry read
+  `PROJECT_PER_PRINTING` at **-10.2%** and concluded its error must be cancelling another term's, with
+  a standing instruction not to touch compose's build terms until the partner was found. That was an
+  artefact of the tool, not a property of the model: gated correctly the term reads **+12.38 (0.3%)**,
+  an ordinary small error source, positive in both projecting modes and on both walk branches across
+  two seeds. Every compose term is positive alone once gated, so there is nothing for a partner to
+  cancel — confirmed directly by pairwise substitution (no pair shows the joint-removes/each-alone-adds
+  signature) and by rate sweeps (`BROADCAST` and `SCATTER` minimise at exactly their shipped values).
 - **Round 76 is independently corroborated from a direction it did not use.**
-  `StreamedSelect / CARD_PASS+FLOOR` substitutes to **-1.32**, i.e. the truth is very slightly worse —
+  `StreamedSelect / CARD_PASS+FLOOR` substitutes to **-2.44**, i.e. the truth is very slightly worse —
   matching the ~0.8% arm regression that round measured and shipped anyway on refit-prerequisite
   grounds.
 
