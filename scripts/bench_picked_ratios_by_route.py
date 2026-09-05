@@ -13,7 +13,13 @@ StreamedSelect on `printing_compose`. The cause is almost certainly the DENOMINA
 The gap between the two IS the unpriced build -- the term Round 80 identified as ~50% of
 GatheredScan's error mass. So reporting one number without saying which denominator it used makes a
 plan look calibrated or broken depending on a choice nobody stated. Both are printed here, side by
-side, so step 3 is planned against the right one.
+side, so a round is planned against the right one.
+
+**The columns are independent medians and do not compose.** Each is a median over rows sorted by a
+different quantity, so `p/executor` divided by `p/plan_self` is NOT the prep share, and the printed
+prep share will not reconcile them -- 12.6% cannot explain two ratios 1.76x apart. Compare a column
+against itself across builds; never divide one column by another. An agent reading this table nearly
+derived a coefficient that way.
 """
 
 from __future__ import annotations
@@ -69,7 +75,7 @@ def main() -> None:
         cells[key].append((pred / self_ns, pred / exec_ns))
         prep_share[key].append((self_ns - exec_ns) / self_ns)
 
-    print(f"\npicked rows by cell, {args.n_queries:,} uniform queries, prefer varied\n")
+    print(f"\npicked rows by cell, {args.n_queries:,} {args.mode} queries, prefer varied\n")
     print(f"{'plan':<18} {'acquire':<22} {'n':>6} {'p/plan_self':>12} {'p/executor':>11} {'prep share':>11}")
     for (plan, acq), vals in sorted(cells.items(), key=lambda kv: -len(kv[1])):
         if len(vals) < MIN_ROWS:
@@ -80,6 +86,10 @@ def main() -> None:
         print(f"{plan:<18} {acq:<22} {len(vals):>6,} {self_r:>12.3f} {exec_r:>11.3f} {share:>10.1%}")
     print("\np/plan_self includes the candidate build dispatch pays on a RANGE_ACQUIRES route;")
     print("p/executor excludes it. The difference between the columns is the unpriced term.")
+    print("\nThe three columns are INDEPENDENT medians over differently-ordered rows and do NOT")
+    print("compose: a 12.6% prep share cannot reconcile two ratios 1.76x apart, and reading across")
+    print("them arithmetically is a mistake this table has already invited once. Compare a column")
+    print("against itself across builds; never divide one column by another.")
 
 
 if __name__ == "__main__":

@@ -222,6 +222,95 @@ total regret by 0.0 ms).
 | 68 | **First EXECUTOR round in this arc — removes real work rather than improving a prediction.** `walk_grouped_page` stepped the permutation and, per card, bit-tested the card's WHOLE printing span and called `prefer_score` on every set printing. But printings are stored prefer-DESCENDING within a card (`from_rows`' load-time sort, ties by illustration_id then scryfall_id), so under `Mode::Card` + `Prefer::Default` the FIRST set printing already IS the chosen representative — every later `prefer_score`, the `touched`/`group_best` bookkeeping and the post-loop group emit were waste. Now takes the same `(start..end).find(is_set)` early break `gather_composed_page` and `push_card_matches` already used. `printings_examined` moved off its unconditional pre-match `(end - start)` to the EXIT POSITION, per arm, with no per-iteration add (the project's hot-path instrumentation rule). Scoped to the only LIVE walk: `walk_card_page_via_popcount_skip` sits behind `COMPOSE_SIGMA_ENABLED` (defaults 0) and the printing/artwork popcount-skip walks have zero production call sites | kept | n/a (not this doc's own metric) | **Row identity is the gate and it passed twice independently.** Agent: 7,776 cells / 374,712 rows byte-identical (3 distinct-ons x 4 prefers x 3 sort cols x both directions x 6 page points x 6 densities), debug AND release, plus 9,000 cells / 235,692 rows matching by sha256 from routed dumps. Me, separately: **21,912 compose cells including 5,920 `Perm`-paging, 750,580 rows, identical sha256** over printing identity — my first attempt used `orderby=rarity` and hit **0 Perm cells**, so it proved nothing until the orderby was varied. **Realized time**: `PrintingCompose` `ns_loop` p50 **0.707** (3,896 → 1,979 ns), interleaved over 6 block pairs, with GatheredScan/StreamedSelect/PlanePopcountOrder/CardRangePopcount controls all reading p50 **1.000**. Plan choice unaffected: **0 changes over 66,414** survey observations, and 0 `paging_taken`/`picked`/`result_total` flips over 595 exact-population paired compose cells. `cargo test` 305 debug / 302 release, clippy clean both profiles (verified by me) | see "Round 68" narrative below — why the end-to-end number is much smaller than the loop number, a density regime the router never reaches, and a cost-feature consequence that is now a queue item |
 | 69 | **Measurement only.** Grades StreamedSelect's two never-graded cost drivers (`perm_walk_span` via the walk term, `stream_scan_units`) against realized counters, answers whether the permutation-less sort columns need their own cost branch, and re-measures the compose walk's per-orderby clump after Round 68 invalidated it | n/a | n/a | **No instrumentation round was needed — item 1's stated blocker was wrong.** Both realized counters (`perm_steps`, `printings_examined`) already exist and are already published. Walk term: pooled median **1.023**, spread 9.6x, split by sort column into **1.9x** (`name`) to **38.8x** (`cmc`) at flat medians (0.918-1.183) — so a per-orderby scalar cannot help in CARD space, and no existing feature predicts the residual (max \|r\| 0.12). `stream_scan_units` is **bimodal**: p25/p50 exactly 1.000, p90 **11.8** (printing 16.7x, artwork 14.0x). Both cost GATES are correct — all 83 walk-gate disagreements (2.79%) are the estimate crossing `STREAM_MIN_MATCHES`, and 720 of 778 scan-gate ones (92.5%) are the plan returning before any loop. `rarity`/`usd` need **no** cost branch: they have no permutation and `streamed_select_applicable` drops the plan from the argmin (offered 0/12 vs 12/12 for `name`/`cmc`). Compose's `Perm`/`OrderbyWalk` shared arm is likewise **correct** (residual medians 1.277 vs 1.449) — but its per-column medians span **0.925-3.579** against one shipped `WALK_LENGTH_BIAS` of 1.45, which CONFIRMS item 5 | see "Round 69" narrative below — a blocker that was already unblocked, and a stale table that validated its own replacement |
 
+### Round 83 — step 3 does not ship, and it would not ship at ANY accuracy
+
+The end of Round 80's refit sequence, and the answer is no. An implementing lane and an adversarial
+lane ran in parallel; the adversarial one settled it.
+
+**Even a PERFECT build term loses.** Router simulation over one set of measured times, with the Python
+arm mirror reproducing the engine's own `picked` on **100.00% of 12,000 rows** in every run (positive
+is worse):
+
+| router | uniform x3 | realistic x2 |
+|---|---|---|
+| refit-executor, no build charge | +0.08 / +0.09 / +0.22% | -0.08 / +0.24% |
+| refit + modelled build (the design) | **+1.15 / +1.12 / +1.03%** | **+0.66 / +0.78%** |
+| refit + **ORACLE realized `ns_prepare`** | +0.35 / +0.32 / +0.49% | +0.38 / +0.19% |
+| shipped arms + modelled build (Round 80's variant) | +0.75% | +1.49% |
+| **shipped + build, GatheredScan ONLY (Round 81's redirect)** | **+1.18%** | **+2.40%** |
+
+So improving `materialize_cost` from |ln| 0.78 to **0.00** removes only ~2/3 of the damage from a
+change that is negative to begin with. **This is not a "wait for a better build model" situation**, and
+the counter-plus-acquire-time-estimator work Round 82 deferred would not change the verdict.
+
+**Round 81's "charge it to GatheredScan only" is the WORST variant measured**, which follows from the
+build being plan-independent: `prepare_candidates` takes no plan argument, its result is documented as
+the shared P3/P4 product, both executors consume it read-only, and realized `ns_prepare` for
+StreamedSelect / GatheredScan **on the same query** is p50 **1.000** on every route in every run.
+Charging an identical build to one of two plans is a deliberate mis-model.
+
+**The feared off-target blast radius is ~zero, for a structural reason nobody spotted.** On a
+`candidates` acquire `PlanScope::Candidates` admits only StreamedSelect and GatheredScan, and
+`materialize_cost` is identical for both — so **it cancels exactly in the argmin**. Per-acquire delta:
+`candidates` +0.09%, `plane` +0.03%, `card_range_popcount` +0.00%. The harm is **entirely on the target
+route** (+1.43% uniform), by exactly the mechanism Round 81 named — the charge pushes rows off the
+materializing plans onto PrintingCompose (1,698 -> 1,919 rows) and those moves lose.
+
+**Three premises in the task briefing were wrong, and the corrections matter beyond this round:**
+
+1. **Picked-row ratios are a SELECTION statistic and were used as if they were the fit population.**
+   Over every row a plan ran on, `GatheredScan / printing_compose` reads **0.989** against its own
+   executor — dead calibrated — against the 1.149 the picked-row table shows. The refit therefore moves
+   coefficients **UP**, not down. And the two modes disagree in **sign** (realistic GS 1.358 / SS 1.156,
+   the opposite ordering). Over-charge is route-, mode- and population-dependent.
+2. **The absorption is inverted.** Measured as the gap between fitting against `plan_self` and against
+   the executor, over realized prep: **GatheredScan 0.969, StreamedSelect 0.579.** GatheredScan is the
+   absorber, almost exactly — the briefing said StreamedSelect. Confirmed independently by the
+   implementing lane as coefficient collapse when the build leaves the target (GatheredScan `FIXED`
+   **-82%**, StreamedSelect `FIXED` -12%).
+3. **A coefficient quoted without its fit target is meaningless here.** The refit numbers quoted in the
+   briefing (`FIXED` 435) are the `plan_self` target; the executor target gives **73.20**. The two
+   denominators differ by **5.5x** on that term. Both lanes independently flagged this.
+
+**Salvaged and shipped from the two lanes, all of it independent of the dead design:**
+
+- **`fit_cost_model` was fitting every arm against `plan_self_ns`**, which adds `ns_prepare` on a
+  `RANGE_ACQUIRES` route — so the two materializing arms were being *taught to absorb* a build they
+  have no term for. New `fit_target_ns` returns the executor sum for those two and keeps
+  `plan_self_ns` for everything else. **That exception is load-bearing**: `CardRangePopcount`'s arm IS
+  its dispatch build, reading 1.13 against `plan_self_ns` and **3.48** against the executor, so a
+  blanket switch would have manufactured a 3x defect.
+- **`fit_cost_model`'s own sampling loop had the `prefer` bug** this project has hit four times: it
+  called `explain()` with no `prefer` and `explain_analyze(prefer="default")`, agreeing only by
+  coincidence of pyo3 defaults over a parameter the acquire reads. It now drives
+  `costbench.iter_samples`. It also gains `--n-queries` (replacing the `--seconds` bound, so two runs
+  draw an identical stream — the gap Round 71 recorded and did not close), `--vary-prefer` and
+  `--mode`.
+- **`bench_plan_execution_ab` gains `report_flip_pricing`**, pricing each flip within one run and
+  printing both runs' columns so their gap IS the drift. Exercised: A/A gives 0 flips; a deliberately
+  perturbed build gives 17 flips priced +0.03 ms with the columns agreeing to 0.01 ms.
+- **`bench_picked_ratios_by_route`'s three columns do not compose, and the table read as if they did.**
+  A 12.6% prep share cannot reconcile two ratios 1.76x apart — they are independent medians over
+  differently-ordered rows. Both the docstring and the printed footer now say so; an agent nearly
+  derived a coefficient by dividing one column by another.
+
+**Recorded, not fixed** (each would need its own round): `plan_cost` carries no acquire, so any
+`materialize_cost` added there is charged on `plane` acquires where dispatch never calls
+`prepare_candidates` at all — and **the obvious gate is wrong**, since `choose` receives a `PlanScope`
+but `declined_sibling_fastpath` compares against `PlanScope::Candidates` *before*
+`prepare_candidates` has run. The gate would have to ride the `Prep`.
+`STREAM_REDO_SCAN_PER_ROW_NS` is an alias of `STREAM_SCAN_PER_ROW_NS` in the engine but two free
+columns in `design_row`; the fit returns 7.27 and 8.29, unreachable while the alias holds.
+`PrintingCompose`'s fit is vetoed on this corpus on feature accuracy, pre-existing and unrelated.
+And a `cost.rs` docstring citing a historical fit of 21.59/8.19 against today's 39.52/13.11 was
+attributed to prefer variation in a confident causal story; measuring it showed prefer moves those
+terms **2-6%** and the gap is Rounds 79-82 moving the model underneath. The docstring now carries the
+measurement and the correction.
+
+**Where the time actually is.** ~50% of measured time under uniform sits in
+`PrintingCompose / printing_compose`, already the best-calibrated large cell at p/self 1.038. No
+cost-arm work will move it — that is an executor question, not a costing one.
+
 ### Round 82 — `materialize_cost` gets the right shape: it was missing two phases entirely
 
 Step 1 of Round 80's refit sequence, and the prerequisite for step 3. `materialize_cost` graded

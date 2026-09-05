@@ -18,7 +18,11 @@ by any rate, and the fit will happily bury the error in whichever coefficient co
 so `--counters` first checks each realized counter against the feature that is supposed to predict
 it, and refuses to report rates for a plan whose features do not track reality.
 
-    .venv/bin/python scripts/fit_cost_model.py --seconds 600
+Fitting also only works once the fit TARGET is right, which is a separate question from the features:
+the two materializing arms were fitted against dispatch latency, which on a range acquire includes a
+candidate build their arms have no term for. See `fit_target_ns`.
+
+    .venv/bin/python scripts/fit_cost_model.py --n-queries 20000
 """
 
 from __future__ import annotations
@@ -30,21 +34,22 @@ import pathlib
 import random
 import statistics
 import sys
-import time
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
-from api.parsing import parse_scryfall_query  # noqa: E402
-from client.query_sampler import QuerySampler  # noqa: E402
+from client.query_sampler import MODES, QuerySampler  # noqa: E402
 from scripts import costbench  # noqa: E402
 from scripts.bench_cost_model_agreement import AGREE_HI, AGREE_LO  # noqa: E402
-from scripts.costbench import load_engine  # noqa: E402
+from scripts.costbench import Budget, iter_samples, load_engine  # noqa: E402
 
 NUM_WARMUPS = 2
 NUM_TRIALS = 7
-LIMITS = (10, 100, 175)
-OFFSETS = (0, 0, 0, 100)
+# Queries to sample when `--n-queries` is used instead of `--seconds`. A COUNT is the reproducible
+# bound: two runs of the same seed then draw the identical query stream, which is what makes a
+# `current` column recorded against one build comparable to the same column against another. A
+# seconds budget draws a different number of queries on a machine that is a little busier.
+DEFAULT_N_QUERIES = 20_000
 # Coordinate descent on the non-negative normal equations. The problem is convex and tiny (<=6
 # coefficients), so this converges in far fewer sweeps than the cap.
 MAX_FIT_SWEEPS = 500
@@ -162,6 +167,83 @@ CURRENT: dict[str, dict[str, float]] = {
         "FIXED": 163.56,
     },
 }
+
+
+#: Plans whose `cost.rs` arm describes the EXECUTOR PHASES ALONE (`ns_setup + ns_loop + ns_finish`).
+#: The `prepare_candidates` build that DISPATCH pays on a `RANGE_ACQUIRES` route is modelled by
+#: `cost::materialize_cost` and charged by NOTHING -- `plan_cost` omits it deliberately (charging it
+#: was measured and is a net loss; see `fit_target_ns`), so no rate below may absorb it either.
+#:
+#: Every other fitted arm covers its own dispatch build inside its own terms and must keep the
+#: `plan_self_ns` denominator -- `CardRangePopcount` most explicitly, whose
+#: `scatter_printings * CARD_RANGE_BUILD_PER_PRINTING_NS` IS its dispatch build, and which reads 1.13
+#: against `plan_self_ns` against 3.48 against the executor. Getting that one backwards would look
+#: like a 3x mis-calibration and is only a denominator.
+EXECUTOR_ONLY_ARMS = frozenset({"StreamedSelect", "GatheredScan"})
+
+
+def fit_target_ns(plan_row: dict, acq: dict, *, legacy: bool = False) -> float | None:
+    """The measured quantity this plan's ARM claims to predict, in ns. Fit and grade against THIS.
+
+    The whole point of the distinction, and the defect it fixes:
+
+    `costbench.plan_self_ns` is dispatch latency -- the executor phases, PLUS `ns_prepare` on a
+    `RANGE_ACQUIRES` route, where the router only estimated and dispatch pays the candidate build
+    itself. That is the right number for "how long did this plan take", and the wrong number to fit an
+    arm against **when the arm has no term for the build**. `cost::plan_cost`'s two materializing arms
+    have none, so fitting them against `plan_self_ns` silently teaches their per-unit rates to absorb
+    a build cost, in whatever proportion that route happens to carry.
+
+    Measured on picked rows, uniform, 6,000 queries, both denominators side by side
+    (`scripts/bench_picked_ratios_by_route.py`):
+
+        plan / acquire                        p / plan_self_ns   p / executor   prep share
+        GatheredScan / printing_compose                  0.642          1.127        12.6%
+        StreamedSelect / printing_compose                0.973          1.358        27.6%
+        GatheredScan / candidates                        1.232          1.232         0.0%
+        StreamedSelect / candidates                      1.204          1.204         0.0%
+
+    The two arms are calibrated against DIFFERENT denominators, and how much each has absorbed is
+    measurable with `legacy` below: fit the arm both ways on ONE population and read how far each
+    coefficient falls when the build comes out of the target. Uniform, 20,000 queries, prefer pinned:
+
+        GatheredScan     FIXED 402.28 -> 73.20 (-82%)   COLLECT_PER_PAGE_ROW 12.38 -> 4.38 (-65%)
+        StreamedSelect   FIXED 211.30 -> 187.06 (-12%)  CARD_PASS+FLOOR      13.11 -> 12.88 (-2%)
+
+    **GatheredScan is the absorber, not StreamedSelect.** Independently, dividing the same gap by the
+    realized `ns_prepare` reads 0.969 for GatheredScan against 0.579 for StreamedSelect -- i.e. its
+    rates carry essentially the whole build and StreamedSelect's a little over half.
+
+    The picked-row table above suggests the OPPOSITE ordering, and that is the trap: it is a different
+    population. Over every row a plan RAN on, `GatheredScan / printing_compose` reads 0.989 against
+    its own executor rather than 1.127, and the two distinct-on modes disagree in sign. Over-charge
+    here is route-, mode- and population-dependent, not a uniform rate error waiting to be divided
+    out. **Do not diagnose from picked rows and then refit on the full population.**
+
+    **This target is a calibration fix, not a licence to add a build term.** Charging
+    `cost::materialize_cost` in `plan_cost` on top of a refit arm was measured end to end and is
+    WORSE: +1.03% to +1.15% (uniform) and +0.66% to +0.78% (realistic) against the refit alone, and
+    still +0.19% to +0.49% when the modelled build is replaced by the ORACLE realized `ns_prepare`.
+    A perfect build model loses too, so this is not a "wait for a better `materialize_cost`" case. The
+    harm is entirely on the `printing_compose` route (+1.43% uniform): the charge pushes rows off the
+    materializing plans onto `PrintingCompose`, and those moves lose. On a `candidates` acquire the
+    charge is provably inert -- `PlanScope::Candidates` admits only the two materializing plans and
+    `materialize_cost` is identical for both, so it cancels exactly in the argmin.
+
+    `legacy=True` restores the old `plan_self_ns` target for every plan, so a constant that moves can
+    be attributed to the DENOMINATOR rather than to any sampling change made alongside it.
+
+    Returns:
+        The arm's target in ns, or None when the plan produced no page or published no phase.
+    """
+    if legacy or plan_row["plan"] not in EXECUTOR_ONLY_ARMS:
+        return costbench.plan_self_ns(plan_row, acq)
+    if not plan_row["trials_ns"]:
+        return None
+    executor_ns = float(plan_row["ns_setup"] + plan_row["ns_loop"] + plan_row["ns_finish"])
+    # Contiguous by construction, so the sum IS the executor; a zero means the plan ran and published
+    # no phase, which cannot be priced and must not read as zero. Same guard `plan_self_ns` uses.
+    return executor_ns if executor_ns > 0 else None
 
 
 def fit_log_ratio(design: list[list[float]], targets: list[float], start: list[float], weights: list[float]) -> list[float]:
@@ -570,46 +652,59 @@ def counter_check(samples: list[dict]) -> dict[str, list[tuple[str, float]]]:
     return out
 
 
-def collect(engine: object, rng: random.Random, seconds: float, sampler: QuerySampler | None = None) -> list[dict]:
-    """Sample queries until the budget runs out, keeping one row per plan that actually ran."""
-    if sampler is None:
-        sampler = QuerySampler(REPO_ROOT / "benchmarks/bitplanes/corpus.jsonl", "uniform")
+def collect(  # noqa: PLR0913 - four sampling inputs plus the two knobs that define the POPULATION being fitted
+    engine: object,
+    rng: random.Random,
+    budget: Budget,
+    sampler: QuerySampler,
+    *,
+    legacy_target: bool = False,
+    vary_prefer: bool = False,
+) -> list[dict]:
+    """Sample queries until the budget runs out, keeping one row per plan that actually ran.
+
+    Drives `costbench.iter_samples` rather than a private copy of the sampling loop, which is what
+    this had. That copy called `engine.explain(**kw)` with no `prefer` and
+    `explain_analyze(prefer="default", ...)`; those agree only because `explain`'s pyo3 default
+    happens to be `"default"` -- an agreement by coincidence, over a parameter the ACQUIRE reads
+    (Round 66: `compose_scan_printings` has a `Mode::Card if Prefer::Default` arm). `iter_samples`
+    passes the same drawn `prefer` to both calls by construction, whichever way it is drawn.
+
+    `vary_prefer` is OFF by default, matching the population every constant in `cost.rs` was fitted
+    on, so a rate that moves is the model moving rather than the sampler. It is a knob rather than a
+    hard-coded `False` because `prefer` decides whether a card-mode match kernel may stop at the first
+    qualifying printing -- a ~3x swing in per-card work that no other sampled parameter reaches, and
+    one `scan_units` does not model -- so "does this rate depend on `prefer`" is a question worth being
+    able to ask directly.
+
+    **Measured, and the answer is no**, which is worth recording because it is not the intuitive one.
+    Same seed, same 20,000 queries, same target, only `prefer` varied:
+
+        GatheredScan   CARD_PASS+FLOOR  39.52 pinned -> 42.07 varied   (+6%)
+        StreamedSelect CARD_PASS+FLOOR  13.11 pinned -> 13.35 varied   (+2%)
+
+    So the fitted rates are near-invariant to it, and a large gap between a fit run today and a number
+    quoted in an old `cost.rs` doc comment is the MODEL having changed underneath (Rounds 79-82 moved
+    features and constants), not the sampler. Do not read one as the other -- I did, and built a
+    confident causal story out of a stale comparison before this measurement contradicted it.
+    """
     samples: list[dict] = []
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        limit, offset = rng.choice(LIMITS), rng.choice(OFFSETS)
-        kw = {
-            "filters": None,
-            "unique": sampler.unique(rng),
-            "orderby": sampler.orderby(rng),
-            "direction": rng.choice(("asc", "desc")),
-            "limit": limit,
-            "offset": offset,
-        }
-        q = sampler.query(rng)
-        try:
-            kw["filters"] = parse_scryfall_query(q)
-            acq = engine.explain(**kw)["acquire"]
-            res = engine.explain_analyze(prefer="default", num_warmups=NUM_WARMUPS, num_trials=NUM_TRIALS, **kw)
-        except Exception:  # noqa: BLE001, S112 - a rejected query is a skipped sample
-            continue
-        for p in res["plans"]:
-            # `costbench.plan_self_ns` is this rule, now shared: net `ns_prepare` except under a
-            # range acquire, and DROP the row when the subtraction overshoots. Dropping beats
-            # clamping here in particular -- a row scaled by 1/1ns swamps the Gram matrix and drags
-            # every coefficient to zero. `predicted_ns` screens the infinite cost a declining
-            # compose reports, which no `<= 0` guard catches.
-            measured = costbench.plan_self_ns(p, acq)
+    for sample in iter_samples(engine, sampler, rng, budget, vary_prefer=vary_prefer):
+        acq, kw = sample.acquire, sample.kw
+        for p in sample.plans:
+            # `predicted_ns` screens the infinite cost a declining compose reports, which no `<= 0`
+            # guard catches.
+            measured = fit_target_ns(p, acq, legacy=legacy_target)
             if not p["trials_ns"] or costbench.predicted_ns(p) is None or measured is None:
                 continue
             samples.append(
                 {
                     "plan": p["plan"],
-                    "q": q,
+                    "q": sample.q,
                     "unique": kw["unique"],
                     "acq": acq,
-                    "limit": limit,
-                    "offset": offset,
+                    "limit": kw["limit"],
+                    "offset": kw["offset"],
                     "measured": measured,
                     "predicted": float(p["predicted_ns"]),
                     "ns_round_total": p["ns_round_total"],
@@ -633,6 +728,13 @@ def mirror_matches_engine(samples: list[dict]) -> tuple[float, int]:
     `design_row` + `CURRENT` is a Python reimplementation of `cost::plan_cost`. If it has drifted, the
     fitter is fitting coefficients for a model the engine does not run, and every number it prints is
     meaningless. Cheap to check exactly, because `explain` reports the engine's prediction.
+
+    Note that this compares against `predicted_ns` while `fit_target_ns` may target the EXECUTOR
+    alone. That is not an inconsistency: `plan_cost` today IS the executor arm and nothing else, so
+    the two agree. Should a term ever be added to `plan_cost` that `design_row` does not mirror -- the
+    dispatch build was proposed and rejected -- this check is what would have to subtract it, and the
+    engine would have to publish which rows it was charged on rather than have Python re-derive the
+    gate from `count_source`.
     """
     ok = total = 0
     for x in samples:
@@ -755,26 +857,60 @@ def fit_by_mode(plan: str, rows: list[dict]) -> None:
     print("  missing a mode-dependent term, not three constants waiting to be hard-coded.")
 
 
-def main() -> None:
-    """Collect a sample, verify features track counters, then fit each scan plan's rates."""
+def parse_args() -> tuple[argparse.Namespace, Budget]:
+    """Command line, plus the sampling budget it implies. Rejects the values that fit nothing."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--seconds", type=float, default=300.0)
+    budget_arg = parser.add_mutually_exclusive_group()
+    budget_arg.add_argument("--n-queries", type=int, help=f"queries to sample (reproducible; default {DEFAULT_N_QUERIES:,})")
+    budget_arg.add_argument("--seconds", type=float, help="wall-clock budget instead of a query count")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--mode", choices=MODES, default="uniform", help="query sampler weighting; RANK by uniform")
     parser.add_argument("--corpus", type=pathlib.Path, default=REPO_ROOT / "benchmarks/bitplanes/corpus.jsonl")
     parser.add_argument("--shm-path", type=pathlib.Path, default=None)
+    parser.add_argument(
+        "--legacy-target",
+        action="store_true",
+        help="fit every arm against `plan_self_ns`, as before the executor/build split; see `fit_target_ns`",
+    )
+    parser.add_argument(
+        "--vary-prefer",
+        action="store_true",
+        help="draw `prefer` from the sampler instead of pinning it to `default`; a DIAGNOSTIC, see `collect`",
+    )
     parser.add_argument(
         "--by-mode",
         action="store_true",
         help="also fit each arm separately per distinct-on, to expose rates that are not mode-independent",
     )
     args = parser.parse_args()
+    if args.n_queries is not None and args.n_queries <= 0:
+        parser.error("--n-queries must be positive")
+    if args.seconds is not None and args.seconds <= 0:
+        parser.error("--seconds must be positive")
+    budget = (
+        Budget(seconds=args.seconds, warmups=NUM_WARMUPS, trials=NUM_TRIALS)
+        if args.seconds is not None
+        else Budget(sample=args.n_queries or DEFAULT_N_QUERIES, warmups=NUM_WARMUPS, trials=NUM_TRIALS)
+    )
+    return args, budget
 
+
+def main() -> None:
+    """Collect a sample, verify features track counters, then fit each scan plan's rates."""
+    args, budget = parse_args()
     engine = load_engine(args.corpus, args.shm_path or args.corpus.with_suffix(".fit.store"))
-    # Pass the sampler explicitly: `collect`'s fallback builds one off a hardcoded corpus path, so
+    # Pass the sampler explicitly: `collect`'s fallback built one off a hardcoded corpus path, so
     # `--corpus` was loading the engine from one file and drawing queries from another (or, off the
     # default checkout, raising FileNotFoundError). Values must come from the corpus the engine holds.
-    samples = collect(engine, random.Random(args.seed), args.seconds, QuerySampler(args.corpus, "uniform"))
-    print(f"\n{len(samples):,} plan-rows collected in {args.seconds:.0f}s")
+    sampler = QuerySampler(args.corpus, args.mode)
+    samples = collect(
+        engine, random.Random(args.seed), budget, sampler, legacy_target=args.legacy_target, vary_prefer=args.vary_prefer
+    )
+    bound = f"{args.seconds:.0f}s" if args.seconds is not None else f"{budget.sample:,} queries"
+    target = "plan_self_ns (legacy)" if args.legacy_target else "the executor alone for the two materializing arms"
+    prefer = "varied (DIAGNOSTIC)" if args.vary_prefer else "pinned to default"
+    print(f"\n{len(samples):,} plan-rows collected over {bound}, mode={args.mode}, prefer {prefer}")
+    print(f"fit target: {target}")
 
     agree, checked = mirror_matches_engine(samples)
     print(f"arm mirror vs engine predicted_ns: {agree:.1%} exact over {checked:,} rows")

@@ -190,6 +190,13 @@ def collect(engine: object, sampler: QuerySampler, rng: random.Random, budget: c
                 "plan": picked["plan"],
                 "acquire": acq["count_source"],
                 "unique": sample.kw["unique"],
+                # The two axes `PlanFeatures` carries no field for. `orderby` reaches the model only
+                # through `perm_walk_span`, which collapses to `n_cards` on 94-98% of rows, and
+                # `prefer` only through which quantity the acquire picks for a handful of features --
+                # so slicing mass by them is how you find out whether that indirection is costing
+                # anything. See local-engine-cost-model-mode-sort-prefer-axes.md.
+                "orderby": sample.kw["orderby"],
+                "prefer": sample.kw.get("prefer", "default"),
                 "paging": picked.get("paging_taken") if picked["plan"] == "PrintingCompose" else None,
                 "predicted": float(predicted),
                 "measured": float(measured),
@@ -442,6 +449,8 @@ def main() -> None:
     share_table(rows, lambda r: r["plan"], "by plan", "cost_err")
     share_table(rows, lambda r: f"{r['plan']} [{r['acquire']}]", "by plan and acquire route", "cost_err")
     share_table(rows, lambda r: r["unique"], "by distinct-on", "cost_err")
+    share_table(rows, lambda r: r["orderby"], "by SORT COLUMN -- the axis with no PlanFeatures field", "cost_err")
+    share_table(rows, lambda r: r["prefer"], "by PREFER -- reaches the model only via feature choice", "cost_err")
     compose = [r for r in rows if r["plan"] == "PrintingCompose"]
     if len(compose) >= MIN_ROWS:
         share_table(compose, lambda r: f"compose {r['paging']}", "compose only, by paging branch taken", "cost_err")
