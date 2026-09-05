@@ -222,6 +222,57 @@ total regret by 0.0 ms).
 | 68 | **First EXECUTOR round in this arc — removes real work rather than improving a prediction.** `walk_grouped_page` stepped the permutation and, per card, bit-tested the card's WHOLE printing span and called `prefer_score` on every set printing. But printings are stored prefer-DESCENDING within a card (`from_rows`' load-time sort, ties by illustration_id then scryfall_id), so under `Mode::Card` + `Prefer::Default` the FIRST set printing already IS the chosen representative — every later `prefer_score`, the `touched`/`group_best` bookkeeping and the post-loop group emit were waste. Now takes the same `(start..end).find(is_set)` early break `gather_composed_page` and `push_card_matches` already used. `printings_examined` moved off its unconditional pre-match `(end - start)` to the EXIT POSITION, per arm, with no per-iteration add (the project's hot-path instrumentation rule). Scoped to the only LIVE walk: `walk_card_page_via_popcount_skip` sits behind `COMPOSE_SIGMA_ENABLED` (defaults 0) and the printing/artwork popcount-skip walks have zero production call sites | kept | n/a (not this doc's own metric) | **Row identity is the gate and it passed twice independently.** Agent: 7,776 cells / 374,712 rows byte-identical (3 distinct-ons x 4 prefers x 3 sort cols x both directions x 6 page points x 6 densities), debug AND release, plus 9,000 cells / 235,692 rows matching by sha256 from routed dumps. Me, separately: **21,912 compose cells including 5,920 `Perm`-paging, 750,580 rows, identical sha256** over printing identity — my first attempt used `orderby=rarity` and hit **0 Perm cells**, so it proved nothing until the orderby was varied. **Realized time**: `PrintingCompose` `ns_loop` p50 **0.707** (3,896 → 1,979 ns), interleaved over 6 block pairs, with GatheredScan/StreamedSelect/PlanePopcountOrder/CardRangePopcount controls all reading p50 **1.000**. Plan choice unaffected: **0 changes over 66,414** survey observations, and 0 `paging_taken`/`picked`/`result_total` flips over 595 exact-population paired compose cells. `cargo test` 305 debug / 302 release, clippy clean both profiles (verified by me) | see "Round 68" narrative below — why the end-to-end number is much smaller than the loop number, a density regime the router never reaches, and a cost-feature consequence that is now a queue item |
 | 69 | **Measurement only.** Grades StreamedSelect's two never-graded cost drivers (`perm_walk_span` via the walk term, `stream_scan_units`) against realized counters, answers whether the permutation-less sort columns need their own cost branch, and re-measures the compose walk's per-orderby clump after Round 68 invalidated it | n/a | n/a | **No instrumentation round was needed — item 1's stated blocker was wrong.** Both realized counters (`perm_steps`, `printings_examined`) already exist and are already published. Walk term: pooled median **1.023**, spread 9.6x, split by sort column into **1.9x** (`name`) to **38.8x** (`cmc`) at flat medians (0.918-1.183) — so a per-orderby scalar cannot help in CARD space, and no existing feature predicts the residual (max \|r\| 0.12). `stream_scan_units` is **bimodal**: p25/p50 exactly 1.000, p90 **11.8** (printing 16.7x, artwork 14.0x). Both cost GATES are correct — all 83 walk-gate disagreements (2.79%) are the estimate crossing `STREAM_MIN_MATCHES`, and 720 of 778 scan-gate ones (92.5%) are the plan returning before any loop. `rarity`/`usd` need **no** cost branch: they have no permutation and `streamed_select_applicable` drops the plan from the argmin (offered 0/12 vs 12/12 for `name`/`cmc`). Compose's `Perm`/`OrderbyWalk` shared arm is likewise **correct** (residual medians 1.277 vs 1.449) — but its per-column medians span **0.925-3.579** against one shipped `WALK_LENGTH_BIAS` of 1.45, which CONFIRMS item 5 | see "Round 69" narrative below — a blocker that was already unblocked, and a stale table that validated its own replacement |
 
+### Round 87 (measurement only) — the costly tail is HALF features, and the culprits are named
+
+Round 85's closing table characterised the costliest mis-picks as near-ties the model lost, with both
+arms wrong in different directions. `bench_high_loss_features.py` asks what follows directly: **would
+perfect features have picked the right plan?** For each high-loss miss it rebuilds BOTH arms with every
+oracle-backed feature replaced by its realized counter and re-runs the two-way comparison. Only
+rebuilds the mirror reproduces are counted.
+
+**On the 40 costliest mis-picks (35 with a mirror-exact rebuild):**
+
+| outcome | n | share | meaning |
+|---|---|---|---|
+| **fixed by the oracle** | 16 | **46%** | a FEATURE problem on that query |
+| still picks the same plan | 14 | 40% | rate or model-form |
+| moves to a third, still wrong | 5 | 14% | — |
+
+So the tail is **roughly half reachable by estimator work** — a much better answer than the aggregate
+suggested, where substituting StreamedSelect's whole feature vector removed 0.0% of its error mass and
+GatheredScan's removed 7.5%. **Feature error that is invisible in aggregate is decisive here**, because
+these queries are near-ties: headroom 1.0-2.9x, so a 20-30% feature error flips the argmin where on a
+3.5x-headroom query it would not.
+
+**And the features behaving differently on the tail are named.** Estimate/realized median on the tail
+against the same feature everywhere else:
+
+| plan / term | n | tail p50 | rest p50 | shift |
+|---|---|---|---|---|
+| `StreamedSelect / PERM_STEP` | 20 | 0.406 | 0.868 | **0.47x** |
+| `GatheredScan / SELECT_PER_PAGE_SLOT` | 38 | 0.170 | 0.349 | **0.49x** |
+| `PrintingCompose / WALK_STEP` | 28 | 0.522 | 0.905 | **0.58x** |
+| `StreamedSelect / SCAN_PER_ROW` | 26 | **1.676** | 1.000 | **1.68x** |
+| `GatheredScan / ARTWORK_PER_PRINTING` | 11 | 1.983 | 1.000 | 1.98x |
+| `PUSH_PER_MATCH` / `EMIT_PER_MATCH` | 35 / 25 | 1.220 | 1.000 | 1.22x |
+| `LOOP_PER_CARD`, `CARD_PASS+FLOOR`, `SCAN_PER_ROW` (GS), `BROADCAST` | 26-36 | 1.000 | 1.000 | **1.00x** |
+
+Read the shift column, not the levels. **The terms that grade a perfect 1.000 everywhere grade a
+perfect 1.000 here too** — they are not the problem on any query. What moves is exactly the walk and
+page terms (`PERM_STEP`, `WALK_STEP`, `SELECT_PER_PAGE_SLOT`, all ~0.5x, i.e. under-counting twice as
+badly as usual) and `StreamedSelect / SCAN_PER_ROW`, which flips the other way to **1.68x**.
+
+**That opposite sign is Round 85's mechanism, now attributed to named terms.** On these queries
+StreamedSelect's scan term over-counts while everyone's walk and page terms under-count — so the two
+arms' errors really do point in different directions, and the pairwise comparison amplifies what each
+single-arm grading calls acceptable.
+
+**The consequence for the queue.** `SELECT_PER_PAGE_SLOT` was closed in Round 80 as "wrong and
+worthless" at -0.9% of error mass, and `PERM_STEP` retired in Round 73 at 0.3%. Both judgements were
+correct **on mass**, and both terms turn out to matter **on the tail**, where the lost time is. Error
+mass ranks what to fix for total accuracy; it does not rank what decides a close argmin. Those are
+different questions, and this ledger now has an instrument for each.
+
 ### Round 85 (measurement only) — the mis-pick tail is ONE bug, and it is the empty page
 
 Round 84's miss margin has a p99 of 19.1x and a max of 29.7x. `bench_pick_quality.py --worst N

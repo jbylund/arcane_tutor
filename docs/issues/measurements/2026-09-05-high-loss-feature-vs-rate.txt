@@ -1,0 +1,35 @@
+Engine loaded: 97,812 printings in 2.7s
+
+5,373 queries, 330 mis-picks, mode=uniform
+  the top 40 by loss carry 52.9% of all lost time
+
+============================================================================================
+WOULD PERFECT FEATURES FIX THESE MIS-PICKS?
+============================================================================================
+  40 high-loss mis-picks, 35 with a mirror-exact rebuild (5 excluded)
+    fixed by the oracle             16  (46%)  <- FEATURE problem on this query
+    still picks the same plan       14  (40%)  <- rate or model-form problem
+    moves to a third, still wrong    5  (14%)
+
+============================================================================================
+FEATURE ACCURACY ON THE TAIL vs EVERYWHERE ELSE (estimate / realized)
+============================================================================================
+  plan / term                                       n tail  tail p50  rest p50   shift
+  GatheredScan / SELECT_PER_PAGE_SLOT                   38     0.170     0.349    0.49x
+  GatheredScan / LOOP_PER_CARD                          36     1.000     1.000    1.00x
+  GatheredScan / SCAN_PER_ROW                           36     1.000     1.000    1.00x
+  GatheredScan / PUSH_PER_MATCH                         35     1.220     1.000    1.22x
+  GatheredScan / COLLECT_PER_PAGE_ROW                   35     1.000     1.000    1.00x
+  GatheredScan / CARD_PASS+FLOOR                        32     1.000     1.000    1.00x
+  PrintingCompose / BROADCAST_PER_PRINTING              29     1.000     1.000    1.00x
+  PrintingCompose / WALK_STEP                           28     0.522     0.905    0.58x
+  StreamedSelect / LOOP_PER_CARD                        26     1.000     1.000    1.00x
+  StreamedSelect / SCAN_PER_ROW                         26     1.676     1.000    1.68x
+  StreamedSelect / CARD_PASS+FLOOR                      26     0.998     1.000    1.00x
+  StreamedSelect / EMIT_PER_MATCH                       25     1.220     1.000    1.22x
+  PrintingCompose / PROJECT_PER_PRINTING                25     1.181     1.000    1.18x
+  StreamedSelect / PERM_STEP                            20     0.406     0.868    0.47x
+  GatheredScan / ARTWORK_PER_PRINTING                   11     1.983     1.000    1.98x
+
+  `shift` far from 1.00 means the feature behaves DIFFERENTLY on the costly queries than
+  in aggregate -- which is exactly what a pooled grading cannot show.
