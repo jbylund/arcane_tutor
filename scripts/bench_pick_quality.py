@@ -87,9 +87,15 @@ def collect(engine: object, sampler: QuerySampler, rng: random.Random, budget: B
                 # materializing plans grind the whole candidate set producing nothing. The model prices
                 # compose INFINITY there (it predicts `Decline`), so it is never picked. Sliced out
                 # because it is a distinct failure from mis-costing a plan that does real work.
-                "empty_page": (picked_total := next((pp.get("result_total") or 0 for pp in sample.plans if pp.get("picked")), 0))
-                == 0
-                or sample.kw["offset"] >= picked_total,
+                # THREE cases, kept apart because they are not equally real. A query with no results
+                # at all is a genuine shape; a non-empty result whose OFFSET is past the end is partly
+                # an artifact of `costbench.OFFSETS` drawing 100 on a quarter of queries regardless of
+                # how many rows the query returns, which real traffic reaches only by paging there.
+                "page_class": (
+                    "empty result"
+                    if (picked_total := next((pp.get("result_total") or 0 for pp in sample.plans if pp.get("picked")), 0)) == 0
+                    else ("offset past end" if sample.kw["offset"] >= picked_total else "normal")
+                ),
                 "matches": acq["matches"],
                 "eval_domain": acq["eval_domain"],
                 "acquire": acq["count_source"],
@@ -229,9 +235,7 @@ def main() -> None:
     hit_table(rows, lambda r: r["acquire"], "by acquire route")
     hit_table(rows, lambda r: r["picked"], "by picked plan")
     hit_table(rows, lambda r: r["unique"], "by distinct-on")
-    hit_table(
-        rows, lambda r: f"empty-or-past-end={r['empty_page']}", "by EMPTY PAGE -- compose exits fast, model prices it INFINITY"
-    )
+    hit_table(rows, lambda r: r["page_class"], "by PAGE CLASS -- compose exits fast, model prices it INFINITY")
     if miss:
         hit_table(miss, lambda r: f"{r['picked']} -> {r['best']}", "MISSES ONLY, by transition")
     if args.worst and miss:

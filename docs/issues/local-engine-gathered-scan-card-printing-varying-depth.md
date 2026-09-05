@@ -246,16 +246,27 @@ Verified directly rather than inferred: forcing all three plans on `set:tmp fram
 a decline being mistimed as a run — the first thing to rule out, since a refusal is cheap for the
 wrong reason.
 
-**Sized:**
+**Sized, and it is TWO classes that a first version wrongly merged.** The `EmptyPage` exit fires
+whenever the requested PAGE is empty, which happens for two different reasons, and calling both "the
+empty result" was wrong: `watermark:mps` returns **5 artworks**, not zero — its page is empty only
+because `offset=100` is past a 5-row result.
 
 | slice | n | hit% | time-wtd hit% | share of lost time |
 |---|---|---|---|---|
-| ordinary queries | 4,449 | **95.9%** | 89.7% | 79.4% |
-| **empty result or page past the end** | **917 (17.1%)** | **83.8%** | **55.8%** | **20.6%** |
+| normal | 4,447 | **95.8%** | 89.7% | 79.0% |
+| **empty result** | 632 (11.8%) | 91.5% | 68.8% | 9.3% |
+| **offset past end** | **296 (5.5%)** | **66.9%** | **34.0%** | **11.8%** |
 
-So one query shape — 17% of the sample — carries **a fifth of all routing loss**, and its
-time-weighted hit rate is **55.8%** against 89.7% everywhere else. Excluding it, the router's hit rate
-is 95.9% under uniform.
+The split matters for whether this is worth fixing. **`offset past end` is the far worse cell — a
+66.9% hit rate and a 34.0% time-weighted one — but it is partly a SAMPLER ARTIFACT**:
+`costbench.OFFSETS` draws `offset=100` on a quarter of queries regardless of how many rows they
+return, so a 5-row result gets paged to 100 in the harness where real traffic would reach that offset
+only by paging there, having seen results. `empty result` (632 rows, 11.8%) is the genuinely
+representative half, and it is the milder one at 91.5%.
+
+So the honest figure is not "17% of queries carry a fifth of the loss". It is: **a real empty-result
+class of ~12% carries 9.3% of routing loss at a 68.8% time-weighted hit rate**, plus a
+past-the-end class whose frequency this harness overstates.
 
 **This is the same gate Round 80's audit lane found from the other side**, and its significance was
 understated there as a footnote. That lane measured `EmptyPage` running in 9.1 us median against a
@@ -266,11 +277,41 @@ the total while the executor branches on the real one.** One direction costs a w
 excludes the fastest plan from the argmin entirely.
 
 **Why the ratio tail and the absolute tail are disjoint, and why both are worth having.** The
-ratio-worst rows lose 15-41 us each — real but small. The absolute-worst rows lose 120-490 us and have
-a completely different signature: **predicted ratios of 0.70-0.98**, i.e. the model saw a near-tie and
-lost the coin flip, with the truth being ~2x. Those are `card` mode, `off=100`, `[printing_compose]`,
-and they are mis-calibration rather than a gate bug. `--worst-by loss` ranks what to fix for total
-time; `--worst-by ratio` ranks what is structurally wrong. Neither list finds the other's entries.
+ratio-worst rows lose 15-41 us each — real but small. `--worst-by loss` ranks what to fix for total
+time; `--worst-by ratio` ranks what is structurally wrong. **Neither list contains one entry of the
+other's**, and the absolute-worst ten are a completely different defect:
+
+| lost | measured | **predicted** | query | picked -> best |
+|---|---|---|---|---|
+| 486.7 us | 1.93x | **0.72x** | `usd>=0.13 usd<=0.76 cmc>=2 cmc<=5 cn<=126` | SS -> compose |
+| 197.9 us | 2.10x | **0.70x** | `id:bguw border:borderless` | GS -> compose |
+| 142.5 us | 2.37x | **0.98x** | `cmc>=6 usd<7.31 eur>=0.51 eur<=3.82` | compose -> SS |
+| 142.3 us | 1.81x | **0.74x** | `eur<=2.80 pow>=1 pow<=3` | compose -> SS |
+| 138.5 us | 2.21x | **0.95x** | `eur>=0.11 eur<=1.15 f:alchemy r<=mythic` | GS -> compose |
+| 137.3 us | 2.42x | **0.85x** | `tou>=1 tou<=2 tix>=0.22` | compose -> SS |
+| 128.0 us | 1.89x | **0.63x** | `pow>=1 pow<=3 r>=common` | compose -> SS |
+| 117.6 us | 1.63x | **0.96x** | `id:uw` | compose -> GS |
+| 105.1 us | 1.59x | **1.00x** | `id:bgu frame:2015 pow>=2 pow<=4` | compose -> SS |
+| 90.9 us | 2.89x | **0.70x** | `usd<10.62 eur:0.16` | GS -> compose |
+
+**Every one is a near-tie the model lost.** Predicted ratios span 0.63-1.00 — the model thought the
+two plans were within a factor of 1.6 at worst and usually within 5% — while the truth was 1.6x to
+2.9x. Ten of ten are `[printing_compose]`; eight of ten are **range-heavy filters** (`usd`, `eur`,
+`cmc`, `pow`, `tou`, `cn` comparisons), and the two that are not (`id:uw`, `id:bguw border:borderless`)
+are identity/border. Six of ten are `card` mode.
+
+**The mechanism is visible in the per-plan columns and it is not one plan's fault.** On the top row
+StreamedSelect is predicted 303 us against a measured **1,012** (p/m 0.30) while compose is predicted
+423 against 525 (p/m 0.80) — both under-predict, but StreamedSelect under-predicts *more*, so it wins
+a comparison it should lose. Row 4 is the mirror image: compose reads p/m 0.76 and StreamedSelect
+**1.88**, so compose wins by being the less-wrong one in the other direction. **The absolute tail is
+the two arms' errors having different signs on the same query**, which no single-arm accuracy metric
+can see — and which is exactly why Round 84's headroom split matters: these are the queries where
+headroom was 1.0-2.9x, i.e. genuinely close, so a small relative error decides them.
+
+That also explains why they are invisible to everything else in this ledger: each arm individually
+grades near 1.0 on these rows, the error mass they contribute is unremarkable, and only the PAIRWISE
+comparison on a close query turns a 20-30% mis-calibration into a 2x latency loss.
 
 **What would fix the empty-page class** is not a cost-model change: `plan_cost` cannot see that the
 page is empty, because `matches` is an estimate and the branch is on the realized total. Either the
