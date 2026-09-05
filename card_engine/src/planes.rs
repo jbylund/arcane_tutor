@@ -611,6 +611,25 @@ pub(crate) enum PlaneExpr {
     Const(bool),
 }
 
+impl PlaneExpr {
+    /// Nodes in the expression — the per-WORD work `eval_planes` does, since it calls `eval_word`
+    /// once per word and `eval_word` recurses over the whole tree each time. Multiplying this by the
+    /// word count gives the plane evaluation's real unit of work, which is what
+    /// `PlanFeatures::prepare_plane_word_ops` carries.
+    ///
+    /// `Bits` counts as one node like any other leaf: `eval_word` reads one word from the cloned
+    /// bitmap, exactly as a `Plane` reads one word from the archive.
+    pub(crate) fn node_count(&self) -> u32 {
+        match self {
+            PlaneExpr::And(children) | PlaneExpr::Or(children) => {
+                1 + children.iter().map(PlaneExpr::node_count).sum::<u32>()
+            }
+            PlaneExpr::Not(child) => 1 + child.node_count(),
+            PlaneExpr::Plane(_) | PlaneExpr::Bits(_) | PlaneExpr::Const(_) => 1,
+        }
+    }
+}
+
 /// And over children, collapsing the empty (vacuously true) and singleton cases.
 fn and_of(mut children: Vec<PlaneExpr>) -> PlaneExpr {
     match children.len() {

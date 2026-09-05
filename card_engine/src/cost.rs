@@ -224,6 +224,24 @@ pub(crate) struct PlanFeatures {
     /// in ~`page_span/selectivity` steps), while the permutation-free gather visits every match — so
     /// the formula branches on this rather than assuming one. Ignored by every other plan.
     pub compose_paging: super::ComposePaging,
+    /// Nodes the candidate narrowing can descend into (`FilterExpr::narrow_nodes`) — the driver of
+    /// `prepare_candidates`' FIRST phase, which is the one the old `materialize_cost` had no term for
+    /// at all. See `PREPARE_PER_NODE_NS`.
+    pub prepare_nodes: u32,
+    /// Word-wise operations `prepare_candidates` pays for a PLANE, or `0` when the query has none:
+    /// `PlaneExpr::node_count() * n_cards.div_ceil(64)`, because `eval_planes` calls `eval_word` once
+    /// per word and `eval_word` walks the whole expression each time. NOT a bare word count — the
+    /// plane's SHAPE is the difference between a one-plane `f:modern` and a five-node `c:bru id:bw`,
+    /// and a single per-word rate fitted across both lands halfway between and is wrong for each.
+    /// See `PREPARE_PLANE_PER_WORD_OP_NS`.
+    pub prepare_plane_word_ops: u32,
+    /// Cards the prepare step is expected to MATERIALIZE into the candidate vec — `eval_domain` where
+    /// that field really is the narrowed count, the `matches` estimate on the two acquires that pin
+    /// `eval_domain` at `n_cards`, and **`0`** where `narrow_candidates_exact`'s breadth guard will
+    /// discard the narrowing outright. Distinct from `eval_domain` for exactly those reasons:
+    /// charging the pinned value read 157 us against a measured 354-458 ns. The guard is mirrored at
+    /// the one site that sets this field; see there. See `PREPARE_PER_CAND_NS`.
+    pub prepare_cands: u32,
     /// Printings a CARD-SPACE collection leaf's build broadcasts (`ids_of` +
     /// `broadcast_card_ids_to_printings`). See `ComposeEstimate::collection_broadcast`'s doc for why
     /// this is not just folded into `scatter_printings`. `0` for everything except `PrintingCompose`
@@ -285,41 +303,128 @@ const PLANE_POPCOUNT_FIXED_COST_NS: f64 = 200.0;
 /// — the two simply measure different things.
 pub(crate) const CARD_RANGE_BUILD_PER_PRINTING_NS: f64 = 0.93;
 
-// ─── Candidate materialization ──────────────────────────────────────────────
+// ─── Candidate materialization (the dispatch-time prepare step) ─────────────
 // `plan_cost` prices only what happens AFTER the acquire step: `eval_domain` and `matches` are its
-// inputs, not its outputs. The acquire step is therefore unpriced, and it is where the model's error
-// lives — over 40 sampled queries the median `(measured - predicted) / acquire_ns` is 1.09, so
-// adding the MEASURED acquire time roughly closes the gap.
+// inputs, not its outputs. On a `Prep::Range` acquire the router only ESTIMATED, so a materializing
+// winner calls `prepare_candidates` in DISPATCH — real latency `costbench.plan_self_ns` counts and
+// `plan_cost` charges zero for. Round 80 sized that omission at ~50% of GatheredScan's error mass.
 //
-// `materialize_cost` below is NOT that term, and does not close that gap. It prices one component of
-// acquire — the candidate `collect` + `sort_unstable` — which measurement puts at a median 5% of
-// acquire (quartiles 2%–40%, n=167 candidate-acquired queries): the rest is index walks, the
-// narrowing recursion, `memoize_text_predicates` and feature building. Adding it to `predicted_ns`
-// measurably makes absolute accuracy slightly WORSE (73.1% -> 74.9% mean error), because it is a
-// small piece of a large omission and does not change which plans compare equal.
+// `materialize_cost` below is the model of exactly that work, and it is STILL not added to
+// `plan_cost` — charging it as written measured net +1.49 ms slower end to end, because
+// `StreamedSelect` over-charges its own executor on the same route and adding a real cost makes it
+// lose picks it should win. So it stays REPORTED BY `explain` (as `materialize_ns`) and out of the
+// argmin until that arm is recalibrated. Nothing here can move a routing decision.
 //
-// So it is REPORTED BY `explain`, NOT ADDED TO `plan_cost`, for three reasons: it is validated as
-// too small to help; it is identical for the plans that actually compete (`StreamedSelect` and
-// `GatheredScan` call the same `prepare_candidates`), so it cannot change an argmin; and its real
-// purpose is to price the bitmap-versus-sort question in
-// docs/issues/done/local-engine-candidate-materialize.md, which is what it does measure exactly.
+// What DID change is the shape. Graded against the realized `PhaseStats::ns_prepare` — the counter
+// that measures the very thing it claims to predict — the old `143 + 4.95·eval_domain` read a median
+// |ln| of 1.6-2.0 with 6-9% of predictions within 25%. It priced a `collect` + `sort_unstable` and
+// nothing else, while `prepare_candidates` has three phases that scale with three different things:
+//
+//     acquire              median ns_prepare   narrow   project   memo     (median per-row share,
+//     candidates                       3,375     0.85      0.04   0.01      uniform, n=5,090,
+//     printing_compose                 3,167     0.12      0.80   0.00      --features prepare-phases)
+//     plane                            5,000     0.00      0.99   0.00
+//     printing_range_scan              1,041     0.50      0.25   0.00
+//
+// The narrowing walk is the phase the old shape had no term for at all, and on the acquire where a
+// lazy materialize actually happens it is 85% of the cost. Refit on the three-phase shape and graded
+// on a held-out half split by query hash: **1.71 -> 0.78 median |ln|, 8.8% -> 15.6% within 25%**
+// (uniform) and **1.99 -> 0.73, 6.4% -> 15.0%** (realistic). See
+// `scripts/bench_prepare_cost_shape.py`, which is the only thing that has ever graded this term.
+//
+// What the refit does NOT fix: the narrowing phase itself is still the accuracy floor. Regressed
+// alone it reaches a median |ln| of 1.03 against 1.29 for a bare constant, because `prepare_nodes`
+// is a tree-shape proxy for a cost that is really per-INDEX-PROBE and the probes differ by an order
+// of magnitude in kind (a two-byte name bigram lookup against an `ExactName` binary search against a
+// range slice collect). Nothing published separates them. The projection phase, by contrast, fits at
+// 0.43 once it is charged on plane WORD-OPS rather than on candidates. Closing the rest needs a WORK
+// counter inside `narrow_rec` -- index entries walked and bitmap words touched -- which is a
+// measurement this refit deliberately did not take on: it would grade the narrowing term, not improve
+// it, since `plan_cost` reads acquire-time features and a counter is only available afterwards.
+
+/// The fraction of its domain a narrowed set may cover before `narrow_candidates_exact` throws it
+/// away: it keeps a set only while `len <= domain - domain/4`. Mirrored here as a divisor rather than
+/// restated as `0.75` so the two read as the same rule, and so a change to the guard shows up as a
+/// conflict rather than as silent model drift. Read only by the acquire site that fills
+/// `PlanFeatures::prepare_cands`.
+pub(crate) const NARROW_BREADTH_DISCARD_DIVISOR: u32 = 4;
 
 /// `Vec::with_capacity` plus the run walk, before any comparison work
 /// (`bench_candidate_materialize`, axis A).
+///
+/// A KERNEL figure, and since the `materialize_cost` refit no longer a cost-model constant: its one
+/// consumer is `bench_candidate_materialize`, which exists to answer the bitmap-versus-sort question
+/// in docs/issues/done/local-engine-candidate-materialize.md and needs the collect+sort priced in
+/// isolation. `PREPARE_PER_CAND_NS` is the end-to-end sibling that `materialize_cost` reads; the two
+/// disagree by design, exactly as `CARD_RANGE_BUILD_PER_PRINTING_NS` disagrees with its own kernel.
+#[cfg(test)]
 pub(crate) const MATERIALIZE_SORT_FIXED_NS: f64 = 143.0;
 /// pdqsort on `u32`, per candidate — **linear**, not `c·log2 c`. `sort_unstable` is a full pdqsort
 /// so it is asymptotically `n log n`, but measured per-element cost is flat across the sizes this
 /// engine sees (4.39 ns at 1,024 rising only to 5.09 at 31,508, where an `n log n` fit predicts
 /// 4.39 → 6.57). Fit on the rows bracketing the crossover. Re-fit rather than extrapolating past
-/// ~3M cards, where the log factor does start to show.
+/// ~3M cards, where the log factor does start to show. Kernel-only — see the constant above.
+#[cfg(test)]
 pub(crate) const MATERIALIZE_SORT_PER_CAND_NS: f64 = 4.95;
 
-/// Modelled cost of producing the candidate list a materializing plan consumes, in ns. `0.0` for
-/// plans that never build one — those walk or read a plane bitmap directly, and charging them this
-/// would invert exactly the comparison the term is meant to inform.
+/// Per-query floor of `prepare_candidates`: the `PreparedCandidates` build,
+/// `plane_leaves_nothing_to_verify`, `memoize_text_predicates` and `order_children_by_verify_cost`
+/// (one timer tick on the median query of every acquire — too small to earn a term of their own), and
+/// the `Vec::with_capacity` the old `MATERIALIZE_SORT_FIXED_NS = 143.0` was fit on in isolation.
 ///
-/// Prices today's behavior: a `collect` + `sort_unstable`. It does **not** model the bitmap
-/// alternative that doc proposes; if that ships, this needs the domain term as well.
+/// 143 ns was measured by `bench_candidate_materialize` axis A on the collect+sort ALONE, and that
+/// number is not wrong — it is the wrong quantity. The realized `ns_prepare` on a `Candidates`
+/// acquire has a median of ~2.8 us with a median candidate count of EIGHT, so the shipped shape read
+/// 143 + 4.95·8 = 183 ns against 2,834 measured. What the shape was missing is the whole first phase.
+pub(crate) const PREPARE_FIXED_NS: f64 = 121.0;
+
+/// Per narrowing-tree node (`FilterExpr::narrow_nodes`) — the index probe each leaf pays and the set
+/// composition each interior node pays.
+///
+/// This is the term the old shape did not have, and it is the one that matters: split three ways by a
+/// `--features prepare-phases` build, `prepare_candidates` spends a median **85%** of its time in
+/// `narrow_candidates_exact` on a `Candidates` acquire, 4% projecting and 1% memoizing. The narrowing
+/// is not proportional to the candidates that come out of it — a bare `ExactName` yields FOUR
+/// candidates and still costs ~2.4 us, because it is two `partition_point` binary searches over the
+/// name permutation, ~15 cache-missing probes each, every one of them a string compare against a card
+/// record. That is a per-PROBE cost, and the probe count is a property of the tree, not of the answer.
+pub(crate) const PREPARE_PER_NODE_NS: f64 = 942.0;
+
+/// Per word-wise plane operation (`prepare_plane_word_ops`), when a plane survived `split_planes`.
+///
+/// The plane branch of `prepare_candidates` makes three word-wise passes over the card space —
+/// `eval_planes` into the thread-local bitmap, `and_bits_into` against the residual's own bits, and
+/// `bitmap_card_ids` to extract the list — none of which depends on how many cards survive. It is the
+/// DOMINANT phase whenever a plane is present: 99% of prepare on a `plane` acquire and 80% on
+/// `printing_compose`, against 0%/12% for the narrowing there.
+pub(crate) const PREPARE_PLANE_PER_WORD_OP_NS: f64 = 1.543;
+
+/// Per candidate materialized into the list (`prepare_cands`) — the `collect` + `sort_unstable` the
+/// old shape priced, and the `retain` against the plane bitmap.
+///
+/// The old 4.95 ns/candidate is a real measurement of a real kernel; what changed is that it is no
+/// longer asked to carry the other two phases as well. It is charged on `prepare_cands`, not
+/// `eval_domain`, because the two bare-range acquires pin `eval_domain` at `n_cards` — 4.95 × 31,508
+/// is 156 us against a measured 354-458 ns, and any fit that pooled those rows would have fit garbage.
+pub(crate) const PREPARE_PER_CAND_NS: f64 = 1.641;
+
+/// Modelled cost of the artifact a plan builds **in dispatch**, in ns — what the realized
+/// `PhaseStats::ns_prepare` measures. `0.0` for plans that build nothing there.
+///
+/// Only the two materializing plans have a term here, and that is not an omission:
+///
+/// * `PlanePopcountOrder` reads a plane bitmap the ROUTER already built during acquire
+///   (`Prep::Plane`), so its dispatch pays nothing. A forced trial rebuilds it and reports the
+///   rebuild in `ns_prepare`, which is exactly the figure `costbench.plan_self_ns` excludes.
+/// * `PrintingRangeScan` / `PrintingCompose` win off a `Prep::Range` estimate and then run their own
+///   fastpath, whose build lands in `ns_setup` and is priced by their own arms.
+/// * `CardRangePopcount` DOES build `build_card_range_bits` in dispatch, and `ns_prepare` measures
+///   it — but `plan_cost`'s own arm already charges it as
+///   `scatter_printings * CARD_RANGE_BUILD_PER_PRINTING_NS`. Returning a second cost here would
+///   double-charge the one plan whose dispatch build is already modelled.
+///
+/// Prices the three phases of `prepare_candidates` separately, because they scale with three
+/// different things and the previous shape had a term for only one of them. See each constant.
 ///
 /// The match below is deliberately NOT `PhysicalPlan::materializing()`, which means something
 /// else — "runnable off a materialized prep", and so includes `PlanePopcountOrder`, which reads
@@ -328,7 +433,10 @@ pub(crate) const MATERIALIZE_SORT_PER_CAND_NS: f64 = 4.95;
 pub(crate) fn materialize_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
     match plan {
         PhysicalPlan::StreamedSelect | PhysicalPlan::GatheredScan => {
-            MATERIALIZE_SORT_FIXED_NS + MATERIALIZE_SORT_PER_CAND_NS * f64::from(f.eval_domain)
+            PREPARE_FIXED_NS
+                + PREPARE_PER_NODE_NS * f64::from(f.prepare_nodes)
+                + PREPARE_PLANE_PER_WORD_OP_NS * f64::from(f.prepare_plane_word_ops)
+                + PREPARE_PER_CAND_NS * f64::from(f.prepare_cands)
         }
         PhysicalPlan::PrintingRangeScan
         | PhysicalPlan::PrintingCompose

@@ -5174,6 +5174,8 @@ fn gathered_scan_zero_match_uses_the_lower_fixed_cost() {
         broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0,
         compose_paging: ComposePaging::Gather, collection_broadcast_printings: 0,
         gather_group_printings: 0,
+        // Unread by every arm these fixtures exercise; `materialize_cost` is the only consumer.
+        prepare_nodes: 0, prepare_plane_word_ops: 0, prepare_cands: 0,
     };
 
     // matches == 0: every other term is already zero by construction above, so the whole
@@ -5433,6 +5435,8 @@ fn plan_cost_model_matches_gold() {
                 artwork_seen_printings: 0, // no artwork per-printing dedupe check in this fixture
                 compose_scan_printings: 0,
                 gather_group_printings: 0,
+                // Unread by every arm these fixtures exercise; `materialize_cost` is the only consumer.
+                prepare_nodes: 0, prepare_plane_word_ops: 0, prepare_cands: 0,
                 };
 
                 // ── Model argmin over the applicable plans ──
@@ -5677,6 +5681,8 @@ fn plan_cost_refit() {
                 artwork_seen_printings: 0, // no artwork per-printing dedupe check in this fixture
                 compose_scan_printings: 0,
                 gather_group_printings: 0,
+                // Unread by every arm these fixtures exercise; `materialize_cost` is the only consumer.
+                prepare_nodes: 0, prepare_plane_word_ops: 0, prepare_cands: 0,
                 };
                 for (pi, plan) in all_plans.iter().enumerate() {
                     if let Some(meas) = ns[pi] {
@@ -5884,6 +5890,8 @@ fn printing_range_route_probe() {
                 artwork_seen_printings: 0, // no artwork per-printing dedupe check in this fixture
                 compose_scan_printings: 0,
                 gather_group_printings: 0,
+                // Unread by every arm these fixtures exercise; `materialize_cost` is the only consumer.
+                prepare_nodes: 0, prepare_plane_word_ops: 0, prepare_cands: 0,
             };
 
             // ── Three pickers ──
@@ -6249,6 +6257,8 @@ fn plan_regret_report() {
                 artwork_seen_printings: 0, // no artwork per-printing dedupe check in this fixture
                 compose_scan_printings: 0,
                 gather_group_printings: 0,
+                // Unread by every arm these fixtures exercise; `materialize_cost` is the only consumer.
+                prepare_nodes: 0, prepare_plane_word_ops: 0, prepare_cands: 0,
             };
 
             let gold = (0..4).filter_map(|i| ns[i].map(|v| (v, i))).min_by_key(|(v, _)| *v);
@@ -6381,6 +6391,8 @@ fn plan_regret_fuzz() {
                 artwork_seen_printings: 0, // no artwork per-printing dedupe check in this fixture
                 compose_scan_printings: 0,
                 gather_group_printings: 0,
+                // Unread by every arm these fixtures exercise; `materialize_cost` is the only consumer.
+                prepare_nodes: 0, prepare_plane_word_ops: 0, prepare_cands: 0,
             };
             let feats_true = mk(true_total, eval_domain);
             let feats_est = mk(est, est.min(n_cards));
@@ -7653,6 +7665,8 @@ fn stream_perm_steps_gates_and_cap() {
         broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0,
         compose_paging: ComposePaging::Gather, collection_broadcast_printings: 0,
         gather_group_printings: 0,
+        // Unread by every arm these fixtures exercise; `materialize_cost` is the only consumer.
+        prepare_nodes: 0, prepare_plane_word_ops: 0, prepare_cands: 0,
     };
     let min_matches = *super::STREAM_MIN_MATCHES as u32;
 
@@ -7737,6 +7751,8 @@ fn stream_residual_card_pass_adds_only_the_small_total_redo() {
         broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0,
         compose_paging: ComposePaging::Gather, collection_broadcast_printings: 0,
         gather_group_printings: 0,
+        // Unread by every arm these fixtures exercise; `materialize_cost` is the only consumer.
+        prepare_nodes: 0, prepare_plane_word_ops: 0, prepare_cands: 0,
     };
     let min_matches = *super::STREAM_MIN_MATCHES as u32;
 
@@ -16105,6 +16121,8 @@ fn gather_page_feats() -> super::cost::PlanFeatures {
         broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0,
         compose_paging: ComposePaging::Gather, collection_broadcast_printings: 0,
         artwork_seen_cards: 0, artwork_seen_printings: 0, compose_scan_printings: 0, gather_group_printings: 0,
+        // Unread by every arm these fixtures exercise; `materialize_cost` is the only consumer.
+        prepare_nodes: 0, prepare_plane_word_ops: 0, prepare_cands: 0,
     }
 }
 

@@ -1140,6 +1140,30 @@ impl FilterExpr {
         eval_domain >= (bind_bound * MEMO_DOMAIN_FACTOR).max(MEMO_DOMAIN_FLOOR.min(n_rows / 4))
     }
 
+    /// Nodes the candidate narrowing (`narrow_rec`) can descend into for this expression — an UPPER
+    /// bound on the index probes `prepare_candidates` will pay, and the acquire-time feature behind
+    /// `cost::prepare_narrow_cost`.
+    ///
+    /// An upper bound, not a count, and deliberately so: `narrow_rec` short-circuits in two ways this
+    /// cannot see from the tree alone (a `compile_plane` hit consumes a whole subtree in one word-wise
+    /// evaluation, and the `AND_SKIP_THRESHOLD` guard stops descending once a driver is selective
+    /// enough). Both make the real walk cheaper than this says, never dearer, so the feature errs
+    /// toward over-costing a shape that narrows early — which is the safe direction for a term whose
+    /// consumer is choosing whether to materialize at all.
+    ///
+    /// Counted over the WHOLE tree rather than the leaves only because the interior nodes are not free:
+    /// each `And`/`Or` composes its children's sets (`and_all`/`or_all`), and a `Not` complements one.
+    /// A two-leaf `And` therefore pays three visits' worth of work, not two.
+    pub(crate) fn narrow_nodes(&self) -> u32 {
+        match self {
+            FilterExpr::And(children) | FilterExpr::Or(children) => {
+                1 + children.iter().map(FilterExpr::narrow_nodes).sum::<u32>()
+            }
+            FilterExpr::Not(child) => 1 + child.narrow_nodes(),
+            _ => 1,
+        }
+    }
+
     pub(crate) fn memoize_text_predicates(
         &mut self,
         cards: &[AOracleCard],

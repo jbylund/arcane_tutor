@@ -222,6 +222,83 @@ total regret by 0.0 ms).
 | 68 | **First EXECUTOR round in this arc — removes real work rather than improving a prediction.** `walk_grouped_page` stepped the permutation and, per card, bit-tested the card's WHOLE printing span and called `prefer_score` on every set printing. But printings are stored prefer-DESCENDING within a card (`from_rows`' load-time sort, ties by illustration_id then scryfall_id), so under `Mode::Card` + `Prefer::Default` the FIRST set printing already IS the chosen representative — every later `prefer_score`, the `touched`/`group_best` bookkeeping and the post-loop group emit were waste. Now takes the same `(start..end).find(is_set)` early break `gather_composed_page` and `push_card_matches` already used. `printings_examined` moved off its unconditional pre-match `(end - start)` to the EXIT POSITION, per arm, with no per-iteration add (the project's hot-path instrumentation rule). Scoped to the only LIVE walk: `walk_card_page_via_popcount_skip` sits behind `COMPOSE_SIGMA_ENABLED` (defaults 0) and the printing/artwork popcount-skip walks have zero production call sites | kept | n/a (not this doc's own metric) | **Row identity is the gate and it passed twice independently.** Agent: 7,776 cells / 374,712 rows byte-identical (3 distinct-ons x 4 prefers x 3 sort cols x both directions x 6 page points x 6 densities), debug AND release, plus 9,000 cells / 235,692 rows matching by sha256 from routed dumps. Me, separately: **21,912 compose cells including 5,920 `Perm`-paging, 750,580 rows, identical sha256** over printing identity — my first attempt used `orderby=rarity` and hit **0 Perm cells**, so it proved nothing until the orderby was varied. **Realized time**: `PrintingCompose` `ns_loop` p50 **0.707** (3,896 → 1,979 ns), interleaved over 6 block pairs, with GatheredScan/StreamedSelect/PlanePopcountOrder/CardRangePopcount controls all reading p50 **1.000**. Plan choice unaffected: **0 changes over 66,414** survey observations, and 0 `paging_taken`/`picked`/`result_total` flips over 595 exact-population paired compose cells. `cargo test` 305 debug / 302 release, clippy clean both profiles (verified by me) | see "Round 68" narrative below — why the end-to-end number is much smaller than the loop number, a density regime the router never reaches, and a cost-feature consequence that is now a queue item |
 | 69 | **Measurement only.** Grades StreamedSelect's two never-graded cost drivers (`perm_walk_span` via the walk term, `stream_scan_units`) against realized counters, answers whether the permutation-less sort columns need their own cost branch, and re-measures the compose walk's per-orderby clump after Round 68 invalidated it | n/a | n/a | **No instrumentation round was needed — item 1's stated blocker was wrong.** Both realized counters (`perm_steps`, `printings_examined`) already exist and are already published. Walk term: pooled median **1.023**, spread 9.6x, split by sort column into **1.9x** (`name`) to **38.8x** (`cmc`) at flat medians (0.918-1.183) — so a per-orderby scalar cannot help in CARD space, and no existing feature predicts the residual (max \|r\| 0.12). `stream_scan_units` is **bimodal**: p25/p50 exactly 1.000, p90 **11.8** (printing 16.7x, artwork 14.0x). Both cost GATES are correct — all 83 walk-gate disagreements (2.79%) are the estimate crossing `STREAM_MIN_MATCHES`, and 720 of 778 scan-gate ones (92.5%) are the plan returning before any loop. `rarity`/`usd` need **no** cost branch: they have no permutation and `streamed_select_applicable` drops the plan from the argmin (offered 0/12 vs 12/12 for `name`/`cmc`). Compose's `Perm`/`OrderbyWalk` shared arm is likewise **correct** (residual medians 1.277 vs 1.449) — but its per-column medians span **0.925-3.579** against one shipped `WALK_LENGTH_BIAS` of 1.45, which CONFIRMS item 5 | see "Round 69" narrative below — a blocker that was already unblocked, and a stale table that validated its own replacement |
 
+### Round 82 — `materialize_cost` gets the right shape: it was missing two phases entirely
+
+Step 1 of Round 80's refit sequence, and the prerequisite for step 3. `materialize_cost` graded
+median |ln| **1.710** against realized `ns_prepare` (within-25% 8.8%) because
+`143 + 4.95 * eval_domain` prices a collect+sort while `prepare_candidates` does **three** things.
+
+**What it actually does**, measured behind a new `prepare-phases` cargo feature (off by default; the
+timer compiles to a ZST with empty methods when off, the same precedent and rationale as the existing
+`routed-phases`). Median per-row share:
+
+| acquire | med `ns_prepare` | narrow | project | memo |
+|---|---|---|---|---|
+| `candidates` (n=1,890) | 3,375 ns | **0.85** | 0.04 | 0.01 |
+| `printing_compose` (n=2,707) | 3,167 ns | 0.12 | **0.80** | 0.00 |
+| `plane` (n=324) | 5,000 ns | 0.00 | **0.99** | 0.00 |
+| range acquires | ~1,000 ns | 0.50 | 0.25 | 0.00 |
+
+- **narrow** scales with **index probes, not candidates** — a bare `ExactName` yields 4 candidates and
+  costs ~2.4 us (two `partition_point` searches, ~15 cache-missing string compares each). The old
+  shape had **no term for this at all**, and it is 85% of the cost on `candidates`, the acquire where
+  a lazy materialize actually happens.
+- **project** scales with **plane word-ops**: `eval_planes` calls `eval_word` once per word and
+  `eval_word` walks the whole expression, so the unit is `PlaneExpr::node_count() * n_cards/64`. A
+  bare word count cannot express it — a 1-node `f:modern` and a 5-node `c:bru id:bw` differ 5x.
+
+New shape: `121 + 942 * prepare_nodes + 1.543 * prepare_plane_word_ops + 1.641 * prepare_cands`, fit on
+a **calibration half split by blake2b hash of the query string** and graded held-out on a *different
+seed*, so no evaluated query has ever been in any calibration half:
+
+| mode | n | old \|ln\| / w25 | **new \|ln\| / w25** |
+|---|---|---|---|
+| uniform | 5,098 | 1.710 / 8.8% | **0.784 / 15.6%** |
+| realistic | 5,496 | 1.994 / 6.4% | **0.730 / 15.0%** |
+
+Per cell (uniform, held out): `candidates` 2.113 -> **0.557**, `printing_compose` 1.440 -> **0.930**,
+`plane` 1.765 -> **0.884**, `printing_range_scan` 0.633 -> **0.421**.
+
+**The two modes disagree on the constants, and the choice is recorded rather than buried.** Realistic's
+own calibration half wants `PER_NODE` 1650 (against 942) and `PER_CAND` 0.836 (against 1.641), which
+would take realistic held-out to 0.536 / 22.9%. The **uniform** fit ships — consistent with every other
+`cost.rs` constant and with RANK-by-uniform — and step 3 has the realistic alternative if it wants to
+re-decide.
+
+**The pinned-`eval_domain` trap, handled.** `prepare_cands` is `eval_domain` normally, `matches` on the
+two acquires that pin `eval_domain` at `n_cards`, and **0 where `narrow_candidates_exact`'s own 3/4
+breadth guard will discard the narrowing** (mirrored as `cost::NARROW_BREADTH_DISCARD_DIVISOR`), with a
+plane exemption because `prepare_candidates`' `Some(expr)` arm returns `Some(..)` on all three paths.
+Necessary because those cells are **bimodal**: `printing_range_scan` splits into a discarded half
+(median 188 ns) and a materialized half (median 23.7 us) — **126x**. Charging `matches` to both graded
+`card_range_popcount` at 3.80; with the guard, **1.33**. All five variants were compared in one process
+over an identical 2,862-row population.
+
+**A briefing error of mine, corrected by the lane.** I listed `materialize_cost` returning 0 for
+`CardRangePopcount` as "a second gap in the same function". **It is correct, not a gap** — that plan's
+dispatch build IS `build_card_range_bits`, and `plan_cost`'s own arm already charges it as
+`scatter_printings * CARD_RANGE_BUILD_PER_PRINTING_NS`. A term here would double-charge the one plan
+whose dispatch build is already modelled. Now documented on `materialize_cost` itself.
+
+**No counter added, and the reasoning is the durable part.** A sibling had recommended a narrowing-work
+counter. This lane declined: **a counter is only available AFTER the walk, so it can grade the
+narrowing term but cannot improve it**, because `plan_cost` reads acquire-time features. Adding one
+would have bought instrumentation on a hot path for no accuracy gain. Regressed alone the narrowing
+phase reaches median |ln| **1.03** against **1.29** for a bare constant — `prepare_nodes` is a
+tree-shape proxy for a per-probe cost whose probes differ by an order of magnitude in kind (2-byte
+bigram lookup vs `ExactName` binary search vs range-slice collect), and nothing separates them. **That
+phase is the accuracy floor on this term**, and closing it needs a counter PLUS an acquire-time
+estimator for that counter — a separate piece of work.
+
+**Routing-neutral, verified rather than assumed**: `materialize_ns` differs on 100% of rows and
+`predicted_ns` on **0**, with **0 plan flips** over 3,600 prefer-varied rows here and 4,000 per mode in
+the lane. The three new `PlanFeatures` fields are unconditional additions to the acquire path, so they
+got their own paired A/B (`bench_query_latency_ab` at its converged 6/30, builds interleaved
+A/B/A/B): both cross-build intervals sit **inside** the same-build canary's own drift on a 62 us mean.
+The phase timers are deliberately not in that build — with the feature on they inflate `ns_prepare`
+itself ~10%, which is why they are gated. `cargo test` 308 debug / 305 release **and 308 with the
+feature**; clippy clean in debug, release, and with the feature.
+
 ### Round 81 — StreamedSelect's small-total floor, and step 3's precondition is NOT what we thought
 
 Step 2 of the refit sequence Round 80 identified. It found the over-charge, fixed it, and then

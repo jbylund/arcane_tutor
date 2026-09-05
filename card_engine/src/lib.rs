@@ -13147,6 +13147,68 @@ impl RoutedPhaseTimer {
     fn finish(self) {}
 }
 
+/// Marks the two interior boundaries of `prepare_candidates`, splitting it into the three phases that
+/// scale with three different things -- the narrowing walk, the projection/materialization, and the
+/// text memoization. Or nothing at all when the `prepare-phases` feature is off.
+///
+/// Behind a cargo feature for exactly the reason `RoutedPhaseTimer` is: `prepare_candidates` runs on
+/// the routed production path, four clock reads there were measured at ~1.6% of a median query for
+/// `routed-phases`, and this answers a calibration question a diagnostic build can answer instead.
+/// With the feature off this is a zero-sized struct with empty methods and the reads compile away, so
+/// the shipped `materialize_cost` constants are reproducible without anyone paying for them.
+///
+/// The split is what established the shape those constants have: on a `Candidates` acquire the
+/// narrowing is a median 85% of prepare against 4% for the projection, and with a plane present the
+/// two swap (0% / 99% on a `plane` acquire). A model with one term for the projection alone -- which
+/// is what `MATERIALIZE_SORT_*` was -- cannot be repaired by moving its constants.
+///
+/// Note when reading a `prepare-phases` build's absolute numbers: the four clock reads inflate
+/// `ns_prepare` itself by ~10% against the default build (median 3,416 ns against 3,020 ns on the
+/// same seeded uniform sample). The SHARES are what this is for; the constants are fitted on a
+/// default build.
+#[cfg(feature = "prepare-phases")]
+struct PrepareSplitTimer {
+    last: std::time::Instant,
+    split: [u64; 3],
+    marked: usize,
+}
+
+#[cfg(feature = "prepare-phases")]
+impl PrepareSplitTimer {
+    fn start() -> Self {
+        Self { last: std::time::Instant::now(), split: [0; 3], marked: 0 }
+    }
+    /// Close the phase in progress and open the next. Silently ignores a mark past the third phase,
+    /// which cannot happen -- the two call sites are unconditional and `finish` closes the third.
+    fn mark(&mut self) {
+        let now = std::time::Instant::now();
+        if let Some(slot) = self.split.get_mut(self.marked) {
+            *slot = (now - self.last).as_nanos() as u64;
+            self.marked += 1;
+        }
+        self.last = now;
+    }
+    fn finish(mut self) {
+        self.mark();
+        PENDING_PREPARE_SPLIT.with(|c| c.set(self.split));
+    }
+}
+
+#[cfg(not(feature = "prepare-phases"))]
+struct PrepareSplitTimer;
+
+#[cfg(not(feature = "prepare-phases"))]
+impl PrepareSplitTimer {
+    #[inline(always)]
+    fn start() -> Self {
+        Self
+    }
+    #[inline(always)]
+    fn mark(&mut self) {}
+    #[inline(always)]
+    fn finish(self) {}
+}
+
 /// The last routed execution's phase split, cleared. All zeros without the `routed-phases` feature,
 /// which is what `explain_analyze` then reports — a consumer sees three empty-looking spans rather
 /// than a missing key, so the schema does not change with the feature.
@@ -14775,8 +14837,10 @@ fn prepare_candidates(ctx: &QueryCtx, params: &QueryParams, filter: &mut FilterE
     // queries exactly as before. Left un-materialized (Candidates, not
     // Vec<u32>) here so the plane branch below can AND two card-space bitmaps
     // directly instead of paying to materialize one of them first.
+    let mut split = PrepareSplitTimer::start();
     let (raw_candidates, residual_exact, proven_conjuncts): (Option<Candidates>, bool, u64) =
         narrow_candidates_exact(filter, indexes, offsets, cards);
+    split.mark();
     // Captured before the flattening below consumes it — see PreparedCandidates::narrowed_repr.
     let narrowed_repr = raw_candidates.as_ref().map_or(NarrowedRepr::None, Candidates::repr);
     // A present plane is always exact (that's what compile_plane guarantees),
@@ -14854,6 +14918,7 @@ fn prepare_candidates(ctx: &QueryCtx, params: &QueryParams, filter: &mut FilterE
     // The `plane_leaves_nothing_to_verify` half needs no such guard: with a plane present
     // `candidate_cards` is always Some, and with no plane it can only hold for a filter that matches
     // everything, where scanning everything is the right answer.
+    split.mark();
     let all_match_known =
         plane_leaves_nothing_to_verify(filter, mode, plane, ctx.indexes) || (residual_exact && candidate_cards.is_some());
 
@@ -14888,6 +14953,7 @@ fn prepare_candidates(ctx: &QueryCtx, params: &QueryParams, filter: &mut FilterE
         proven_conjuncts = 0;
     }
 
+    split.finish();
     PreparedCandidates { candidate_cards, all_match_known, narrowed_repr, proven_conjuncts }
 }
 
@@ -15798,6 +15864,22 @@ pub(crate) struct PhaseStats {
     /// inferred. No cost term describes it, and on range-acquired queries it is where a third of the
     /// runtime was landing unaccounted.
     pub(crate) ns_prepare: u64,
+    /// `ns_prepare` split into the three phases of `prepare_candidates`, which scale with three
+    /// different things and are what `cost::materialize_cost`'s three terms are fitted against.
+    /// **All zero without the `prepare-phases` cargo feature** -- see `PrepareSplitTimer` for why
+    /// they are not on by default, and read them from a build that has it rather than assuming a
+    /// zero means the phase was free.
+    ///
+    /// `narrow_candidates_exact`: the index probes and set composition. The term the old
+    /// `MATERIALIZE_SORT_*` shape had nothing for, and a median 85% of prepare on a `Candidates`
+    /// acquire.
+    pub(crate) ns_narrow: u64,
+    /// Projection into card space and materialization of the id list, including `eval_planes` and the
+    /// plane AND/extract when a plane survived `split_planes`. 99% of prepare on a `plane` acquire.
+    pub(crate) ns_project: u64,
+    /// `memoize_text_predicates` + `order_children_by_verify_cost`. Measured at one timer tick on the
+    /// median query of every acquire -- folded into `PREPARE_FIXED_NS` rather than given a term.
+    pub(crate) ns_memo: u64,
     /// The result total this run returned. `explain_analyze` had no ground truth at all before: a
     /// harness wanting the true cardinality made a SECOND `query()` call, which is a different
     /// execution, so agreement with the analyzed run was assumed rather than observed.
@@ -16045,7 +16127,7 @@ thread_local! {
         cards_visited: 0, printing_span: 0, printings_examined: 0, matches_pushed: 0, set_printings: 0, perm_steps: 0,
         redo_examined: 0, card_pass_calls: 0, broadcast_printings: 0, select_input_len: 0, page_rows_collected: 0,
         ns_setup: 0,
-        ns_loop: 0, ns_finish: 0, ns_round_total: 0, ns_prepare: 0, result_total: 0, paging_taken: PagingTaken::NotEntered,
+        ns_loop: 0, ns_finish: 0, ns_round_total: 0, ns_prepare: 0, ns_narrow: 0, ns_project: 0, ns_memo: 0, result_total: 0, paging_taken: PagingTaken::NotEntered,
     }) };
 
     /// The compose fastpath's branch label, stored apart from `PHASE_STATS` because it is the one
@@ -16124,6 +16206,10 @@ thread_local! {
     /// `debug_assert` below pins it, because the failure is silent: an unconsumed value is read by
     /// the NEXT participant and reported as its `ns_prepare`, which looks entirely plausible.
     static PENDING_PREPARE_NS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+
+    /// `[narrow, project, memo]` ns of the pending prepare, handed to the executor that publishes it
+    /// exactly as `PENDING_PREPARE_NS` is. Always `[0; 3]` without the `prepare-phases` feature.
+    static PENDING_PREPARE_SPLIT: std::cell::Cell<[u64; 3]> = const { std::cell::Cell::new([0; 3]) };
 }
 
 /// `prepare_candidates`, timed. Only `run_query_with_plan`'s materializing arms use this; the routed
@@ -16303,6 +16389,7 @@ fn exec_gathered_scan<'a>(
     let n_page_rows = page.len() as u64;
     let t_end = std::time::Instant::now();
     let prep_ns = PENDING_PREPARE_NS.with(|c| c.replace(0));
+    let split = PENDING_PREPARE_SPLIT.with(|c| c.replace([0; 3]));
     PHASE_STATS.with(|c| {
         // A WHOLE-struct set, deliberately: nothing here is inherited, so this executor cannot
         // report a field an earlier query wrote. The compose fastpath's `paging_taken` survives
@@ -16331,6 +16418,7 @@ fn exec_gathered_scan<'a>(
             ns_finish: (t_end - t_finish).as_nanos() as u64,
             ns_round_total: 0, // filled by explain_analyze, which owns the round timer
             ns_prepare: prep_ns,
+            ns_narrow: split[0], ns_project: split[1], ns_memo: split[2],
             result_total: 0,   // likewise: explain_analyze fills it from the value actually returned
             paging_taken: PagingTaken::NotEntered, // owned by PAGING_TAKEN; take_phase_stats merges it in
         });
@@ -17162,6 +17250,13 @@ fn mk_plan_feats(
         artwork_seen_printings: if matches!(params.mode, Mode::Artwork) { scan_units } else { 0 },
         compose_scan_printings: 0, // set by every branch that costs a PrintingCompose (its own, or as a competitor)
         gather_group_printings: 0, // only the compose branch, and only when its grouping arm runs
+        // The three prepare-step features are filled in by `acquire_plan_features`' wrapper, which is
+        // the one place that holds both the residual filter and the plane. `prepare_cands` defaults to
+        // `eval_domain` here because that IS the narrowed candidate count under a `Candidates`
+        // acquire; the wrapper overrides it on the acquires that pin `eval_domain` at `n_cards`.
+        prepare_nodes: 0,
+        prepare_plane_word_ops: 0,
+        prepare_cands: eval_domain,
     }
 }
 
@@ -17304,7 +17399,58 @@ fn candidate_feats(ctx: &QueryCtx, params: &QueryParams, prep: &PreparedCandidat
 /// or `prepare_candidates` (`Prep::Candidates`). Returns the plane popcount bitmap
 /// alongside `Prep::Plane` (empty otherwise) — `run_query_routed`'s dispatch needs
 /// it to execute the winner; a caller that only wants `feats` (`explain`) drops it.
+///
+/// The three `prepare_*` features are filled in HERE rather than in `mk_plan_feats`, in a wrapper
+/// around the branching body: this is the only scope that holds the residual filter, the plane and
+/// the resulting `Prep` at once, and every one of the six acquire branches would otherwise need the
+/// same three lines. Counted BEFORE the body runs, because a `Candidates` acquire calls
+/// `prepare_candidates`, which rewrites `filter` in place (`memoize_text_predicates`,
+/// `order_children_by_verify_cost`) — the narrowing walk being modelled saw the tree as it is now.
 fn acquire_plan_features(
+    ctx: &QueryCtx,
+    params: &QueryParams,
+    filter: &mut FilterExpr,
+    unsplit: Option<&FilterExpr>,
+    plane: Option<&PlaneExpr>,
+) -> (cost::PlanFeatures, Prep, Vec<u64>, Option<u64>) {
+    let prepare_nodes = filter.narrow_nodes();
+    // `nodes * words` when a plane survived `split_planes`, else 0 — one field carrying both "is
+    // there a plane" and "how much word-wise work does it take", because the prepare step's plane
+    // work is `eval_planes`, which is exactly that product, and pays nothing when there is no plane.
+    let prepare_plane_word_ops =
+        plane.map_or(0, |p| p.node_count().saturating_mul(ctx.cards.len().div_ceil(64) as u32));
+    let (mut feats, prep, plane_bits, and_estimate_ns) = acquire_plan_features_inner(ctx, params, filter, unsplit, plane);
+    feats.prepare_nodes = prepare_nodes;
+    feats.prepare_plane_word_ops = prepare_plane_word_ops;
+    // `eval_domain` is the honest narrowed count under a `Candidates` acquire and under the compose
+    // branch, which estimates it. The two BARE-RANGE acquires do not narrow at all — they leave
+    // `eval_domain` pinned at `n_cards` — so a materializing plan's prepare step is charged the
+    // `matches` estimate there instead. Measured: the pinned value made this term read ~157 us
+    // against a real 354-458 ns on those rows.
+    if matches!(prep, Prep::Range(CountSource::PrintingRangeScan | CountSource::CardRangePopcount)) {
+        feats.prepare_cands = feats.matches;
+    }
+    // Then `narrow_candidates_exact`'s own breadth guard, mirrored: a set covering more than
+    // `1 - 1/NARROW_BREADTH_DISCARD_DIVISOR` of its domain is DISCARDED there, and a discarded
+    // narrowing materializes nothing at all. Without this the two bare-range acquires are bimodal and
+    // unmodellable — the discarded half measures a median 188 ns of prepare against 23.7 us for the
+    // half that materializes, and charging either population's value to both is ~18x wrong at the
+    // median (`card_range_popcount` graded 3.80 without the guard, 1.33 with it).
+    //
+    // PLANE-EXEMPT, because `prepare_candidates`' `Some(expr)` arm returns `Some(..)` on every one of
+    // its three paths: with a plane present there is always a candidate list, even when the residual's
+    // own narrowing was discarded — the list is then the plane bitmap's own ids. Applying the guard
+    // there anyway costs 0.79 -> 0.83 overall and 0.70 -> 0.88 on the `plane` acquire.
+    let breadth_limit = feats.n_cards - feats.n_cards / cost::NARROW_BREADTH_DISCARD_DIVISOR;
+    if feats.prepare_plane_word_ops == 0 && feats.prepare_cands > breadth_limit {
+        feats.prepare_cands = 0;
+    }
+    (feats, prep, plane_bits, and_estimate_ns)
+}
+
+/// The branching body of `acquire_plan_features`; see that wrapper for why the prepare-step features
+/// are not set here.
+fn acquire_plan_features_inner(
     ctx: &QueryCtx,
     params: &QueryParams,
     filter: &mut FilterExpr,
@@ -18547,15 +18693,17 @@ fn run_query_with_plan<'a>(
 pub(crate) struct PlanEstimate {
     pub(crate) plan: PhysicalPlan,
     pub(crate) predicted_ns: f64,
-    /// `cost::materialize_cost` for this plan: the modelled `collect` + `sort_unstable` cost of the
-    /// candidate list it consumes — the candidate-production term `plan_cost` omits. Reported but
-    /// deliberately NOT added to `predicted_ns`; `0.0` for plans that build no candidate list. See
-    /// `cost.rs`'s "Candidate materialization" section for why it stays out of the routing decision.
+    /// `cost::materialize_cost` for this plan: the modelled cost of the artifact its DISPATCH builds
+    /// — `prepare_candidates` for the two materializing plans, and `0.0` for the four that build
+    /// nothing there (see that function's doc for why `CardRangePopcount`, which does build one, is
+    /// among them). The term `plan_cost` omits for a `Prep::Range` acquire. Reported but deliberately
+    /// NOT added to `predicted_ns`; see `cost.rs`'s "Candidate materialization" section.
     ///
-    /// Charged on `eval_domain`, which is the candidate count only under a `Candidates` acquire.
-    /// Under `Prep::Range` the two materializing plans are estimated UNNARROWED
-    /// (`eval_domain = n_cards`), so this figure has no referent there -- do not pool range-acquired
-    /// rows with candidate-acquired ones when reading it.
+    /// Comparable across acquires, which it was not before Round 81: it is charged on
+    /// `prepare_nodes`/`prepare_plane_word_ops`/`prepare_cands`, each of which is set per acquire
+    /// branch, rather than on `eval_domain`, which the two bare-range acquires leave pinned at
+    /// `n_cards`. Grade it against the realized `PhaseStats::ns_prepare` --
+    /// `scripts/bench_prepare_cost_shape.py` does exactly that.
     pub(crate) materialize_ns: f64,
     /// Whether this is the plan `run_query_routed` would run: the cheapest `predicted_ns` among the
     /// plans this acquire's dispatch arm can execute (`Prep::scope`). That is index 0 after the
@@ -19201,7 +19349,8 @@ fn run_query_streamed_popcount<'a>(
 /// `card_range_popcount` IS a range acquire). Same handoff, opposite treatment, both from one rule.
 fn publish_popcount_phases(ns_setup: u64, ns_loop: u64, ns_finish: u64) {
     let prep_ns = PENDING_PREPARE_NS.with(|c| c.replace(0));
-    PHASE_STATS.with(|c| c.set(PhaseStats { ns_setup, ns_loop, ns_finish, ns_prepare: prep_ns, ..PhaseStats::default() }));
+    let split = PENDING_PREPARE_SPLIT.with(|c| c.replace([0; 3]));
+    PHASE_STATS.with(|c| c.set(PhaseStats { ns_setup, ns_loop, ns_finish, ns_prepare: prep_ns, ns_narrow: split[0], ns_project: split[1], ns_memo: split[2], ..PhaseStats::default() }));
 }
 
 /// Streamed selection: match phase records per-card match counts (total is
@@ -19341,6 +19490,7 @@ fn run_query_streamed<'a>(
     // because each exit computes its own, exactly like `perm_steps`/`redo_examined`.
     let publish = |end: std::time::Instant, perm_steps: u64, redo_examined: u64, second_pass_cards: u64| {
         let prep_ns = PENDING_PREPARE_NS.with(|c| c.replace(0));
+        let split = PENDING_PREPARE_SPLIT.with(|c| c.replace([0; 3]));
         PHASE_STATS.with(|c| {
             c.set(PhaseStats {
                 cards_visited: n_cards_visited,
@@ -19366,6 +19516,7 @@ fn run_query_streamed<'a>(
                 ns_finish: (end - t_finish).as_nanos() as u64,
                 ns_round_total: 0,
                 ns_prepare: prep_ns,
+            ns_narrow: split[0], ns_project: split[1], ns_memo: split[2],
                 result_total: 0,                       // see the note at the other publisher
                 paging_taken: PagingTaken::NotEntered, // ditto: owned by PAGING_TAKEN
             });
@@ -19886,6 +20037,11 @@ fn plan_trial_to_pydict<'py>(py: Python<'py>, t: &PlanTrial) -> PyResult<Bound<'
     d.set_item("ns_finish", t.phases.ns_finish)?;
     d.set_item("ns_round_total", t.phases.ns_round_total)?;
     d.set_item("ns_prepare", t.phases.ns_prepare)?;
+    // The `prepare_candidates` phase split behind `ns_prepare`. All three are 0 unless the build
+    // carries the `prepare-phases` cargo feature; see `PhaseStats::ns_narrow`.
+    d.set_item("ns_narrow", t.phases.ns_narrow)?;
+    d.set_item("ns_project", t.phases.ns_project)?;
+    d.set_item("ns_memo", t.phases.ns_memo)?;
     // Ground truth for this run, and which paging branch really ran. Both exist so a harness can
     // check the model against what happened rather than against a second, separate execution.
     d.set_item("result_total", t.phases.result_total)?;
@@ -20030,6 +20186,12 @@ fn acquire_facts_to_pydict<'py>(py: Python<'py>, f: &AcquireFacts) -> PyResult<B
         ("artwork_seen_printings", g.artwork_seen_printings),
         ("compose_scan_printings", g.compose_scan_printings),
         ("gather_group_printings", g.gather_group_printings),
+        // The three prepare-step features, and the term they feed. Graded against the realized
+        // `ns_prepare` by `scripts/bench_prepare_cost_shape.py`; `prepare_cands` is graded against
+        // `cards_visited`, which on GatheredScan IS the candidate count.
+        ("prepare_nodes", g.prepare_nodes),
+        ("prepare_plane_word_ops", g.prepare_plane_word_ops),
+        ("prepare_cands", g.prepare_cands),
         // Derived inside plan_cost rather than stored, and exposed because the Perm/OrderbyWalk
         // paging branches are priced entirely on it and nothing else can check them.
         ("printings_walked", cost::printings_walked(g) as u32),
