@@ -222,6 +222,66 @@ total regret by 0.0 ms).
 | 68 | **First EXECUTOR round in this arc — removes real work rather than improving a prediction.** `walk_grouped_page` stepped the permutation and, per card, bit-tested the card's WHOLE printing span and called `prefer_score` on every set printing. But printings are stored prefer-DESCENDING within a card (`from_rows`' load-time sort, ties by illustration_id then scryfall_id), so under `Mode::Card` + `Prefer::Default` the FIRST set printing already IS the chosen representative — every later `prefer_score`, the `touched`/`group_best` bookkeeping and the post-loop group emit were waste. Now takes the same `(start..end).find(is_set)` early break `gather_composed_page` and `push_card_matches` already used. `printings_examined` moved off its unconditional pre-match `(end - start)` to the EXIT POSITION, per arm, with no per-iteration add (the project's hot-path instrumentation rule). Scoped to the only LIVE walk: `walk_card_page_via_popcount_skip` sits behind `COMPOSE_SIGMA_ENABLED` (defaults 0) and the printing/artwork popcount-skip walks have zero production call sites | kept | n/a (not this doc's own metric) | **Row identity is the gate and it passed twice independently.** Agent: 7,776 cells / 374,712 rows byte-identical (3 distinct-ons x 4 prefers x 3 sort cols x both directions x 6 page points x 6 densities), debug AND release, plus 9,000 cells / 235,692 rows matching by sha256 from routed dumps. Me, separately: **21,912 compose cells including 5,920 `Perm`-paging, 750,580 rows, identical sha256** over printing identity — my first attempt used `orderby=rarity` and hit **0 Perm cells**, so it proved nothing until the orderby was varied. **Realized time**: `PrintingCompose` `ns_loop` p50 **0.707** (3,896 → 1,979 ns), interleaved over 6 block pairs, with GatheredScan/StreamedSelect/PlanePopcountOrder/CardRangePopcount controls all reading p50 **1.000**. Plan choice unaffected: **0 changes over 66,414** survey observations, and 0 `paging_taken`/`picked`/`result_total` flips over 595 exact-population paired compose cells. `cargo test` 305 debug / 302 release, clippy clean both profiles (verified by me) | see "Round 68" narrative below — why the end-to-end number is much smaller than the loop number, a density regime the router never reaches, and a cost-feature consequence that is now a queue item |
 | 69 | **Measurement only.** Grades StreamedSelect's two never-graded cost drivers (`perm_walk_span` via the walk term, `stream_scan_units`) against realized counters, answers whether the permutation-less sort columns need their own cost branch, and re-measures the compose walk's per-orderby clump after Round 68 invalidated it | n/a | n/a | **No instrumentation round was needed — item 1's stated blocker was wrong.** Both realized counters (`perm_steps`, `printings_examined`) already exist and are already published. Walk term: pooled median **1.023**, spread 9.6x, split by sort column into **1.9x** (`name`) to **38.8x** (`cmc`) at flat medians (0.918-1.183) — so a per-orderby scalar cannot help in CARD space, and no existing feature predicts the residual (max \|r\| 0.12). `stream_scan_units` is **bimodal**: p25/p50 exactly 1.000, p90 **11.8** (printing 16.7x, artwork 14.0x). Both cost GATES are correct — all 83 walk-gate disagreements (2.79%) are the estimate crossing `STREAM_MIN_MATCHES`, and 720 of 778 scan-gate ones (92.5%) are the plan returning before any loop. `rarity`/`usd` need **no** cost branch: they have no permutation and `streamed_select_applicable` drops the plan from the argmin (offered 0/12 vs 12/12 for `name`/`cmc`). Compose's `Perm`/`OrderbyWalk` shared arm is likewise **correct** (residual medians 1.277 vs 1.449) — but its per-column medians span **0.925-3.579** against one shipped `WALK_LENGTH_BIAS` of 1.45, which CONFIRMS item 5 | see "Round 69" narrative below — a blocker that was already unblocked, and a stale table that validated its own replacement |
 
+### Round 84 (measurement only) — the router is right 94-96% of the time, and its misses are ties
+
+Twenty rounds of this ledger measure how wrong the cost MODEL is. None of them asked the question in
+front of that: **does the router pick the right plan, and when it does not, did the miss cost
+anything?** `bench_pick_quality.py` answers it. Both are needed — a model can be badly calibrated and
+still route correctly, which turns out to be roughly what is happening.
+
+Every plan is timed inside ONE `explain_analyze` call, so the picked plan and the plan that should
+have won are measured common-mode; that is what makes microsecond differences readable against a
+~9% cross-run noise floor.
+
+| | uniform | realistic |
+|---|---|---|
+| picked the fastest plan | **93.7%** | **95.9%** |
+| picked within 1.09x of fastest (the noise band) | 95.0% | 96.9% |
+| time-weighted hit rate | 88.5% | 91.6% |
+| **total time lost to mis-picks** | **3.5%** (6.0 of 172.4 ms) | **2.8%** (3.2 of 113.6 ms) |
+
+**And the misses are concentrated exactly where they are cheap**, which is the property worth having.
+Comparing HEADROOM — the runner-up's time over the winner's, i.e. how much was on the table at all:
+
+| | uniform | realistic |
+|---|---|---|
+| headroom on **MISSED** queries (p50) | **1.380** | **1.278** |
+| headroom on **HIT** queries (p50) | **3.509** | **3.740** |
+
+The router hits when the stakes are high and misses when the plans are close — a **2.5-2.9x**
+difference in what was available to win. Miss margin itself is p50 **1.425** (uniform) / 1.288
+(realistic): the median mis-pick costs ~30-40%, of a query that was going to be cheap anyway.
+
+**The tail is real but small and concentrated.** Miss margin p99 is 19.1x (uniform) / 10.7x
+(realistic), max 29.7x — and **the worst 1% of misses carry 13.6% of all lost time** in both modes.
+So the remaining routing loss is a few dozen queries, not a systematic bias.
+
+**Where the misses are:**
+
+| slice | hit% (uniform) | share of lost time |
+|---|---|---|
+| `printing_compose` acquire | 92.5% | **95.5%** |
+| `candidates` acquire | 94.9% | 4.5% |
+| `plane` / range acquires | 99.7-100% | **0.0%** |
+| picked `StreamedSelect` | **89.1%** | 32.5% |
+| picked `GatheredScan` | 93.4% | 37.9% |
+| picked `PrintingCompose` | 95.4% | 29.6% |
+| `unique=card` | 92.1% | **53.6%** |
+
+The three non-materializing/range routes are essentially perfect and carry **zero** lost time — every
+routing problem this arc has is inside the `printing_compose` acquire, and `unique=card` carries over
+half of it on a third of the rows. The largest single transition is
+`GatheredScan -> PrintingCompose` (116 misses, 34.1% of lost time), with only 6.9% of those inside the
+tie band — so that one is a genuine mis-pick rather than a coin-flip, and it is the same cell Round 83
+found the build charge would have fixed at the cost of breaking more elsewhere.
+
+**How to read this against the rest of the ledger.** Rounds 77-83 measure cost-model error mass in the
+thousands of log-units and find terms 2x and 3x wrong. This says the routing consequence of all of it
+is **3.5% of dispatch time**. Both are true: the model is inaccurate in ways that mostly do not change
+an argmin, because the argmin only needs an ORDERING and the plans are usually far apart. That is why
+several rounds here shipped correct fixes worth zero flips, and why the honest bar for future cost
+work is this table rather than a feature cell.
+
 ### Round 83 — step 3 does not ship, and it would not ship at ANY accuracy
 
 The end of Round 80's refit sequence, and the answer is no. An implementing lane and an adversarial
