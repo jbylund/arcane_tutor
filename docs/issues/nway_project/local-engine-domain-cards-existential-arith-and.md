@@ -788,7 +788,7 @@ One commit on `costcell/22-existential-and-fix` (gate fix + regression test + fi
 
 
 Round 20 of the `GatheredScan`-compound-plane effort
-([done/local-engine-gathered-scan-undercosted-arith-existential-and.md](done/local-engine-gathered-scan-undercosted-arith-existential-and.md))
+([done/local-engine-gathered-scan-undercosted-arith-existential-and.md](../done/local-engine-gathered-scan-undercosted-arith-existential-and.md))
 found that three rounds of rate-fitting against `cmc>=1 cmc<=5 border:black`-shaped queries all failed
 for the same reason: `eval_domain`/`domain_cards` (the acquire-time card-domain estimate every
 `GatheredScan`/`StreamedSelect` per-candidate term multiplies) is itself wrong by up to 14x for this
@@ -796,7 +796,7 @@ population, and every rate fit was measured against a corrupted ground truth. Th
 named next step — fix the domain estimate first — and finds the exact code responsible, not just its
 symptom. It is the third appearance of the same general problem: combining two range/existential leaves
 into one accurate card-domain count was also the blocker in
-[#852](00852-engine-compose-acquire-p3-p4-ranking.md)'s item 1, and an independence-product family of
+[#852](../00852-engine-compose-acquire-p3-p4-ranking.md)'s item 1, and an independence-product family of
 fixes for a related (but distinct) shape was proven a dead end in
 [local-engine-gathered-scan-card-printing-varying-depth.md](local-engine-gathered-scan-card-printing-varying-depth.md)'s
 Round 2.

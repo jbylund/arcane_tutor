@@ -170,7 +170,7 @@ pub(crate) struct PlanFeatures {
     /// branch produced them), so the fallback must still be a value, not an absent one.
     ///
     /// Round 32 of the printing-varying-depth ledger
-    /// (docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md): `perm_steps` used to
+    /// (docs/issues/nway_project/local-engine-gathered-scan-card-printing-varying-depth.md): `perm_steps` used to
     /// multiply by `n_cards` unconditionally, which is right only for the unbounded case. See
     /// `perm_steps`'s own doc for the regrade this field closes.
     pub perm_walk_span: u32,
@@ -1098,7 +1098,7 @@ pub(crate) fn stream_perm_steps(f: &PlanFeatures) -> f64 {
     // term; it is the applicability gate, not the collapse, that makes it safe.
     //
     // Realized/estimated `perm_steps` over ~12.5k walking rows, same seed and sample length
-    // (docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md, Round 32 for
+    // (docs/issues/nway_project/local-engine-gathered-scan-card-printing-varying-depth.md, Round 32 for
     // the held-out re-check against current traffic):
     //
     //     unbounded walk (pre-Round-32)  p10 0.13   median 1.00   p90 6.43

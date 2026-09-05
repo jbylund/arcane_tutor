@@ -3,13 +3,13 @@
 Round 26 of the accuracy/routing effort. This is a comprehensive diagnostic sweep, not a fix — no code
 changed. Goal: find where the cost model is still wrong, ranked by real routing impact, so Round 27
 targets the actual biggest remaining lever. History read before measuring anything:
-[local-engine-gathered-scan-card-printing-varying-depth.md](local-engine-gathered-scan-card-printing-varying-depth.md)
+[local-engine-gathered-scan-card-printing-varying-depth.md](nway_project/local-engine-gathered-scan-card-printing-varying-depth.md)
 (Phase 1, Rounds 0-10), [00852](00852-engine-compose-acquire-p3-p4-ranking.md) (resolved),
 [local-engine-plane-acquire-compose-costing.md](local-engine-plane-acquire-compose-costing.md) and
 [local-engine-plane-scope-printing-compose-executor.md](local-engine-plane-scope-printing-compose-executor.md)
 (Phase 2, "don't build this"), and
 [done/local-engine-gathered-scan-undercosted-arith-existential-and.md](done/local-engine-gathered-scan-undercosted-arith-existential-and.md)
-+ [local-engine-domain-cards-existential-arith-and.md](local-engine-domain-cards-existential-arith-and.md)
++ [local-engine-domain-cards-existential-arith-and.md](nway_project/local-engine-domain-cards-existential-arith-and.md)
 (Rounds 15-25, `PairTotals` shipped, joint refit failed a third time on clean data).
 
 Measured against an isolated release build of `costcell/trunk` @ `f5aed0a0` (`maturin build --release`,

@@ -3,13 +3,13 @@
 Round 27, and the last one before this branch splits into PRs. Twenty-six rounds of work on
 `costcell/trunk` are documented across
 [local-engine-gathered-scan-card-printing-varying-depth.md](local-engine-gathered-scan-card-printing-varying-depth.md)
-(Phase 1, Rounds 0-10), [#852](00852-engine-compose-acquire-p3-p4-ranking.md) (resolved as a side
-effect), [local-engine-plane-acquire-compose-costing.md](local-engine-plane-acquire-compose-costing.md)
-+ [local-engine-plane-scope-printing-compose-executor.md](local-engine-plane-scope-printing-compose-executor.md)
+(Phase 1, Rounds 0-10), [#852](../00852-engine-compose-acquire-p3-p4-ranking.md) (resolved as a side
+effect), [local-engine-plane-acquire-compose-costing.md](../local-engine-plane-acquire-compose-costing.md)
++ [local-engine-plane-scope-printing-compose-executor.md](../local-engine-plane-scope-printing-compose-executor.md)
 (Rounds 12-13, "don't build this"),
-[done/local-engine-gathered-scan-undercosted-arith-existential-and.md](done/local-engine-gathered-scan-undercosted-arith-existential-and.md)
+[done/local-engine-gathered-scan-undercosted-arith-existential-and.md](../done/local-engine-gathered-scan-undercosted-arith-existential-and.md)
 + [local-engine-domain-cards-existential-arith-and.md](local-engine-domain-cards-existential-arith-and.md)
-(Rounds 15-25), and [reference-engine-cost-model-state-2026-08.md](reference-engine-cost-model-state-2026-08.md)
+(Rounds 15-25), and [reference-engine-cost-model-state-2026-08.md](../reference-engine-cost-model-state-2026-08.md)
 (Round 26's whole-engine survey). All of that validation was against the branch's own history — each
 round measured its own before/after, and Round 26 measured only `costcell/trunk` against itself.
 **Nothing in the tree so far measures the whole branch against `main` in one sitting.** This doc is
@@ -39,7 +39,7 @@ the regret matrix) so the two sides are always compared like-for-like.
 
 ### Canary: the measurement doc's own warning, reproduced
 
-[reference-cost-model-measurement.md](reference-cost-model-measurement.md) warns that a same-build,
+[reference-cost-model-measurement.md](../reference-cost-model-measurement.md) warns that a same-build,
 same-seed pair false-positived at the old (2, 7) trial defaults and reads clean at 30. On this
 machine — a shared dev box with a visible background load (pants test workers, MCP servers, browser
 automation processes) at the time of this run — **30 was not enough**: three same-build pairwise

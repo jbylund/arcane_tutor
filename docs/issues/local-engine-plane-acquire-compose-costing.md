@@ -1,7 +1,7 @@
 # PrintingCompose Miscosted Under the Plane Acquire Branch
 
 Surfaced re-verifying [00852-engine-compose-acquire-p3-p4-ranking.md](00852-engine-compose-acquire-p3-p4-ranking.md)
-after [local-engine-gathered-scan-card-printing-varying-depth.md](local-engine-gathered-scan-card-printing-varying-depth.md)'s
+after [local-engine-gathered-scan-card-printing-varying-depth.md](nway_project/local-engine-gathered-scan-card-printing-varying-depth.md)'s
 Rounds 1-9 closed out that doc's `GatheredScan`/`StreamedSelect` pair (87%→97% ordered right). Base
 branch for this work is `engine-cost-model-cleanup` (via the local `costcell/trunk`), same as that doc.
 

@@ -1,7 +1,7 @@
 r"""Estimate-vs-truth survey for `compose_printing_estimate`'s `And` arm, across curated leaf shapes.
 
 Companion measurement harness for the N-way `And` composition arc
-(docs/issues/local-engine-nway-compose-independence-search.md). That doc is a design for a
+(docs/issues/nway_project/local-engine-nway-compose-independence-search.md). That doc is a design for a
 partition-search estimator; every piece of evidence behind it so far came from throwaway,
 hand-rolled scratchpad scripts (`pairdiag_survey.py`, `tripdiag_survey.py`, and similar), each built
 per round and discarded. This is the durable, checked-in replacement: a deterministic, shape-tagged
@@ -152,7 +152,7 @@ CN_SET_SHAPES: tuple[tuple[str, ...], ...] = (("cn", "set"),)
 # existing `TRIPLES`/pair shape above exercises. Neither pairwise calibration round (38: color/
 # identity/cmc x price; 40: legality/type x {cn,released,usd}, id/pow x set) ever measured this
 # "two simultaneous independence estimates" composition -- that's what this catalog is for; see
-# docs/issues/local-engine-nway-compose-independence-search.md's "Triple-level (3+-leaf) independence
+# docs/issues/nway_project/local-engine-nway-compose-independence-search.md's "Triple-level (3+-leaf) independence
 # safety" open item.
 #
 # `Price` (the `usd` hub) has 5 registered partners (`Legality`/`ColorId`/`ColorIdentity`/`Cmc`/

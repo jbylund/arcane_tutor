@@ -3,7 +3,7 @@
 Companion to branch `engine-cost-model-cleanup` (cut from #1024). That branch has landed four commits
 so far: two `compose_printing_estimate` precision bugs (unit-mismatched `domain_hint`, match-count-vs-
 span confusion for printing-varying fields), the `SpaceEstimate` triple refactor
-([local-engine-compose-estimate-space-triple.md](local-engine-compose-estimate-space-triple.md)'s
+([local-engine-compose-estimate-space-triple.md](../local-engine-compose-estimate-space-triple.md)'s
 design), and — most recently — pricing card-invariant bare leaves (`cmc`/`power`/`toughness`/
 `color_identity`/`legality`/`border`/card-space collections) at their true one-printing scan depth
 instead of `domain_cards * printings_per_card * COMPOSE_CANDIDATE_SPAN_BIAS`, paired-diff verified at

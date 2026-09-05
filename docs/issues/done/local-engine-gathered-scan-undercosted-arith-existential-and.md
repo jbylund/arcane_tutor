@@ -1,7 +1,7 @@
 # GatheredScan Under-Costed for a cmc-Range AND a Card-Invariant Existential Leaf
 
 Found while looking for the highest-latency real queries in a 211k-query uniform sample
-(`docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md`'s benchmark corpus/protocol) and
+(`docs/issues/nway_project/local-engine-gathered-scan-card-printing-varying-depth.md`'s benchmark corpus/protocol) and
 checking whether the router picked the best plan on each. Not yet fixed — this is the starting point for
 whoever picks it up.
 
@@ -98,7 +98,7 @@ look first.
 
 ## Related
 
-- [local-engine-gathered-scan-card-printing-varying-depth.md](local-engine-gathered-scan-card-printing-varying-depth.md) —
+- [local-engine-gathered-scan-card-printing-varying-depth.md](../nway_project/local-engine-gathered-scan-card-printing-varying-depth.md) —
   the session-long effort this was found during; its Rounds 1-9 fixed `domain_cards`/`eval_domain` accuracy
   for *printing-varying* range leaves, not `cmc` (card-invariant) — a different population from this one.
 - [00852-engine-compose-acquire-p3-p4-ranking.md](00852-engine-compose-acquire-p3-p4-ranking.md) — the
@@ -1063,7 +1063,7 @@ What this round DID establish, worth keeping for whoever picks this up next:
 ## Round 25: the Blocker Is Cleared, the Refit Was Rebuilt and Retested on Clean Data -- a Third,
 ## More Precise Negative Result, Discarded
 
-Rounds 22/24 (`docs/issues/local-engine-domain-cards-existential-arith-and.md`) fixed the `eval_domain`
+Rounds 22/24 (`docs/issues/nway_project/local-engine-domain-cards-existential-arith-and.md`) fixed the `eval_domain`
 confound Round 20 found blocking this refit. This round rebuilt Round 19/20's plumbing verbatim
 (`planes.rs::count_plane_leaves`, `PlanFeatures::plane_extra_eval_leaves`, additive
 `GATHER_PLANE_LEAF_NS`/`STREAM_PLANE_LEAF_NS` terms in `cost.rs`), re-ran the joint fit against fresh

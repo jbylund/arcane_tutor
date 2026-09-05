@@ -5149,7 +5149,7 @@ fn generate_calibration_corpus(n: usize, seed: u64) -> Vec<(String, FuzzSpec)> {
 /// The `est` column is the estimator's card-space point estimate (meaningful vs
 /// `total` in card mode; printing-mode totals count printings).
 /// Round 9 of the `GatheredScan`/`card` printing-varying-depth doc
-/// (`docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md`): a
+/// (`docs/issues/nway_project/local-engine-gathered-scan-card-printing-varying-depth.md`): a
 /// `Prep::Candidates`-acquired zero-match round collapses every multiplicative term in
 /// `PhysicalPlan::GatheredScan`'s cost arm to zero (`eval_domain`, `scan_units`, `page_span`/
 /// `page_rows`, `artwork_seen_printings` all derive from an empty candidate list), so the whole
@@ -7585,7 +7585,7 @@ fn streamed_walk_bounds_itself_by_the_sort_column_predicate() {
 }
 
 /// Round 32 of the printing-varying-depth ledger
-/// (docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md):
+/// (docs/issues/nway_project/local-engine-gathered-scan-card-printing-varying-depth.md):
 /// `cost::PlanFeatures::perm_walk_span`, the field `perm_steps`'s cost formula now multiplies by
 /// instead of `n_cards` unconditionally. Reuses the same anti-correlated fixture as
 /// `streamed_walk_bounds_itself_by_the_sort_column_predicate` above (8,500 non-matching cards
@@ -8701,7 +8701,7 @@ fn set_set_disjoint_pair_exact_in_every_space() {
 /// `compose_printing_estimate`'s `And` arm has no tightening at all for `set:X`/`c:X`/`id:X` And'd
 /// with a subtype leaf today: `t:` has no `compile_plane` arm and isn't in any pair table, so the
 /// plain min-fold picks whichever leaf's own (corpus-wide, not dimension-scoped) count is smaller.
-/// This is the Round 34 fix (`docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md`).
+/// This is the Round 34 fix (`docs/issues/nway_project/local-engine-gathered-scan-card-printing-varying-depth.md`).
 ///
 /// One store, two sub-scenarios sharing it (`rest_max` is one scalar per DIMENSION, not per value, so
 /// a cap-binding case needs its own store below rather than a third scenario sharing this `rest_max`):
@@ -9353,7 +9353,7 @@ fn subtype_pair_estimate_fallback_still_declines_when_dim_leaf_already_covered()
 }
 
 // ─── Round 55: `(subtype, subtype)` top-N table ───────────────────────────────
-// docs/issues/local-engine-nway-followup-queue.md, active queue item #1. A NEW, separate mechanism
+// docs/issues/nway_project/local-engine-nway-followup-queue.md, active queue item #1. A NEW, separate mechanism
 // alongside `SubtypePairIndexes`/`SubtypePairEstimate` above (which only ever pair a subtype against
 // `set:X`/`c:X`/`id:X`, never against ANOTHER subtype) -- these tests do not touch, and must not
 // change the behavior of, any test above this marker.
@@ -11573,7 +11573,7 @@ fn compose_tier_charges_border_existential_and_arith_range() {
 /// printing-space `result` tightening at their untightened defaults for the whole function, even
 /// though `popcount_with_bits(Some(border_black))` (an empty `card_invariant` vec plus the one pushed
 /// leaf) answers the true joint exactly. Root-caused with real `eval_domain`/`cards_visited` numbers in
-/// docs/issues/local-engine-domain-cards-existential-arith-and.md.
+/// docs/issues/nway_project/local-engine-domain-cards-existential-arith-and.md.
 ///
 /// True card-space intersection of `cmc>=1 cmc<=5 AND border:black` on `cmc_border_existential_
 /// fixture_store`: card0 (cmc=0) is outside the range; card1 (cmc=3, white only) has no black
@@ -15780,7 +15780,7 @@ fn compose_perm_three_phase_order_only_fires_when_enabled_and_sparse() {
 }
 
 /// Round 30 of the printing-varying-leaf depth ledger
-/// (docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md): `stream_scan_units`
+/// (docs/issues/nway_project/local-engine-gathered-scan-card-printing-varying-depth.md): `stream_scan_units`
 /// must NOT simply inherit `scan_units` for a printing-varying leaf (no legality partner) once the
 /// query's own `matches` sits at or below `STREAM_MIN_MATCHES` -- `run_query_streamed`'s small-total
 /// branch pays a second, `push_card_matches`-driven redo pass over every matching card that
@@ -15861,7 +15861,7 @@ fn stream_scan_units_prices_the_small_total_redo_for_a_printing_varying_leaf() {
     }
 }
 
-/// Round 39 (docs/issues/local-engine-nway-compose-independence-search.md): `AcquireFacts::and_estimate_ns`
+/// Round 39 (docs/issues/nway_project/local-engine-nway-compose-independence-search.md): `AcquireFacts::and_estimate_ns`
 /// must be `Some(_)` exactly when this query's acquire reaches the `PrintingCompose` branch inside
 /// `acquire_plan_features` -- the real, production, acquire-time `compose_printing_estimate` call --
 /// and `None` for every other acquire branch. Reuses the SAME fused two-sided `collector_number`
@@ -15900,7 +15900,7 @@ fn and_estimate_ns_is_populated_only_for_the_printing_compose_acquire_branch() {
 }
 
 /// Round 31 of the printing-varying-leaf depth ledger
-/// (docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md): `PhaseStats::redo_examined`
+/// (docs/issues/nway_project/local-engine-gathered-scan-card-printing-varying-depth.md): `PhaseStats::redo_examined`
 /// must actually be populated from `push_card_matches`'s return value in `run_query_streamed`'s
 /// `total <= STREAM_MIN_MATCHES` branch, not discarded as a bare statement the way it was before this
 /// round (Round 30 had to fit `STREAM_SMALL_TOTAL_REDO_BIAS` against a wall-clock residual precisely
@@ -16135,7 +16135,7 @@ fn gather_page_feats() -> super::cost::PlanFeatures {
 }
 
 // ─── Round 36: subtype x (cmc, power, toughness) dense prefix-sum cube ────────
-// docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md
+// docs/issues/nway_project/local-engine-gathered-scan-card-printing-varying-depth.md
 
 /// The 3-D box-sum inclusion-exclusion formula (`subtype_arith_box_sum`) against a brute-force sum
 /// over the same hand-built cells, for several local-index ranges chosen so every one of the 8
@@ -16471,7 +16471,7 @@ fn subtype_arith_box_fires_alongside_unrelated_leaf_that_stays_uncovered() {
 /// Round 49 (loosening the independence registry's `covered` gate from leaf-occupancy to
 /// subset-identity, see `CoveredState`'s own doc): reproduces the actual regression shape found during
 /// Round 48's own review, `t:elf cmc>=5 usd<X`-shaped -- the direct real-world analog of
-/// `docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md`'s "Round 48" motivating case
+/// `docs/issues/nway_project/local-engine-gathered-scan-card-printing-varying-depth.md`'s "Round 48" motivating case
 /// (`t:elf usd<0.20 cmc>=2`, printing 425->1865 regression). `SubtypeArithBox` computes an exact
 /// `(Elf, cmc>=5)` joint here and `mark_covered_on_hit` covers BOTH the Elf and cmc leaf positions
 /// (their `positions` -- see that call site's own doc). Before this round, `is_covered` permanently
@@ -19490,7 +19490,7 @@ fn scan_two_bucket_exact_mark_covered_on_hit_false_never_covers() {
     assert!(!covered.flags[0] && !covered.flags[1] && !covered.flags[2], "mark_covered_on_hit=false must never cover, even on a hit");
 }
 
-/// Round 52 (docs/issues/local-engine-nway-followup-queue.md item #2): `acquire_plan_features`'s
+/// Round 52 (docs/issues/nway_project/local-engine-nway-followup-queue.md item #2): `acquire_plan_features`'s
 /// `PrintingCompose` branch used to read `unique=card`/`artwork`'s own match count SOLELY from
 /// `exact_result_total` -- a hand-maintained mirror with no arm at all for a pure 2+-leaf
 /// cmc/power/toughness/loyalty `And` (only a single bare leaf, Card-mode only). Meanwhile
@@ -19798,7 +19798,7 @@ fn and_arm_partial_subset_estimate_does_not_leak_into_artwork_matches() {
 }
 
 // ─── Round 53: (usd, eur) joint bucket table ──────────────────────────────────
-// docs/issues/local-engine-nway-followup-queue.md. `IndepClass::Price` bundles usd/eur/tix into ONE
+// docs/issues/nway_project/local-engine-nway-followup-queue.md. `IndepClass::Price` bundles usd/eur/tix into ONE
 // class, so once 2+ price leaves are present the independence registry's own `by_class` bucketing
 // drops them entirely (`_ => {}`) -- neither leaf becomes a unit, and the whole `And` falls to a bare
 // per-leaf `min()`-fold. `usd`x`eur` was found the worst-performing shape by far in a fresh 108K-row

@@ -1841,7 +1841,7 @@ fn build_set_collector_ranges<T>(printings: &[T], set_code: impl Fn(&T) -> &str,
     ranges
 }
 
-/// Round 34 (docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md): `set:X`/`c:X`/
+/// Round 34 (docs/issues/nway_project/local-engine-gathered-scan-card-printing-varying-depth.md): `set:X`/`c:X`/
 /// `id:X` And'd with a subtype leaf (`t:Y`, `CollectionCmp{Subtypes, Ge}`) has the SAME gap Round 33
 /// closed for `set:X`+`cn`-range — `t:` has no `compile_plane` arm (unlike the main card TYPES,
 /// `TypeCmp`, which already has a whole-tree `compile_plane` fast path) and isn't in any pair table,
@@ -2108,7 +2108,7 @@ fn build_subtype_pair2_table(
     max_artwork_groups: usize,
 ) -> SubtypePairTable {
     // Same N=256 cutoff as `build_subtype_pair_tables`'s own `TOP_N` -- validated separately for this
-    // table (docs/issues/local-engine-nway-followup-queue.md, active queue item #1): the excluded
+    // table (docs/issues/nway_project/local-engine-nway-followup-queue.md, active queue item #1): the excluded
     // population's `rest_max` is already far below where a wrong estimate could flip a routing
     // decision at this N, and N is not sized by the `StreamedSelect`/`GatheredScan` transition either
     // (only 2 of 2,221 distinct pairs clear `PAIR_MIN_PRINTINGS` in any space).
@@ -2147,7 +2147,7 @@ fn build_subtype_pair_tables(
     max_artwork_groups: usize,
 ) -> SubtypePairIndexes {
     // The top-256 cutoff, uniform across all three dimensions (verified against the real corpus,
-    // docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md, Round 34): each
+    // docs/issues/nway_project/local-engine-gathered-scan-card-printing-varying-depth.md, Round 34): each
     // dimension's `rest_max` at this N lands far below the count where a wrong estimate starts
     // actually flipping a routing decision, so the fallback's whole operating range stays nowhere
     // near that risk zone.
@@ -2312,7 +2312,7 @@ fn subtype_pair2_exact<'i>(a: &str, b: &str, indexes: &'i Archived<CardIndexes>)
 }
 
 // ─── Round 44: (colors|identity) x cmc exact joint ────────────────────────────
-// docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md, Round 43/44. Round 43 found
+// docs/issues/nway_project/local-engine-gathered-scan-card-printing-varying-depth.md, Round 43/44. Round 43 found
 // that `color:G cmc<=3 usd<=10`-shaped queries fire TWO independence candidates at once (`ColorId` x
 // `Price` and `Cmc` x `Price`, both individually registered safe) whose `.min()`-fold is measurably
 // worse than either component's own baseline -- a composition neither pair's own 2-leaf calibration
@@ -2519,7 +2519,7 @@ fn color_cmc_exact(op: CmpOp, query_mask: u8, cmc_lo: u32, cmc_hi: u32, table: &
 }
 
 // ─── Round 53/54: 2D price-pair joint bucket tables ───────────────────────────
-// docs/issues/local-engine-nway-followup-queue.md. `IndepClass::Price` bundles usd/eur/tix into ONE
+// docs/issues/nway_project/local-engine-nway-followup-queue.md. `IndepClass::Price` bundles usd/eur/tix into ONE
 // class (see that enum's own doc): once 2+ price leaves are present, the independence registry's
 // `by_class` bucketing hits its `_ => {}` catch-all ("2+ occurrences of a class with no combining
 // table, dropped") and NEITHER leaf becomes a unit -- the query falls all the way back to a bare
@@ -2867,7 +2867,7 @@ fn cmc_bounds_intersect(children: &[&FilterExpr]) -> Option<(u32, u32)> {
 }
 
 // ─── Round 36: subtype x (cmc, power, toughness) dense prefix-sum cube ────────
-// docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md. `t:X` And'd with a
+// docs/issues/nway_project/local-engine-gathered-scan-card-printing-varying-depth.md. `t:X` And'd with a
 // cmc/power/toughness range bound has the SAME gap Rounds 33/34 closed for set/cn and set/c/id/
 // subtype pairs: `t:` has no `compile_plane` arm and isn't in any pair table (a dimension crossed
 // with ~300 subtypes is thousands of pairs, not the handful `PairTotals` covers), and cmc/power/
@@ -3229,7 +3229,7 @@ fn subtype_arith_exact(subtype: &str, arith_children: &[&FilterExpr], indexes: &
 }
 
 /// Per-set `collector_number_int` span, derived once from `set_codes`'s own postings at load time
-/// (docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md, Round 33). Lets an `And`
+/// (docs/issues/nway_project/local-engine-gathered-scan-card-printing-varying-depth.md, Round 33). Lets an `And`
 /// of `set:X` + a `collector_number_int` range answer with a density estimate
 /// (`count / (max - min + 1)` scaled by the query's own overlap with `[min, max]`) instead of the
 /// `compose_printing_estimate` `And` arm's plain min-fold, which has no tightening at all for this
@@ -4937,7 +4937,7 @@ fn build_range_card_counts(
 }
 
 // ─── Round 57: exact `legality` x `released_at` printing prefix sums ───────────
-// docs/issues/local-engine-nway-followup-queue.md. `f:modern year<=2003`-shaped queries get NO
+// docs/issues/nway_project/local-engine-nway-followup-queue.md. `f:modern year<=2003`-shaped queries get NO
 // tightening from any mechanism today: `legality` x `released` is deliberately absent from the
 // independence registry (`INDEPENDENCE_SAFE_PAIR`), `released_at` is not a `PairTotals` dimension,
 // and the two leaves share no exact joint -- so `compose_printing_estimate`'s `And` fold reports the
@@ -9397,7 +9397,7 @@ fn compose_printing_bits(
 /// every one `artworks > printings`, never `cards > artworks`**, all traceable to Round 41's
 /// unclamped `narrow_floor` (a child's loose SOLO artwork count surviving while a joint mechanism
 /// tightens printing hard). Recorded as a known, still-open issue in
-/// `docs/issues/local-engine-nway-compose-independence-search.md`. Round 58 deliberately does not add
+/// `docs/issues/nway_project/local-engine-nway-compose-independence-search.md`. Round 58 deliberately does not add
 /// that clamp: it would move ~32% of `root=and` rows, which is its own validated round.
 ///
 /// For "one set's count, the same set in all three spaces", see `ExactDomain` -- a different and
@@ -10018,7 +10018,7 @@ fn resolve_price_joint_pair<'a>(a: AndSource<'_, '_>, b: AndSource<'_, '_>, inde
 /// answer.
 ///
 /// Round 49 (loosening the independence registry's `covered` gate, see
-/// `docs/issues/local-engine-nway-followup-queue.md` item 1): before this round, `covered: Vec<bool>`
+/// `docs/issues/nway_project/local-engine-nway-followup-queue.md` item 1): before this round, `covered: Vec<bool>`
 /// alone made a leaf permanently unavailable to the independence registry the moment ANY mechanism
 /// touched it for ANY partner -- too conservative, since the only real danger is an ESTIMATE-class
 /// candidate re-answering the IDENTICAL leaf subset an exact/bound mechanism (or a prior estimate)
@@ -10672,7 +10672,7 @@ impl AndTraceNode {
 /// Always-on, structured provenance for the OUTERMOST `And` node's `compose_printing_estimate`
 /// evaluation -- replaces the throwaway `CARD_ENGINE_ROUND35_DEBUG`-style env-gated `eprintln!`
 /// instrumentation every round from 33 through 36 built and then discarded to answer exactly this
-/// question (see docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md). `tree`
+/// question (see docs/issues/nway_project/local-engine-gathered-scan-card-printing-varying-depth.md). `tree`
 /// (built by `and_trace_build_tree`, from `considered` plus each child's own solo estimate) is the
 /// actual computation as a small tree rather than a flat "what won" tag: a flat tag can describe
 /// only one level, and cannot say "this pair was tightened via one table, that other pair via a
@@ -11202,7 +11202,7 @@ fn compose_printing_estimate(
                     t.considered.push(and_trace_group(v.iter().map(|c| format!("{c:?}")).collect(), "SetCollectorRange", estimate_hit));
                 }
             }
-            // Round 53 (`docs/issues/local-engine-nway-followup-queue.md`): two price bounds of
+            // Round 53 (`docs/issues/nway_project/local-engine-nway-followup-queue.md`): two price bounds of
             // DIFFERENT fields And'd together, and NOTHING else, get the exact bucketed joint estimate
             // below instead of the plain min-fold above -- see `PriceJointTable`'s own doc for the full
             // motivation (`usd>0.75 eur<0.16` predicted 25,444 against a true 137 pre-Round-53, 185x
@@ -11500,7 +11500,7 @@ fn compose_printing_estimate(
                     // and everything downstream that reads them (`domain_cards`'s `is_and` tightening,
                     // `card_invariant_domain_exact`, `est.result.card`), silently fell back to the
                     // untightened per-child `min` instead of an exact popcount. Root-caused and verified in
-                    // docs/issues/local-engine-domain-cards-existential-arith-and.md (`eval_domain` off by up
+                    // docs/issues/nway_project/local-engine-domain-cards-existential-arith-and.md (`eval_domain` off by up
                     // to ~9x for this shape); this loop is the fix. `pair_range_answer` above now answers
                     // most of this same population more cheaply; this loop is the fallback for the rest
                     // (multiple existential leaves, a card-invariant partner also present, or a pruned
@@ -12036,7 +12036,7 @@ fn compose_printing_estimate(
                     },
                     |leaf, ()| subtype_pair_leaf(leaf).and_then(|subtype| subtype_arith_exact(subtype, &arith_children, indexes)),
                 );
-                // Round 50 ("anchored independence", `docs/issues/local-engine-nway-followup-queue.md`
+                // Round 50 ("anchored independence", `docs/issues/nway_project/local-engine-nway-followup-queue.md`
                 // item #1): `SubtypeArithBox`'s own exact joint above is blind to any OTHER leaf in the
                 // query -- for `t:elf cmc>=5 usd<10`, the box's own exact answer (241) ignores `usd<10`
                 // entirely, even though the box is 1.36x looser than truth (177) precisely because
@@ -12263,7 +12263,7 @@ fn compose_printing_estimate(
                     },
                 );
                 // Round 56 ("anchored independence" for `ColorCmcTable`, the second half of
-                // `docs/issues/local-engine-nway-followup-queue.md` item #2): exactly the pattern Round
+                // `docs/issues/nway_project/local-engine-nway-followup-queue.md` item #2): exactly the pattern Round
                 // 50 shipped for `SubtypeArithBox`, applied to this table's own exact hit. The
                 // `(color|identity, cmc)` joint above is EXACT and wins this arm's `.min()`-fold outright
                 // on the `*+cmc+usd` star shapes -- at which point the query's price leaf contributes
@@ -12549,7 +12549,7 @@ fn compose_printing_estimate(
                             // else: the scan itself declined (index not built) -- dropped, no unit
                             // pushed, same as any other shape this tightening doesn't recognize.
                         }
-                        // Round 53/54 (`docs/issues/local-engine-nway-followup-queue.md`): exactly 2
+                        // Round 53/54 (`docs/issues/nway_project/local-engine-nway-followup-queue.md`): exactly 2
                         // `Price`-classified residual sources present. Before Round 53, EVERY 2+-
                         // occurrence `Price` combination fell straight to the `_ => {}` catch-all below
                         // -- this is the by_class-registry-side half of the fix (the OTHER half is the
@@ -13644,7 +13644,7 @@ fn single_arith_field(children: &[&FilterExpr]) -> Option<NumField> {
 /// reproduces the TRUE joint total exactly: a sum over disjoint cells, not a product or a `min`, so
 /// there is no independence assumption and no anti-correlation risk. Validated 429/429 against real
 /// corpus data in Round 23's investigation before this was wired in — see
-/// docs/issues/local-engine-domain-cards-existential-arith-and.md.
+/// docs/issues/nway_project/local-engine-domain-cards-existential-arith-and.md.
 ///
 /// Declines (`None`) the instant ANY value `bounds` admits was pruned from the field's own id map by
 /// the selectivity floor — `*_seen` (on `PairTotals`) is what tells that apart from "this value never
@@ -15776,7 +15776,7 @@ pub(crate) struct PhaseStats {
     pub(crate) perm_steps: u64,
     /// Printings `push_card_matches` re-examined in `run_query_streamed`'s `total <= STREAM_MIN_MATCHES`
     /// branch's SECOND pass over every matching card -- the redo Round 30 of the printing-varying-leaf
-    /// depth ledger (docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md) found
+    /// depth ledger (docs/issues/nway_project/local-engine-gathered-scan-card-printing-varying-depth.md) found
     /// `printings_examined` structurally cannot see, because that counter is captured only from the
     /// first, counting-only pass (`card_match_count`), which this second pass never touches.
     ///
@@ -16637,7 +16637,7 @@ const COMPOSE_CARD_ESTIMATE_BIAS: f64 = 1.78;
 /// single-leaf broadcast population (a card-invariant leaf setting a whole card's printings at
 /// once) -- this population's `k` is instead the MIN-FOLD of 2-3 independently-indexed leaves'
 /// own exact printing counts, and Round 2 of
-/// `docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md` proved directly that this
+/// `docs/issues/nway_project/local-engine-gathered-scan-card-printing-varying-depth.md` proved directly that this
 /// min-fold under-counts the true candidate span (866/1,500 sampled rows under-estimate
 /// `scan_units` against only 450 over-estimate) -- the opposite direction from the single-leaf
 /// broadcast population, where dividing `k` further (as 1.78 does) was the right correction.
@@ -16701,7 +16701,7 @@ const COMPOSE_RANGE_AND_CLUSTER_BIAS: f64 = 1.1;
 ///
 /// Fit as a plain scale sweep on 1,500 and2/and3 RANGE_FAMILIES queries (`unique=card`, same
 /// population and precedent size as Rounds 1-3 of
-/// `docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md`), captured via
+/// `docs/issues/nway_project/local-engine-gathered-scan-card-printing-varying-depth.md`), captured via
 /// `explain_analyze`'s real `printings_examined` GatheredScan counter. Every sampled query is
 /// `is_cross_index_range_and` by construction (`query()`'s family draws are distinct-without-
 /// replacement over the 5 `RANGE_FAMILIES`, each its own index), so no separate shape filter was
@@ -16736,7 +16736,7 @@ const COMPOSE_RANGE_AND_BROAD_SCAN_SCALE: f64 = 0.7;
 /// `count_source: card_range_popcount`, never `printing_compose`.
 ///
 /// Re-derived fresh rather than assumed to share `COMPOSE_RANGE_AND_BROAD_SCAN_SCALE`'s 0.7: Round
-/// 5's diagnostic (`docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md`) found
+/// 5's diagnostic (`docs/issues/nway_project/local-engine-gathered-scan-card-printing-varying-depth.md`) found
 /// this arm's own broad-guard reset is the single largest bucket of pooled `GatheredScan`/`card`
 /// error by magnitude (53.7% of the pooled total, median ratio 0.64) -- a materially different
 /// realized fraction from the `PrintingCompose` sibling's 0.7, confirming the two arms should not
@@ -16783,7 +16783,7 @@ const COMPOSE_BARE_RANGE_BROAD_SCALE: f64 = 0.43;
 /// cover: a bare single range leaf, or an `And` of range leaves that all share the SAME printing-
 /// value index (a fused two-sided bound like `eur>=0.23 eur<=0.45`) -- see `is_same_index_range_only`.
 ///
-/// Round 5's diagnostic (`docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md`)
+/// Round 5's diagnostic (`docs/issues/nway_project/local-engine-gathered-scan-card-printing-varying-depth.md`)
 /// found `GatheredScan`/`card`'s "single:range" bucket (a single family/predicate drawn from
 /// `RANGE_FAMILIES`) at 3,041 rows, 53.7% of pooled error -- Round 6 fixed the slice of it that
 /// reaches `CardRangePopcount` (`COMPOSE_BARE_RANGE_BROAD_SCALE`), but that arm is only ~4.7% of the
@@ -16868,7 +16868,7 @@ const COMPOSE_GATHER_SPAN_PER_MATCH: f64 = 1.47;
 /// cancelling, and dividing `est_cards` by 1.78 moved it to 0.47.
 ///
 /// Round 1 of the printing-varying-leaf depth ledger
-/// (`docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md`) put a match-density
+/// (`docs/issues/nway_project/local-engine-gathered-scan-card-printing-varying-depth.md`) put a match-density
 /// depth term (`(printings_per_card + 1) / (density + 1)`, see `scan_all`'s fallback arm) UNDER this
 /// multiplier instead of the bare `printings_per_card` it used to scale — that term already prices
 /// most of the "how deep does this query's own candidates get walked" question, so this constant's
@@ -17204,7 +17204,7 @@ fn compose_paging_with_total(
 /// `mk_plan_feats` sets it uniformly for every acquire branch, since the shared feats have to cost
 /// a competing `StreamedSelect` honestly regardless of which branch produced them.
 ///
-/// docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md, Round 32.
+/// docs/issues/nway_project/local-engine-gathered-scan-card-printing-varying-depth.md, Round 32.
 fn perm_walk_span(ctx: &QueryCtx, params: &QueryParams) -> u32 {
     ctx.indexes.sort_perms.get(params.sort_col, params.descending).map_or(ctx.n_cards(), |perm| {
         walk_bounds(perm, ctx.cards, params.sort_col, params.descending, params.sort_bound).len() as u32
@@ -17609,7 +17609,7 @@ fn acquire_plan_features_inner(
         // Round 39: single-shot wall time of THIS call -- the real, production, acquire-time
         // estimation cost every `printing_compose`-routed query pays, as a permanent baseline for
         // grading the general partition-search estimator's own "tax" once it exists (see
-        // docs/issues/local-engine-nway-compose-independence-search.md). Deliberately not
+        // docs/issues/nway_project/local-engine-nway-compose-independence-search.md). Deliberately not
         // multi-trial: the target is an aggregate distribution across thousands of queries (the
         // existing `nway_estimate_truth_survey.py` harness already runs at that scale), where
         // `Instant::now()`'s own ~10-40ns overhead and per-call jitter wash out in the percentile
@@ -18163,7 +18163,7 @@ fn acquire_plan_features_inner(
             // to `Mode::Printing`/`Mode::Artwork` was silently manufacturing a `Mode::Card`-shaped
             // under-count out of a population that had no such property, and is what tipped
             // `bench_feature_accuracy.py`'s pooled `scan_units` cell from clean (main) to UNDER-COUNTS
-            // (this branch) -- see `docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md`'s
+            // (this branch) -- see `docs/issues/nway_project/local-engine-gathered-scan-card-printing-varying-depth.md`'s
             // Round 28 entry.
             let scan_units = if matches!(mode, Mode::Card) && is_cross_index_range_and(composed, indexes) {
                 ((n_printings as f64) * COMPOSE_RANGE_AND_BROAD_SCAN_SCALE).round() as usize
@@ -18317,7 +18317,7 @@ fn acquire_plan_features_inner(
             ((stream_scan_base.unwrap_or(scan_units) as f64) * share).max(eval_domain as f64) as u32
         } else {
             // Round 30 of the printing-varying-leaf depth ledger
-            // (docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md): the bare
+            // (docs/issues/nway_project/local-engine-gathered-scan-card-printing-varying-depth.md): the bare
             // `scan_units` inheritance here was fine BEFORE Round 1 revised `scan_all`'s fallback
             // downward for a printing-varying leaf (price/collector_number/released_at, or an And of
             // them) -- not because it was pricing the right thing, but because the old, cruder
@@ -18818,7 +18818,7 @@ pub(crate) struct AcquireFacts {
     /// itself, not `explain`'s extra diagnostic overhead.
     ///
     /// A permanent baseline for the general partition-search estimator's own future "tax" --
-    /// see docs/issues/local-engine-nway-compose-independence-search.md.
+    /// see docs/issues/nway_project/local-engine-nway-compose-independence-search.md.
     pub(crate) and_estimate_ns: Option<u64>,
 }
 
@@ -19537,7 +19537,7 @@ fn run_query_streamed<'a>(
     if total <= *STREAM_MIN_MATCHES {
         let mut best: Vec<Match> = Vec::with_capacity(total);
         // Round 31 of the printing-varying-leaf depth ledger
-        // (docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md): this loop IS the
+        // (docs/issues/nway_project/local-engine-gathered-scan-card-printing-varying-depth.md): this loop IS the
         // redo Round 30 priced from a wall-clock residual because `printings_examined` (captured only
         // from the FIRST, counting-only pass above) structurally cannot see it. `push_card_matches`
         // already returns the printings it examined per call -- the same value the counting pass's

@@ -577,6 +577,6 @@ above):
   (`and_trace`, the survey harness, `and_estimate_ns`) and the first real generalization (the
   independence registry, the class-priority fix) — read there for the full round-by-round numbers,
   not repeated here.
-- [00852-engine-compose-acquire-p3-p4-ranking.md](00852-engine-compose-acquire-p3-p4-ranking.md) —
+- [00852-engine-compose-acquire-p3-p4-ranking.md](../00852-engine-compose-acquire-p3-p4-ranking.md) —
   the original `StreamedSelect`/`GatheredScan` routing investigation this whole cardinality-estimation
   arc grew out of.

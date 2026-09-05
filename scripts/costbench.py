@@ -185,11 +185,11 @@ ACQUIRE_KEYS = frozenset(
         "compose_paging",
         # Round 37a: per-query provenance for the top-level `And` node's own `compose_printing_estimate`
         # evaluation (`None` when the top-level filter isn't an `And` at all) -- see
-        # `docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md`.
+        # `docs/issues/nway_project/local-engine-gathered-scan-card-printing-varying-depth.md`.
         "and_trace",
         # Round 39: single-shot wall time (ns) of the REAL, production, acquire-time
         # `compose_printing_estimate` call -- `None` whenever this query's acquire took a branch
-        # other than `PrintingCompose` -- see `docs/issues/local-engine-nway-compose-independence-search.md`.
+        # other than `PrintingCompose` -- see `docs/issues/nway_project/local-engine-nway-compose-independence-search.md`.
         "and_estimate_ns",
     }
 )
