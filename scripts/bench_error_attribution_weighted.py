@@ -19,7 +19,12 @@ Three views, deliberately separate because they are different failure modes:
   PER-TERM    the money view. For each cost term whose feature has a realized counter, substitute the
               counter and recompute the arm. The drop in total log-error is that feature's error mass,
               in the model's own units. A term with no counter is reported as UNGRADED rather than as
-              zero, because "we cannot see it" and "it is fine" are not the same answer.
+              zero, because "we cannot see it" and "it is fine" are not the same answer. A term whose
+              feature is a CONSTANT has no count to substitute; `TERM_NS_ORACLE` grades those against a
+              measured phase instead, marked as a bound. And the whole vector is substituted at once
+              per plan, because a single-term column cannot separate "this feature is fine" from "this
+              feature's error cancels another's" -- the joint number is the ceiling on what counter
+              work can remove for a plan, and what survives it is rate and model-form error.
 
 The per-term substitution is exact rather than approximate: `fit_cost_model.design_row` returns
 {term: value} and `CURRENT[plan][term]` holds the shipped coefficient, and that reconstruction is
@@ -94,6 +99,65 @@ TERM_ORACLE: dict[tuple[str, str], tuple[str, str]] = {
     ("PrintingCompose", "GATHER_BITTEST_PER_PRINTING"): ("compose_scan_printings", "printings_examined"),
     ("PrintingCompose", "BROADCAST_PER_PRINTING"): ("broadcast_printings", "broadcast_printings"),
     ("PrintingCompose", "PROJECT_PER_PRINTING"): ("project_printings", "set_printings"),
+    # GatheredScan's finish phase and its artwork dedupe -- three of the four terms Round 77 reported
+    # as UNGRADED while the plan carried 78.7% of all cost error mass.
+    #
+    # `ARTWORK_PER_PRINTING`'s feature is not a new quantity: `mk_plan_feats` sets
+    # `artwork_seen_printings = scan_units` in artwork mode and 0 elsewhere, so its FEATURE error is
+    # `SCAN_PER_ROW`'s error, byte for byte, charged a second time at a second rate (0.50 vs 2.06).
+    # Graded against the same counter for the same reason -- `push_card_matches`'s artwork arms both
+    # return `end - start`, so the dedupe check really does run on every printing `printings_examined`
+    # counts. Its mass is therefore not an INDEPENDENT source; it is the same source's second charge.
+    ("GatheredScan", "SELECT_PER_PAGE_SLOT"): ("gather_page_span", "select_input_len"),
+    ("GatheredScan", "COLLECT_PER_PAGE_ROW"): ("gather_page_rows", "page_rows_collected"),
+    ("GatheredScan", "ARTWORK_PER_PRINTING"): ("artwork_seen_printings", "printings_examined"),
+}
+
+#: (plan, term) -> the realized NANOSECOND measurement that bounds it, for a term whose feature is a
+#: CONSTANT and so has no count to substitute. The substitution replaces the term's whole contribution
+#: (`coeff * 1.0`) with the measured value, instead of replacing a feature value inside it.
+#:
+#: `GatheredScan / FIXED` is the fourth of Round 77's ungraded four and the one that CANNOT get a
+#: counter: there is no quantity to count, only a constant. What can bound it is the phase it names.
+#: The arm's two constants are per-query setup net of the per-unit work, and `exec_gathered_scan` draws
+#: its first phase boundary at exactly that point -- `ns_setup` is everything from entry down to the
+#: match loop, and `plan_self_ns` is `ns_setup + ns_loop + ns_finish`, so the substitution stays inside
+#: one accounting.
+#:
+#: Read as a BOUND, not as a counter grade. A counter substitution is exact because the arm's other
+#: terms are untouched and only one feature moves; here the claim "the rest of the arm covers
+#: `ns_loop + ns_finish`" is what the whole tool is measuring, so what this reports is specifically
+#: "how much total error disappears when the fixed term is replaced by the phase it is named for".
+TERM_NS_ORACLE: dict[tuple[str, str], str] = {
+    ("GatheredScan", "FIXED"): "ns_setup",
+    ("GatheredScan", "FIXED_ZERO_MATCH"): "ns_setup",
+}
+
+#: (plan, term) -> per-term override of `MIN_COUNTER`, and the two finish-phase terms need one.
+#:
+#: `MIN_COUNTER` exists because a small counter makes a RATIO explode -- "a counter of 3 makes any
+#: feature look 100x wrong". This tool does not form a ratio: it substitutes the counter into the arm
+#: and re-measures in NANOSECONDS, where a counter of 3 against a feature of 10 moves the prediction by
+#: 25 ns and cannot blow anything up. For these two the floor is therefore not a noise guard but a
+#: population filter, and a costly one: `page_rows_collected` is bounded above by `limit`, drawn from
+#: `costbench.LIMITS` (10, 100, 175), so a floor of 100 grades the term on the two large page sizes
+#: only; `select_input_len` at 100 drops every narrow query. Both counters are exact integers the
+#: executor reports, not estimates. Left at `MIN_COUNTER` for every pre-existing term so the numbers
+#: stay comparable with the runs already on record.
+TERM_MIN_COUNTER: dict[tuple[str, str], int] = {
+    ("GatheredScan", "COLLECT_PER_PAGE_ROW"): 1,
+    ("GatheredScan", "SELECT_PER_PAGE_SLOT"): 1,
+}
+
+#: (plan, term) -> the distinct-ons whose executor does the work the term prices. Absent means all.
+#:
+#: `ARTWORK_PER_PRINTING` is the artwork dedupe check and `mk_plan_feats` sets its feature to 0 outside
+#: artwork mode, correctly -- no such check runs there. Without this gate the substitution pushes a
+#: live `printings_examined` into a term the arm charges ZERO for and reports the manufactured
+#: difference as explained error. Same trap `bench_feature_accuracy.PROJECT_MODES` guards for compose's
+#: projection pass, which the arm likewise zeroes in printing mode.
+TERM_MODES: dict[tuple[str, str], frozenset[str]] = {
+    ("GatheredScan", "ARTWORK_PER_PRINTING"): frozenset({"artwork"}),
 }
 
 
@@ -159,24 +223,33 @@ def substitutable(r: dict, terms: dict, plan: str, term: str, oracle: tuple[str,
     A substitution is only a measurement of a feature where the arm actually multiplies that feature
     by a rate on the execution that happened. Where it does not, the swap adds cost for work that never
     ran, and the row's error grows for a reason that has nothing to do with the feature under test --
-    which reads, in the table below, as a large NEGATIVE mass indistinguishable from a real cancelling
-    error. Two gates, both borrowed from `bench_feature_accuracy` so there is one definition of each:
+    which reads, in the table below, as a large mass of EITHER sign, indistinguishable from a real
+    finding. Four gates; each one was added because an ungated run reported a number that was not real.
 
     - **Branch.** Compose charges `printings_walked` only on the walks and `compose_scan_printings`
       only on the gather. Keyed on `paging_taken` -- what RAN -- never on the acquire's predicted
-      `compose_paging`, or a declined walk is graded as a gather.
-    - **Distinct-on.** Compose's projection pass exists in card and artwork mode only; in printing mode
-      the composed bitmap already IS the answer, `compose_total_for_mode` just popcounts it, and the
-      arm's `project_printings = 0` is exactly right. `set_printings` is nonetheless nonzero there --
-      `printing_compose_fastpath` computes it unconditionally as a diagnostic -- so an ungated swap
-      charges `popcount(pbits) * 1.93 ns` for a pass that does not exist. On `border:black`
-      `unique=printing` that is 85,411 printings, i.e. 165 us added to a query that measures 0.8 us.
+      `compose_paging`, or a declined walk is graded as a gather. Ungated, `GATHER_BITTEST` graded 982
+      rows of which only 13 took the gather, manufacturing +0.8%.
+    - **Distinct-on**, via `TERM_MODES` plus `PROJECT_MODES`. Compose projects in card/artwork only,
+      and GatheredScan's artwork dedupe runs in artwork only; the arm correctly charges 0 elsewhere
+      while the counter stays live. Ungated, `PROJECT_PER_PRINTING` read **-10.2%** off printing-mode
+      rows alone, and `ARTWORK_PER_PRINTING` read 5.3% instead of 1.9%.
+    - **Live indicator.** `FIXED` and `FIXED_ZERO_MATCH` are mutually exclusive columns that are BOTH
+      present in every GatheredScan vector, one of them zero. `term in terms` is therefore not enough
+      -- the column has to be the one carrying this row.
+    - **Counter floor**, per term via `TERM_MIN_COUNTER`, because a page-sized counter is legitimately
+      tiny and the shared `MIN_COUNTER` would drop every narrow query.
     """
     feature, counter = oracle
     real = r["counters"].get(counter)
     if r["plan"] != plan or term not in terms or r["acq"].get(feature) is None:
         return False
-    if real is None or real < MIN_COUNTER:
+    if not terms[term]:
+        return False
+    if real is None or real < TERM_MIN_COUNTER.get((plan, term), MIN_COUNTER):
+        return False
+    modes = TERM_MODES.get((plan, term))
+    if modes is not None and r["unique"] not in modes:
         return False
     if feature == "project_printings" and r["unique"] not in PROJECT_MODES:
         return False
@@ -194,6 +267,68 @@ def substitute(usable: list[tuple], plan: str, term: str, oracle: tuple[str, str
         n_sub += 1
         swapped = sum(coeffs[t] * (float(real) if t == term else v) for t, v in terms.items()) + excess
         after += log_err(swapped, r["measured"])
+    return after, n_sub
+
+
+def substitute_ns(usable: list[tuple], plan: str, term: str, phase: str) -> tuple[float, int]:
+    """Total cost log-error with one CONSTANT term's whole contribution replaced by a measured phase.
+
+    The counter form above swaps a feature value inside `coeff * value`; a constant term has no value
+    to swap, so this drops `coeff * value` entirely and adds the measured nanoseconds in its place. See
+    `TERM_NS_ORACLE` for why `ns_setup` is the right measurement for `GatheredScan`'s fixed term and
+    for the caveat that makes this a bound rather than a grade.
+    """
+    after, n_sub = 0.0, 0
+    for r, terms, excess, coeffs in usable:
+        real = r["counters"].get(phase)
+        # `terms[term]` is the INDICATOR, not a count: `design_row` emits FIXED and FIXED_ZERO_MATCH on
+        # every row with one of them at 1.0 and the other at 0.0, so `term in terms` alone would grade
+        # the branch this row did not take and add a whole setup phase the arm never charged.
+        #
+        # A zero phase reading is timer resolution, not a measurement of zero setup: substituting it
+        # would drive the whole prediction toward 0 and manufacture an enormous log error.
+        if r["plan"] != plan or not terms.get(term) or not real:
+            after += log_err(r["predicted"], r["measured"])
+            continue
+        n_sub += 1
+        swapped = sum(coeffs[t] * v for t, v in terms.items() if t != term) + float(real) + excess
+        after += log_err(swapped, r["measured"])
+    return after, n_sub
+
+
+def substitute_all(usable: list[tuple], plan: str) -> tuple[float, int]:
+    """Total cost log-error with EVERY oracle-backed feature of one plan replaced at once.
+
+    The per-term column answers "is this feature a source"; it cannot answer "how much of this plan's
+    error is feature error at all", because the terms interact -- one term's over-count cancelling
+    another's under-count shows up as two small or negative single-term numbers while the pair is
+    jointly large. Substituting the whole vector at once separates FEATURE error from what is left:
+    the rates, the model's form, and measurement noise. That remainder is the honest ceiling on what
+    any amount of counter work can remove.
+
+    Nanosecond-bounded terms are included on the same footing as counter terms -- see `TERM_NS_ORACLE`
+    for why `ns_setup` is a bound rather than a grade, which makes this a bound too.
+    """
+    counters = {t: fc for (p, t), fc in TERM_ORACLE.items() if p == plan}
+    phases = {t: ph for (p, t), ph in TERM_NS_ORACLE.items() if p == plan}
+    after, n_sub = 0.0, 0
+    for r, terms, excess, coeffs in usable:
+        if r["plan"] != plan:
+            after += log_err(r["predicted"], r["measured"])
+            continue
+        n_sub += 1
+        total = excess
+        for t, v in terms.items():
+            if t in phases and terms.get(t) and r["counters"].get(phases[t]):
+                total += float(r["counters"][phases[t]])
+                continue
+            swap = v
+            # Same eligibility as the per-term columns, so the joint number sums over the same
+            # population they do rather than a laxer one.
+            if t in counters and substitutable(r, terms, plan, t, counters[t]):
+                swap = float(r["counters"][counters[t][1]])
+            total += coeffs[t] * swap
+        after += log_err(total, r["measured"])
     return after, n_sub
 
 
@@ -223,14 +358,21 @@ def per_term(rows: list[dict]) -> None:
     results, thin = [], []
     for (plan, term), oracle in TERM_ORACLE.items():
         after, n_sub = substitute(usable, plan, term, oracle)
-        (results if n_sub >= MIN_ROWS else thin).append((base - after, plan, term, n_sub))
-    for removed, plan, term, n_sub in sorted(results, reverse=True):
-        print(f"  {plan + ' / ' + term:<52} {n_sub:>7,} {removed:>13.2f} {100 * removed / base:>7.1f}%")
+        (results if n_sub >= MIN_ROWS else thin).append((base - after, plan, term, n_sub, ""))
+    # A phase timing bounds a term that has no countable quantity -- `FIXED` is a constant, so the
+    # measured `ns_setup` it stands for is the only thing that can grade it. Marked as a bound, since
+    # substituting a measurement for a prediction is not the same experiment as swapping two counts.
+    for (plan, term), phase in TERM_NS_ORACLE.items():
+        after, n_sub = substitute_ns(usable, plan, term, phase)
+        if n_sub >= MIN_ROWS:
+            results.append((base - after, plan, term, n_sub, f"  [bound, vs measured {phase}]"))
+    for removed, plan, term, n_sub, note in sorted(results, reverse=True):
+        print(f"  {plan + ' / ' + term:<52} {n_sub:>7,} {removed:>13.2f} {100 * removed / base:>7.1f}%{note}")
     # Named rather than dropped. A term whose eligible population collapsed is UNGRADED on this
     # sample, which is a different answer from "small mass" and must not read as one -- compose's
     # gather terms land here on any run where the router picks the walk branches.
     print(f"\n  Too few eligible rows to grade on this sample (UNGRADED, not clean; need {MIN_ROWS}):")
-    for _, plan, term, n_sub in sorted(thin, key=lambda x: (x[1], x[2])):
+    for _, plan, term, n_sub, _note in sorted(thin, key=lambda x: (x[1], x[2])):
         print(f"    {plan + ' / ' + term:<50} {n_sub:>7,} rows")
     print("\n  Positive = substituting truth REMOVES error, so the feature is a real source.")
     print("  Negative = the feature's error was CANCELLING another term's; fixing it alone makes the")
@@ -238,10 +380,28 @@ def per_term(rows: list[dict]) -> None:
     print("  Before reading a negative cell as a cancellation, check `substitutable`: an ungated swap")
     print("  charges work the executor never ran, and that is the OTHER way a cell goes negative.")
 
+    joint(usable, base)
+    ungraded_report(usable)
+
+
+def joint(usable: list[tuple], base: float) -> None:
+    """Per plan, the error mass its whole feature vector removes when substituted at once."""
+    print("\n  ALL of one plan's oracle-backed features substituted AT ONCE -- feature error jointly,")
+    print("  against the plan's own share of the mass. What survives is rate/form error, not counting.")
+    print(f"  {'plan':<52} {'rows':>7} {'plan mass':>10} {'removed':>10} {'of plan':>8}")
+    for plan in sorted({p for p, _ in TERM_ORACLE} | {p for p, _ in TERM_NS_ORACLE}):
+        plan_mass = sum(log_err(r["predicted"], r["measured"]) for r, _, _, _ in usable if r["plan"] == plan)
+        after, n_sub = substitute_all(usable, plan)
+        if n_sub >= MIN_ROWS and plan_mass > 0:
+            print(f"  {plan:<52} {n_sub:>7,} {plan_mass:>10.1f} {base - after:>10.2f} {100 * (base - after) / plan_mass:>7.1f}%")
+
+
+def ungraded_report(usable: list[tuple]) -> None:
+    """Terms carrying nonzero cost that neither oracle can touch -- unmeasured, which is not clean."""
     ungraded = collections.Counter()
     for r, terms, _, coeffs in usable:
         for t, v in terms.items():
-            if (r["plan"], t) not in TERM_ORACLE and coeffs[t] * v > 0:
+            if (r["plan"], t) not in TERM_ORACLE and (r["plan"], t) not in TERM_NS_ORACLE and coeffs[t] * v > 0:
                 ungraded[f"{r['plan']} / {t}"] += 1
     print("\n  UNGRADED terms that carry nonzero cost (no counter exists -- unmeasured, not clean):")
     for name, n in ungraded.most_common(8):

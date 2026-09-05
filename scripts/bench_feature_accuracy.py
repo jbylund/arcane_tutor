@@ -107,6 +107,23 @@ MIN_COUNTER = 100
 # indexes, false)` -- the same third argument. A counter here could only ever read 1.000 by identity,
 # which is worse than no counter because it looks like a measurement. Any error in that term is in the
 # RATE, not the feature.
+#
+# `gather_page_span` and `gather_page_rows` are `GatheredScan`'s finish-phase pair, added because the
+# weighted error attribution found their two terms live on 3,290 picked rows with no counter behind
+# either. They are DERIVED terms exposed from `cost.rs` (like `stream_perm_steps`), not stored fields,
+# and they grade very differently from each other:
+#
+# `gather_page_span` charges `min(offset + limit, matches)` for the finish phase's quickselect. What
+# `select_page` really quickselects over is `GatherSelect`'s buffer, which is pruned back to
+# `k = offset + limit` only once it has grown `GATHER_PRUNE_CHUNK` (4,096) past `k` -- so below
+# `k + 4,096` matches NO prune has ever run and the buffer still holds every match. That is most of
+# real traffic: the realized `select_input_len` is the whole match set while the arm charges one page.
+#
+# `gather_page_rows` charges `clamp(matches - offset, 0, limit)` for the collect, and the realized
+# `page_rows_collected` is that identical clamp on the REALIZED total. So unlike every other pair here
+# the cell carries no shape error at all -- it reports the cardinality estimate propagating into the
+# page phase and nothing else. Kept anyway, because "this term's only error is upstream" is a finding
+# about where NOT to work, and it is the one term in this arm for which that can be said exactly.
 PAIRS = (
     ("matches", "matches_pushed"),
     ("eval_domain", "cards_visited"),
@@ -115,7 +132,24 @@ PAIRS = (
     ("residual_card_pass", "card_pass_calls"),
     ("broadcast_printings", "broadcast_printings"),
     ("project_printings", "set_printings"),
+    ("gather_page_span", "select_input_len"),
+    ("gather_page_rows", "page_rows_collected"),
 )
+
+#: Plans whose arm charges the two finish-phase page terms. Only `GatheredScan` does: no other arm has
+#: a page-slot or page-row term at all, and no other executor publishes the counters -- `MIN_COUNTER`
+#: would drop those rows on a zero counter anyway, but the gate keeps the reason in the code.
+#: `run_query_streamed`'s small-total exit and `gather_composed_page` both drive a `GatherSelect` too,
+#: and neither is priced for it; that is unmeasured work, not a grading opportunity.
+GATHER_PAGE_FEATURES = frozenset({"gather_page_span", "gather_page_rows"})
+GATHER_PAGE_TERM_PLANS = frozenset({"GatheredScan"})
+
+#: `gather_page_rows` is BOUNDED BY `limit`, which the sampler draws from `costbench.LIMITS`
+#: (10, 100, 175) -- so the shared `MIN_COUNTER` of 100 is not a noise floor here, it is a filter that
+#: silently drops every `limit=10` row and grades the term on the two large page sizes only. The floor
+#: exists because a counter of 3 makes any feature look 100x wrong; a page size cannot, being an exact
+#: small integer both sides. One row is enough for a ratio here.
+GATHER_PAGE_ROWS_MIN_COUNTER = 1
 
 #: Plans whose cost arm charges the residual-gated per-card term. Both materializing plans do, at
 #: their own rates (`GATHER_CARD_PASS_NS` + `GATHER_RESIDUAL_FLOOR_NS`, `STREAM_CARD_PASS_NS` +
@@ -241,6 +275,30 @@ RESIDUAL_FEATURES = frozenset({"residual_card_pass", "stream_residual_card_pass"
 percentile = costbench.percentile
 
 
+def arm_charges(feat: str, plan: str, paging: str, unique: str) -> bool:
+    """Whether THIS plan's arm multiplies `feat` by a rate on THIS query, per-plan spellings resolved.
+
+    One shared feature vector costs every plan, so a feature being present says nothing about whether
+    the arm being graded reads it. Grading a counter against a term no arm charges manufactures a
+    defect -- which has happened here three times (StreamedSelect's `scan_units` with no residual,
+    compose's `project_printings` in printing mode, the walk branches' `matches`/`eval_domain`).
+    """
+    if feat == "stream_perm_steps" and plan not in WALK_TERM_PLANS:
+        return False  # this plan's arm has no permutation-walk term
+    if feat == "project_printings" and unique not in PROJECT_MODES:
+        return False  # no projection pass exists in printing mode; the arm charges 0 and is right
+    if feat in COMPOSE_BUILD_CHARGES and plan != "PrintingCompose":
+        # A range acquire sets `project_printings`/`scatter_printings` on the SHARED vector so a
+        # competing compose is costed honestly, but no other plan's arm reads them and no other
+        # executor publishes the counters. `MIN_COUNTER` would drop these rows on a zero counter;
+        # saying so here keeps the reason out of a filter's side effect.
+        return False
+    if feat in GATHER_PAGE_FEATURES and plan not in GATHER_PAGE_TERM_PLANS:
+        return False  # no other arm has a finish-phase page term to grade
+    # This branch's arm never multiplies this feature by a rate.
+    return not (plan == "PrintingCompose" and not compose_grades(paging, feat))
+
+
 def collect(engine: object, sampler: QuerySampler, rng: random.Random, budget: costbench.Budget) -> list[dict]:
     """One row per (query, plan, feature) where the plan reported the matching counter."""
     rows: list[dict] = []
@@ -266,22 +324,11 @@ def collect(engine: object, sampler: QuerySampler, rng: random.Random, budget: c
                     feat = scan_feature(plan["plan"], paging, acq["residual_tier_ns100"])  # noqa: PLW2901 - the arm decides
                 elif feat == "residual_card_pass":
                     feat = residual_feature(plan["plan"])  # noqa: PLW2901 - ditto
-                if feat is None:
+                if feat is None or not arm_charges(feat, plan["plan"], paging, sample.kw["unique"]):
                     continue
-                if feat == "stream_perm_steps" and plan["plan"] not in WALK_TERM_PLANS:
-                    continue  # this plan's arm has no permutation-walk term
-                if feat == "project_printings" and sample.kw["unique"] not in PROJECT_MODES:
-                    continue  # no projection pass exists in printing mode; the arm charges 0 and is right
-                if feat in COMPOSE_BUILD_CHARGES and plan["plan"] != "PrintingCompose":
-                    # A range acquire sets `project_printings`/`scatter_printings` on the SHARED vector
-                    # so a competing compose is costed honestly, but no other plan's arm reads them and
-                    # no other executor publishes the counters. `MIN_COUNTER` would drop these rows on a
-                    # zero counter; saying so here keeps the reason out of a filter's side effect.
-                    continue
-                if plan["plan"] == "PrintingCompose" and not compose_grades(paging, feat):
-                    continue  # this branch's arm never multiplies this feature by a rate
                 got = plan.get(counter)
-                if got is None or got < MIN_COUNTER:
+                floor = GATHER_PAGE_ROWS_MIN_COUNTER if feat == "gather_page_rows" else MIN_COUNTER
+                if got is None or got < floor:
                     continue
                 span = plan.get(SPAN_COUNTER)
                 rows.append(

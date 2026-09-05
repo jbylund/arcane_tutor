@@ -7683,6 +7683,17 @@ impl GatherSelect {
         }
     }
 
+    /// How many matches `finish`'s `select_page` will quickselect over — the realized input length of
+    /// the finish phase, published as `PhaseStats::select_input_len`.
+    ///
+    /// This is what the buffer holds, NOT `min(offset + limit, matches)`: `absorb` prunes back to `k`
+    /// only after the buffer has grown `GATHER_PRUNE_CHUNK` past it, so once a query has more matches
+    /// than a page this sits in `[k, k + GATHER_PRUNE_CHUNK)`. `cost::gather_page_span` charges the
+    /// former; this reports the latter, which is the whole point of grading one against the other.
+    fn buffered_len(&self) -> usize {
+        self.best.len()
+    }
+
     /// The exact total absorbed and the page `[offset, offset+limit)`.
     fn finish(self, offset: usize, limit: usize) -> (usize, Vec<(u32, u32)>) {
         (self.total, select_page(self.best, offset, limit))
@@ -15741,6 +15752,33 @@ pub(crate) struct PhaseStats {
     /// under `compose_printing_bits`' recursion, which has no publish site of its own. See that
     /// function's slot for why a thread-local accumulator and not a threaded-through argument.
     pub(crate) broadcast_printings: u64,
+    /// Matches `GatheredScan`'s finish phase quickselected over — `GatherSelect::buffered_len()` at
+    /// the moment `finish` is called, i.e. the real input length of `select_page`. Realized ground
+    /// truth for `cost::gather_page_span`, charged at `GATHER_SELECT_PER_PAGE_SLOT_NS`.
+    ///
+    /// It exists because the two are NOT the same quantity and nothing said so. The arm charges
+    /// `min(offset + limit, matches)`; the selector keeps a bounded buffer and prunes it back to
+    /// `k = offset + limit` only once it has grown `GATHER_PRUNE_CHUNK` past `k`, so on any query with
+    /// more matches than one page the realized input is somewhere in `[k, k + GATHER_PRUNE_CHUNK)` —
+    /// up to 4,156 slots against a charged 60 on the default page. Free on the hot path: one `Vec::len`
+    /// read at the phase boundary, Round 68's shape, nothing added to the loop body.
+    ///
+    /// Zero for every other executor. `run_query_streamed`'s small-total exit and
+    /// `gather_composed_page` both drive a `GatherSelect` too, but neither arm charges a page-slot
+    /// term at all, so a counter published from them would be graded against nothing.
+    pub(crate) select_input_len: u64,
+    /// Rows `GatheredScan`'s finish phase actually collected into the page — `page.len()`. Realized
+    /// ground truth for `cost::gather_page_rows`, charged at `GATHER_COLLECT_PER_PAGE_ROW_NS`.
+    ///
+    /// Unlike `select_input_len` this is the SAME clamp the arm applies, taken over the realized total
+    /// instead of the estimated `matches` — so the cell isolates the cardinality estimate's error
+    /// propagating into the page phase, with no shape error of its own mixed in. It is therefore
+    /// exactly `clamp(result_total - offset, 0, limit)`, and `gather_page_counters_match_the_realized_page`
+    /// asserts that identity rather than leaving it as a comment: if it ever fails, the arm's clamp is
+    /// the wrong form and not merely mis-fed.
+    ///
+    /// Zero for every other executor, for the reason on `select_input_len`.
+    pub(crate) page_rows_collected: u64,
     /// Per-query scratch setup, before the match loop starts. Split out because it is neither
     /// prepare nor match and it is NOT negligible: `run_query_streamed` zeroes an `n_cards`-long
     /// counts buffer here (~126 kB on the real corpus) no matter how few candidates it is about to
@@ -16005,7 +16043,8 @@ thread_local! {
     /// `explain_analyze`, which fills them after the take.
     static PHASE_STATS: std::cell::Cell<PhaseStats> = const { std::cell::Cell::new(PhaseStats {
         cards_visited: 0, printing_span: 0, printings_examined: 0, matches_pushed: 0, set_printings: 0, perm_steps: 0,
-        redo_examined: 0, card_pass_calls: 0, broadcast_printings: 0, ns_setup: 0,
+        redo_examined: 0, card_pass_calls: 0, broadcast_printings: 0, select_input_len: 0, page_rows_collected: 0,
+        ns_setup: 0,
         ns_loop: 0, ns_finish: 0, ns_round_total: 0, ns_prepare: 0, result_total: 0, paging_taken: PagingTaken::NotEntered,
     }) };
 
@@ -16252,11 +16291,16 @@ fn exec_gathered_scan<'a>(
     }
     // Ends `ns_loop` and starts `ns_finish`.
     let t_finish = std::time::Instant::now();
+    // One `Vec::len` read, before `finish` consumes the selector: the number of matches the
+    // quickselect below really runs over. See `PhaseStats::select_input_len` for why this is not
+    // `page_span`.
+    let n_select_input = sel.buffered_len() as u64;
     let (total, page_ids) = sel.finish(page_offset, limit);
-    let page = page_ids
+    let page: Vec<(&AOracleCard, &APrinting)> = page_ids
         .into_iter()
         .map(|(cid, pid)| (&cards[cid as usize], &printings[pid as usize]))
         .collect();
+    let n_page_rows = page.len() as u64;
     let t_end = std::time::Instant::now();
     let prep_ns = PENDING_PREPARE_NS.with(|c| c.replace(0));
     PHASE_STATS.with(|c| {
@@ -16277,6 +16321,11 @@ fn exec_gathered_scan<'a>(
             // GatheredScan the plan the claim is TRUE for.
             card_pass_calls: if all_match_known { 0 } else { n_cards_visited },
             broadcast_printings: 0, // PrintingCompose-only; taken from its own slot by take_phase_stats
+            // The finish phase's two realized quantities, against which the arm charges
+            // `cost::gather_page_span` and `cost::gather_page_rows`. Both are single reads at the
+            // phase boundary, not loop counters.
+            select_input_len: n_select_input,
+            page_rows_collected: n_page_rows,
             ns_setup: (t_loop - t_start).as_nanos() as u64,
             ns_loop: (t_finish - t_loop).as_nanos() as u64,
             ns_finish: (t_end - t_finish).as_nanos() as u64,
@@ -19307,6 +19356,11 @@ fn run_query_streamed<'a>(
                 // sits under.
                 card_pass_calls: if all_match_known { 0 } else { n_cards_visited + second_pass_cards },
                 broadcast_printings: 0, // PrintingCompose-only; taken from its own slot
+                // GatheredScan-only. This plan's small-total exit drives a `GatherSelect` too, but its
+                // arm charges no page-slot or page-row term, so publishing here would offer a counter
+                // with nothing to grade it against. See `PhaseStats::select_input_len`.
+                select_input_len: 0,
+                page_rows_collected: 0,
                 ns_setup: (t_loop - t_start).as_nanos() as u64,
                 ns_loop: (t_finish - t_loop).as_nanos() as u64,
                 ns_finish: (end - t_finish).as_nanos() as u64,
@@ -19823,6 +19877,10 @@ fn plan_trial_to_pydict<'py>(py: Python<'py>, t: &PlanTrial) -> PyResult<Bound<'
     d.set_item("card_pass_calls", t.phases.card_pass_calls)?;
     // Realized ground truth for `PlanFeatures::broadcast_printings` -- PrintingCompose only.
     d.set_item("broadcast_printings", t.phases.broadcast_printings)?;
+    // Realized ground truth for `cost::gather_page_span` and `cost::gather_page_rows` -- GatheredScan
+    // only (0 for every other plan). The finish phase's two drivers, neither of which had a counter.
+    d.set_item("select_input_len", t.phases.select_input_len)?;
+    d.set_item("page_rows_collected", t.phases.page_rows_collected)?;
     d.set_item("ns_setup", t.phases.ns_setup)?;
     d.set_item("ns_loop", t.phases.ns_loop)?;
     d.set_item("ns_finish", t.phases.ns_finish)?;
@@ -19993,6 +20051,13 @@ fn acquire_facts_to_pydict<'py>(py: Python<'py>, f: &AcquireFacts) -> PyResult<B
         // matches the plan it is grading or it grades a number that arm never reads.
         ("residual_card_pass", cost::residual_card_pass(g)),
         ("stream_residual_card_pass", cost::stream_residual_card_pass(g)),
+        // `GatheredScan`'s finish phase, whose two terms are 3,290 of the 3,320 rows the error
+        // attribution reports as UNGRADED. Derived from `limit`/`offset`/`matches` rather than stored,
+        // and exposed for the same reason `stream_perm_steps` is: `fit_cost_model.design_row` held a
+        // second copy of both clamps. Graded against the realized `select_input_len` and
+        // `page_rows_collected`.
+        ("gather_page_span", cost::gather_page_span(g)),
+        ("gather_page_rows", cost::gather_page_rows(g)),
     ] {
         d.set_item(k, v)?;
     }

@@ -283,10 +283,14 @@ def design_row(plan: str, acq: dict, limit: int, offset: int) -> tuple[dict[str,
     matches = float(acq["matches"])
     n_cards = float(acq["n_cards"])
     tier_ns = acq["residual_tier_ns100"] / 100.0
-    page_span = float(min(offset + limit, acq["matches"]))
+    # `cost::gather_page_span` / `cost::gather_page_rows` themselves, exposed by `explain` for exactly
+    # this reason -- these were two more Python copies of an arm's formula, the shape that has already
+    # drifted twice in this file (`stream_perm_steps`' `n_cards`, `printings_walked`'s bias). The
+    # fallbacks mirror the current arm and are only for runs recorded before the fields existed.
+    page_span = float(acq.get("gather_page_span", min(offset + limit, acq["matches"])))
     # Mirrors cost.rs: `select_page` returns clamp(matches - offset, 0, limit), so a page past the end of
     # the matches collects fewer rows than requested.
-    page_rows = float(min(max(acq["matches"] - offset, 0), limit))
+    page_rows = float(acq.get("gather_page_rows", min(max(acq["matches"] - offset, 0), limit)))
     residual_on = 1.0 if tier_ns > 0.0 else 0.0
     floor = SHIPPED_RESIDUAL_FLOOR.get(plan, 0.0)
     excess = residual_excess(eval_domain, tier_ns, floor)

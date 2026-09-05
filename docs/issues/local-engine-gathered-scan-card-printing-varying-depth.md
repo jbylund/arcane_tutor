@@ -222,6 +222,113 @@ total regret by 0.0 ms).
 | 68 | **First EXECUTOR round in this arc — removes real work rather than improving a prediction.** `walk_grouped_page` stepped the permutation and, per card, bit-tested the card's WHOLE printing span and called `prefer_score` on every set printing. But printings are stored prefer-DESCENDING within a card (`from_rows`' load-time sort, ties by illustration_id then scryfall_id), so under `Mode::Card` + `Prefer::Default` the FIRST set printing already IS the chosen representative — every later `prefer_score`, the `touched`/`group_best` bookkeeping and the post-loop group emit were waste. Now takes the same `(start..end).find(is_set)` early break `gather_composed_page` and `push_card_matches` already used. `printings_examined` moved off its unconditional pre-match `(end - start)` to the EXIT POSITION, per arm, with no per-iteration add (the project's hot-path instrumentation rule). Scoped to the only LIVE walk: `walk_card_page_via_popcount_skip` sits behind `COMPOSE_SIGMA_ENABLED` (defaults 0) and the printing/artwork popcount-skip walks have zero production call sites | kept | n/a (not this doc's own metric) | **Row identity is the gate and it passed twice independently.** Agent: 7,776 cells / 374,712 rows byte-identical (3 distinct-ons x 4 prefers x 3 sort cols x both directions x 6 page points x 6 densities), debug AND release, plus 9,000 cells / 235,692 rows matching by sha256 from routed dumps. Me, separately: **21,912 compose cells including 5,920 `Perm`-paging, 750,580 rows, identical sha256** over printing identity — my first attempt used `orderby=rarity` and hit **0 Perm cells**, so it proved nothing until the orderby was varied. **Realized time**: `PrintingCompose` `ns_loop` p50 **0.707** (3,896 → 1,979 ns), interleaved over 6 block pairs, with GatheredScan/StreamedSelect/PlanePopcountOrder/CardRangePopcount controls all reading p50 **1.000**. Plan choice unaffected: **0 changes over 66,414** survey observations, and 0 `paging_taken`/`picked`/`result_total` flips over 595 exact-population paired compose cells. `cargo test` 305 debug / 302 release, clippy clean both profiles (verified by me) | see "Round 68" narrative below — why the end-to-end number is much smaller than the loop number, a density regime the router never reaches, and a cost-feature consequence that is now a queue item |
 | 69 | **Measurement only.** Grades StreamedSelect's two never-graded cost drivers (`perm_walk_span` via the walk term, `stream_scan_units`) against realized counters, answers whether the permutation-less sort columns need their own cost branch, and re-measures the compose walk's per-orderby clump after Round 68 invalidated it | n/a | n/a | **No instrumentation round was needed — item 1's stated blocker was wrong.** Both realized counters (`perm_steps`, `printings_examined`) already exist and are already published. Walk term: pooled median **1.023**, spread 9.6x, split by sort column into **1.9x** (`name`) to **38.8x** (`cmc`) at flat medians (0.918-1.183) — so a per-orderby scalar cannot help in CARD space, and no existing feature predicts the residual (max \|r\| 0.12). `stream_scan_units` is **bimodal**: p25/p50 exactly 1.000, p90 **11.8** (printing 16.7x, artwork 14.0x). Both cost GATES are correct — all 83 walk-gate disagreements (2.79%) are the estimate crossing `STREAM_MIN_MATCHES`, and 720 of 778 scan-gate ones (92.5%) are the plan returning before any loop. `rarity`/`usd` need **no** cost branch: they have no permutation and `streamed_select_applicable` drops the plan from the argmin (offered 0/12 vs 12/12 for `name`/`cmc`). Compose's `Perm`/`OrderbyWalk` shared arm is likewise **correct** (residual medians 1.277 vs 1.449) — but its per-column medians span **0.925-3.579** against one shipped `WALK_LENGTH_BIAS` of 1.45, which CONFIRMS item 5 | see "Round 69" narrative below — a blocker that was already unblocked, and a stale table that validated its own replacement |
 
+### Round 80 — three routes at GatheredScan's 78.7%, and they agree: it is not counting
+
+Three agents attacked the same target by three deliberately different routes — add COUNTERS for the
+four ungraded terms, interrogate the arm's SHAPE using the phase timings that already exist, and
+regress the residual EMPIRICALLY and let the data choose. **All three converged on the same answer
+from different directions, and none of them is "the four ungraded terms are wrong".**
+
+**The answer: `GatheredScan`'s error is one term the arm does not have.** On a `Prep::Range` acquire
+(`printing_compose`) the router only ESTIMATED, so a materializing winner calls `prepare_candidates`
+in DISPATCH. `costbench.plan_self_ns` counts that as real latency via `RANGE_ACQUIRES` — correctly,
+`run_query_routed`'s `(plan, Prep::Range(_))` arm really does pay it while the fastpath plans buy
+nothing — and `cost::plan_cost` charges **zero** for it. `cost::materialize_cost` exists, is computed,
+is published per plan as `materialize_ns`, and is deliberately excluded from ranking.
+
+Three independent measurements of the same thing:
+
+- **Phase oracle** (shape route): making `ns_setup`, `ns_loop` AND `ns_finish` all exact makes the
+  model **WORSE** — -3.7% / -6.2% of mass over two seeds, and -19.9% / -22.7% on the compose route
+  alone. Making the prepare term exact removes **+50.1% / +50.7%** (compose route +57.9% / +58.6%).
+  A perfect model of everything the arm describes is worse than what ships.
+- **Zero-parameter ladder** (empirical route), 25,757 GatheredScan rows: shipped mass 22,925 ->
+  charging the build at its realized price 11,362, i.e. **50.4% removed**; adding realized counters on
+  top reaches 73.7%. That is **59% of all engine cost-error mass** located.
+- **Joint substitution** (counter route): swapping GatheredScan's ENTIRE oracle-backed feature vector
+  for truth at once removes only **7.5%** of that plan's mass. So ~90% is rate or model form, not
+  counting — reached without the build hypothesis at all.
+
+**And it explains the 2.3x acquire split exactly.** Against the executor ALONE the two routes are
+identical (pred/exec 1.310 compose vs 1.254 candidates); scored against `plan_self_ns` they read 0.493
+vs 1.254. The split was never a mechanism difference. Cleanest proof: ~500 zero-match rows where every
+other term is provably zero — executor measured **83 ns**, prediction 42 ns (correct), `plan_self_ns`
+**4,104-4,417 ns**, 1.9% of rows carrying 8.4% of the plan's mass at a median 81x under.
+
+**`cost.rs`'s claim that this term cannot change an argmin is false.** It was reasoned about
+StreamedSelect vs GatheredScan, but on a `Prep::Range` acquire the competing set also holds the
+non-materializing plans — the `PrintingCompose -> GatheredScan` cell the module header already records
+at 99% miss and 11% of all routing regret.
+
+**Not shipped, and both diagnosis routes said so independently.**
+
+- Implemented as `routing_cost = plan_cost + materialize_cost` at both ranking sites, it measures
+  **net +1.49 ms SLOWER** end to end: `GatheredScan -> PrintingCompose` 100 flips at -4.09 ms, but
+  `StreamedSelect -> PrintingCompose` 194 flips at **+5.58 ms**. Cause named: on that route
+  StreamedSelect already over-charges its own executor by **77%** (pred/exec 1.767 against
+  GatheredScan's 0.981), so adding a real cost makes it lose picks it should win.
+- Today's constants are the wrong SHAPE, not just the wrong scale. Graded against realized
+  `ns_prepare`, `143 + 4.95 * eval_domain` reads median |log| **1.728** (5.6x, within-25% 5.5%); fitted
+  it is ~2,800 + 1.0 (uniform) / ~2,450 + 0.55 (realistic) — fixed part ~18x too small, per-candidate
+  rate ~5-9x too large, because the shipped shape prices a collect+sort while dispatch also pays the
+  **narrowing walk** that produces the input.
+- The populations disagree sharply. Uniform under-predicts (median signed residual +0.299), realistic
+  **over**-predicts (-0.246); compose-route prep is 42.8% of measured dispatch under uniform and only
+  **12.5%** under realistic. The term removes 1.5% of realistic held-out mass, and wiring today's
+  constants unchanged makes realistic **1.5% worse**.
+
+**Correct sequence, which no single lane produced:** refit `MATERIALIZE_SORT_*` on the right shape ->
+recalibrate StreamedSelect's executor arm on the compose route -> then charge the term.
+
+**What the counter route settled, which was its real job.** Its own four terms explain **~2.2%** of
+total mass between them — the honest number, and it bounds that route by its own measurement:
+
+- **`FIXED` is over-charging by ~128 ns, and correcting it alone is a step the WRONG way.** 5 flips in
+  8,000 (0.06%), net -40 ns — 128 ns cannot move an argmin whose operands are microseconds — and
+  lowering it makes GatheredScan cheaper, the same direction as the missing build term's error.
+  Substituting measured `ns_setup` for it makes the arm **4.4-4.8% worse**, which independently
+  reproduces the phase-oracle result from a route that never used the build hypothesis. Correct it in
+  the same change as the build term, never on its own.
+- **The sibling routes' "`ns_setup` is flat at 41-42 ns" is a QUANTIZATION ARTIFACT and this route
+  caught it.** Every value is a multiple of ~41.67 ns — Apple Silicon's 24 MHz mach timebase — so
+  42/83/125/167/209 are 1/2/3/4/5 ticks. Setup is <= 1 tick below ~500 candidates and rises to 2-3
+  ticks (83-125 ns) at the top decile: weakly **linear in `eval_domain`**, not fixed. By route,
+  `printing_compose` 83 ns against 42 ns everywhere else.
+- **`FIXED_ZERO_MATCH = 42.0` is exactly right** — p50 1.000 against measured `ns_setup`.
+- **`COLLECT_PER_PAGE_ROW` is healthy, exactly.** New counter `page_rows_collected` equals
+  `clamp(result_total - offset, 0, limit)` on **8,000 of 8,000** rows, so the arm's clamp is the right
+  FORM and not merely fed a right number. p10-p90 all 1.000, **spread 1.0 — the tightest feature in the
+  toolkit**. Its only error is the upstream cardinality estimate propagating in.
+- **`ARTWORK_PER_PRINTING` is healthy and needed no counter** — `mk_plan_feats` sets
+  `artwork_seen_printings = scan_units` verbatim and both artwork arms return `end - start`, so the
+  realized quantity is the existing `printings_examined`. p50 0.996. Its 1.5% of mass is **not an
+  independent source**: it is `SCAN_PER_ROW`'s error charged a second time at 0.50 instead of 2.06.
+- **`SELECT_PER_PAGE_SLOT` is the worst-calibrated feature in the whole toolkit** — n=8,637, p50
+  **0.22**, spread **26.8x**, flagged UNDER-COUNTS in every acquire route, every distinct-on and every
+  orderby, above `stream_perm_steps` and `printings_walked`. The mechanism is exact and new:
+  `GatherSelect` prunes to `k = offset + limit` only after the buffer grows `GATHER_PRUNE_CHUNK`
+  (4,096) past `k`, so below `k + 4,096` matches **no prune has ever run and `select_page` quickselects
+  the whole match set** while the arm charges one page — `select_input_len == result_total` exactly on
+  4,206 of 6,244 picked rows. At 3.51 ns/slot it is worth **-0.9%**, so the verdict is *wrong and
+  worthless*, not healthy. Recorded because a future refit will otherwise fit that rate against a
+  feature 4.5x under at the median, and because it is collinear with `matches` on the never-pruned
+  population — `GATHER_PUSH_PER_MATCH_NS = 2.24` is probably already absorbing the quickselect.
+
+**Shipped from this round**: two counters (`select_input_len`, `page_rows_collected`), both single
+reads at the `ns_finish` phase boundary with nothing inside a loop body, so the hot-path rule's A/B is
+not triggered by construction — A/B'd anyway (ABAB x4, exact row parity) with same-build controls
+equalling or exceeding every cross-build read and the sign flipping. `cost::gather_page_span` /
+`gather_page_rows` are exposed and `fit_cost_model.design_row` now reads them instead of holding its
+own copies of both clamps — the duplication shape that has drifted twice in this file's history.
+
+**Two more defects in Round 77's tool, found by this route** (the third and fourth, after Round 78's):
+`substitute` must gate on the term's indicator being LIVE, since `FIXED` and `FIXED_ZERO_MATCH` are
+mutually exclusive columns both present in every GatheredScan vector; and `ARTWORK_PER_PRINTING` needs
+a mode gate or the swap pushes a live counter into a term the arm correctly charges 0 for outside
+artwork mode — that one alone inflated its share from 1.9% to 5.3%. Merged with Round 78's branch and
+`PROJECT_MODES` gates into one `substitutable`, now carrying four gates and the measured consequence of
+omitting each.
+
 ### Round 79 — Round 74's fix had a second axis: it is a PREFER discount, not just a MODE one
 
 Three agents were sent at GatheredScan's 78.7% of cost-error mass by three routes, plus one at the

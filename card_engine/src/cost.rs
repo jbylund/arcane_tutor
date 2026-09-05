@@ -939,6 +939,35 @@ pub(crate) fn stream_perm_steps(f: &PlanFeatures) -> f64 {
 /// not something a density ratio can see, and no constant will fix that.
 const WALK_LENGTH_BIAS: f64 = 1.45;
 
+/// Page slots `GatheredScan`'s finish phase quickselects, charged at `GATHER_SELECT_PER_PAGE_SLOT_NS`.
+/// `min(offset + limit, matches)` -- bounded by `matches` because a page past the end of the matches
+/// returns early out of `select_page` (see that constant's own doc for the sweep that established it).
+///
+/// Exposed to `explain` for the reason `stream_perm_steps` and `residual_card_pass` are: the arm's
+/// quantity and the harness's must be ONE definition. `fit_cost_model.design_row` held its own copy of
+/// this clamp, which is the exact shape that has drifted twice in this file's history.
+///
+/// Graded against the realized `PhaseStats::select_input_len`, which is NOT this quantity and is not
+/// meant to be: `GatherSelect` keeps a bounded buffer and prunes it back to `k = offset + limit` only
+/// once it has grown `GATHER_PRUNE_CHUNK` past `k`, so what `select_page` really quickselects over is
+/// anywhere in `[k, k + GATHER_PRUNE_CHUNK)` on any query with more matches than one page. On the
+/// default 60-row page that is a bound of 4,156 against a charged 60.
+pub(crate) fn gather_page_span(f: &PlanFeatures) -> u32 {
+    (f.offset.saturating_add(f.limit)).min(f.matches)
+}
+
+/// Rows `GatheredScan`'s finish phase collects into the page, charged at
+/// `GATHER_COLLECT_PER_PAGE_ROW_NS`. `select_page` returns `clamp(matches - offset, 0, limit)`, so a
+/// page past the end of the matches collects fewer rows than `limit` asked for.
+///
+/// Exposed for the same one-definition reason as [`gather_page_span`]. Graded against the realized
+/// `PhaseStats::page_rows_collected`; unlike the span above, the realized quantity here is the SAME
+/// clamp applied to the realized total instead of the estimated `matches`, so the cell reports the
+/// cardinality estimate's error propagating into the page phase and nothing else.
+pub(crate) fn gather_page_rows(f: &PlanFeatures) -> u32 {
+    f.matches.saturating_sub(f.offset).min(f.limit)
+}
+
 pub(crate) fn plan_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
     let n_cards = f64::from(f.n_cards);
     // `n_printings` is no longer bound here: it was only feeding the local copy of the walk-length
@@ -948,7 +977,9 @@ pub(crate) fn plan_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
     let scan_units = f64::from(f.scan_units);
     let tier_ns = f64::from(f.residual_tier_ns100) / 100.0;
     let limit = f64::from(f.limit);
-    let page_span = f64::from((f.offset.saturating_add(f.limit)).min(f.matches));
+    // Read from `gather_page_span` rather than inlined: this local feeds the `GatheredScan` arm and
+    // nothing else, and `explain` reports the same function, so the two cannot drift.
+    let page_span = f64::from(gather_page_span(f));
 
     // Printings walked to fill the page in a forward-permutation walk (both printing-space plans).
     // Calls the shared `printings_walked` rather than recomputing `page_span / match_rate`: this was
@@ -1080,8 +1111,9 @@ pub(crate) fn plan_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
         }
         PhysicalPlan::GatheredScan => {
     // Rows the collect actually walks: `select_page` yields `clamp(matches - offset, 0, limit)`, so a
-    // page past the end of the matches collects fewer rows than `limit` asked for.
-    let page_rows = f64::from(f.matches.saturating_sub(f.offset).min(f.limit));
+    // page past the end of the matches collects fewer rows than `limit` asked for. One definition,
+    // in `gather_page_rows`, which `explain` reports for grading.
+    let page_rows = f64::from(gather_page_rows(f));
             // Per-CARD verify tier, for the reason spelled out in the StreamedSelect arm above.
             // Split and gated exactly as in the StreamedSelect arm above, and deliberately in the same
             // change: this lowers both plans' cost on `all_match` queries, and the one asymmetric

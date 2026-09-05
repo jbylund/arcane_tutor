@@ -15992,6 +15992,122 @@ fn redo_examined_counts_only_the_small_total_redo_pass() {
     }
 }
 
+/// `GatheredScan`'s finish phase has two cost terms and, until this round, no counter for either.
+/// `PhaseStats::select_input_len` and `PhaseStats::page_rows_collected` are those counters, and this
+/// pins both to the executor rather than to a comment:
+///
+/// - `page_rows_collected` must be exactly the page returned, and exactly the arm's own clamp
+///   (`cost::gather_page_rows`) evaluated on the REALIZED total. If that identity ever breaks, the
+///   clamp is the wrong shape and no coefficient rescues `GATHER_COLLECT_PER_PAGE_ROW_NS`.
+/// - `select_input_len` must be the buffer `select_page` really quickselects over, which is NOT
+///   `cost::gather_page_span`. Below `k + GATHER_PRUNE_CHUNK` matches no prune can ever have run, so
+///   the buffer still holds every match — and the arm charges one page for it. The fixture sits in
+///   exactly that regime, because production does: a 60-row page prunes only past 4,156 matches.
+///
+/// A regression that published `page_span` into either counter would satisfy the equalities the arm
+/// already believes and fail both of the assertions below.
+#[test]
+fn gather_page_counters_match_the_realized_page() {
+    //: Matches the query selects. Deliberately under `GATHER_PRUNE_CHUNK + k` so `GatherSelect` can
+    //: never prune, which is what makes the realized quickselect input the whole match set.
+    const MATCH_GROUP: usize = 2_000;
+    //: Non-matching filler, so the candidate set is not the whole corpus.
+    const OTHER_GROUP: usize = 500;
+    const N: usize = MATCH_GROUP + OTHER_GROUP;
+    const MATCH_CMC: u8 = 1;
+    const OTHER_CMC: u8 = 2;
+    const LIMIT: usize = 10;
+
+    let mut vocab = VocabInterner::new();
+    let mut cards = Vec::with_capacity(N);
+    for i in 0..N {
+        let mut c = stub_card((i + 1) as u128, TYPE_CREATURE, &[], &mut vocab);
+        c.cmc = Some(if i < MATCH_GROUP { MATCH_CMC } else { OTHER_CMC });
+        cards.push(c);
+    }
+    let data = store_of(cards, &vec![1; N], vocab);
+    let bytes = rkyv::to_bytes::<Error>(&data).expect("serialize");
+    let archived = rkyv::access::<Archived<CardData>, Error>(&bytes).expect("access");
+    let ctx = QueryCtx::from(archived);
+
+    let eq_filter = || FilterExpr::NumericCmp {
+        lhs: NumExpr::Field(NumField::Cmc), op: CmpOp::Eq, rhs: NumExpr::Const(f64::from(MATCH_CMC)),
+    };
+
+    // Offsets spanning the shapes the clamp has to get right: the first page, an interior page, the
+    // last partial page, and one past the end of the matches entirely.
+    for offset in [0usize, 500, MATCH_GROUP - 4, MATCH_GROUP + 100] {
+        let params = kernel_params(Mode::Card, SortCol::Cmc, false, LIMIT, offset);
+        let (pe, filter) =
+            split_planes(eq_filter(), &archived.indexes.planes, &archived.indexes.oracle_trigram.words, true);
+        let mut gathered_filter = filter;
+        take_phase_stats();
+        let (total, page) = run_query_with_plan(PhysicalPlan::GatheredScan, &ctx, &params, &mut gathered_filter, None, pe.as_ref())
+            .expect("GatheredScan is always applicable");
+        let stats = take_phase_stats();
+        assert_eq!(total, MATCH_GROUP, "fixture must match its own group exactly: offset={offset}");
+
+        assert_eq!(
+            stats.page_rows_collected as usize, page.len(),
+            "page_rows_collected must be the page the executor returned: offset={offset}",
+        );
+        // The arm's own clamp, fed the realized total rather than the estimate. Equal here by
+        // construction (this call runs the plan directly, so `matches` IS the truth), which is
+        // precisely the claim: the term's only error source is the cardinality estimate upstream.
+        let realized = super::cost::gather_page_rows(&super::cost::PlanFeatures {
+            matches: total as u32, limit: LIMIT as u32, offset: offset as u32, ..gather_page_feats()
+        });
+        assert_eq!(
+            stats.page_rows_collected, u64::from(realized),
+            "page_rows_collected must equal cost::gather_page_rows on the realized total: offset={offset}",
+        );
+
+        if offset < MATCH_GROUP {
+            // No prune is reachable at this match count, so the quickselect input is every match.
+            assert!(
+                MATCH_GROUP < offset + LIMIT + GATHER_PRUNE_CHUNK,
+                "fixture must stay under the prune threshold or the assertion below is vacuous",
+            );
+            assert_eq!(
+                stats.select_input_len as usize, MATCH_GROUP,
+                "select_input_len must be the whole unpruned buffer, not the page: offset={offset}",
+            );
+            // And that is the finding the counter exists to make visible: the arm charges one page.
+            let charged = super::cost::gather_page_span(&super::cost::PlanFeatures {
+                matches: total as u32, limit: LIMIT as u32, offset: offset as u32, ..gather_page_feats()
+            });
+            // Only where a page really is smaller than the match set. A page deep enough that
+            // `offset + limit` runs past the matches makes the clamp bind and the two agree, which is
+            // correct and is why the comparison is gated rather than asserted everywhere.
+            if offset + LIMIT < MATCH_GROUP {
+                assert!(
+                    stats.select_input_len > u64::from(charged),
+                    "select_input_len ({}) must exceed the charged gather_page_span ({charged}) here -- if these \
+                     agree, the counter is reporting the feature and grades nothing: offset={offset}",
+                    stats.select_input_len,
+                );
+            } else {
+                assert_eq!(
+                    stats.select_input_len, u64::from(charged),
+                    "a page past the match set makes the clamp bind, so the two must agree: offset={offset}",
+                );
+            }
+        }
+    }
+}
+
+/// A zeroed `PlanFeatures` for the two page helpers above, which read only `matches`/`limit`/`offset`.
+/// Spelled out once rather than per call site; every other field is inert for them by construction.
+fn gather_page_feats() -> super::cost::PlanFeatures {
+    super::cost::PlanFeatures {
+        n_cards: 0, n_printings: 0, matches: 0, eval_domain: 0, scan_units: 0, stream_scan_units: 0,
+        residual_card_invariant: false, residual_tier_ns100: 0, limit: 0, offset: 0, perm_walk_span: 0,
+        broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0,
+        compose_paging: ComposePaging::Gather, collection_broadcast_printings: 0,
+        artwork_seen_cards: 0, artwork_seen_printings: 0, compose_scan_printings: 0, gather_group_printings: 0,
+    }
+}
+
 // ─── Round 36: subtype x (cmc, power, toughness) dense prefix-sum cube ────────
 // docs/issues/local-engine-gathered-scan-card-printing-varying-depth.md
 
