@@ -222,6 +222,125 @@ total regret by 0.0 ms).
 | 68 | **First EXECUTOR round in this arc — removes real work rather than improving a prediction.** `walk_grouped_page` stepped the permutation and, per card, bit-tested the card's WHOLE printing span and called `prefer_score` on every set printing. But printings are stored prefer-DESCENDING within a card (`from_rows`' load-time sort, ties by illustration_id then scryfall_id), so under `Mode::Card` + `Prefer::Default` the FIRST set printing already IS the chosen representative — every later `prefer_score`, the `touched`/`group_best` bookkeeping and the post-loop group emit were waste. Now takes the same `(start..end).find(is_set)` early break `gather_composed_page` and `push_card_matches` already used. `printings_examined` moved off its unconditional pre-match `(end - start)` to the EXIT POSITION, per arm, with no per-iteration add (the project's hot-path instrumentation rule). Scoped to the only LIVE walk: `walk_card_page_via_popcount_skip` sits behind `COMPOSE_SIGMA_ENABLED` (defaults 0) and the printing/artwork popcount-skip walks have zero production call sites | kept | n/a (not this doc's own metric) | **Row identity is the gate and it passed twice independently.** Agent: 7,776 cells / 374,712 rows byte-identical (3 distinct-ons x 4 prefers x 3 sort cols x both directions x 6 page points x 6 densities), debug AND release, plus 9,000 cells / 235,692 rows matching by sha256 from routed dumps. Me, separately: **21,912 compose cells including 5,920 `Perm`-paging, 750,580 rows, identical sha256** over printing identity — my first attempt used `orderby=rarity` and hit **0 Perm cells**, so it proved nothing until the orderby was varied. **Realized time**: `PrintingCompose` `ns_loop` p50 **0.707** (3,896 → 1,979 ns), interleaved over 6 block pairs, with GatheredScan/StreamedSelect/PlanePopcountOrder/CardRangePopcount controls all reading p50 **1.000**. Plan choice unaffected: **0 changes over 66,414** survey observations, and 0 `paging_taken`/`picked`/`result_total` flips over 595 exact-population paired compose cells. `cargo test` 305 debug / 302 release, clippy clean both profiles (verified by me) | see "Round 68" narrative below — why the end-to-end number is much smaller than the loop number, a density regime the router never reaches, and a cost-feature consequence that is now a queue item |
 | 69 | **Measurement only.** Grades StreamedSelect's two never-graded cost drivers (`perm_walk_span` via the walk term, `stream_scan_units`) against realized counters, answers whether the permutation-less sort columns need their own cost branch, and re-measures the compose walk's per-orderby clump after Round 68 invalidated it | n/a | n/a | **No instrumentation round was needed — item 1's stated blocker was wrong.** Both realized counters (`perm_steps`, `printings_examined`) already exist and are already published. Walk term: pooled median **1.023**, spread 9.6x, split by sort column into **1.9x** (`name`) to **38.8x** (`cmc`) at flat medians (0.918-1.183) — so a per-orderby scalar cannot help in CARD space, and no existing feature predicts the residual (max \|r\| 0.12). `stream_scan_units` is **bimodal**: p25/p50 exactly 1.000, p90 **11.8** (printing 16.7x, artwork 14.0x). Both cost GATES are correct — all 83 walk-gate disagreements (2.79%) are the estimate crossing `STREAM_MIN_MATCHES`, and 720 of 778 scan-gate ones (92.5%) are the plan returning before any loop. `rarity`/`usd` need **no** cost branch: they have no permutation and `streamed_select_applicable` drops the plan from the argmin (offered 0/12 vs 12/12 for `name`/`cmc`). Compose's `Perm`/`OrderbyWalk` shared arm is likewise **correct** (residual medians 1.277 vs 1.449) — but its per-column medians span **0.925-3.579** against one shipped `WALK_LENGTH_BIAS` of 1.45, which CONFIRMS item 5 | see "Round 69" narrative below — a blocker that was already unblocked, and a stale table that validated its own replacement |
 
+### Round 76 — StreamedSelect's double pass: a correct count worth zero routing
+
+Three agents worked this on separate lanes — THE FIX, a COMPLETENESS AUDIT, and an adversarial VALUE
+lane — and all three converged on the same answer: **the defect is real, the fix is correct, and it
+changes nothing.** It ships as a correctness prerequisite, not as an improvement, and the case for
+that is stated below rather than assumed.
+
+**The double pass, from source.** `run_query_streamed` has one counting pass and three exits. The
+counting pass must run over every candidate, because the API returns `total` for any page and cannot
+know which rows land on page N. The **small-total gather** exit then calls `filter.card_pass` a second
+time for every card with a nonzero count — unavoidably, because `card_pass` returns TWO things, a
+`Tri` verdict (one cacheable bit) and the per-card residual conjunct list into a reused scratch
+`Vec<&FilterExpr>` that `push_card_matches` needs. Caching the verdict would not give you the list.
+Hence the exact 2x. The **permutation walk** exit re-derives too, but only for entries it emits from,
+so it reads 0.997. Under `all_match_known` every site is skipped and the count is 0.
+
+**The fix.** `stream_residual_card_pass` = `residual_card_pass` + the redo pass's cards, the latter
+predicted as **`min(matches, eval_domain)`** — bounded by the candidates the counting pass visited (a
+card the narrowing never offered has no count) and independently by the total (each such card
+contributes at least one match). Both bounds bind, which is why neither alone is used: against
+realized `card_pass_calls - cards_visited` over 6,638 rows, `eval_domain` alone reads p75 1.667 /
+p90 6.197 and `matches` alone p50 1.231, while the `min` reads **p50 1.000 in all three distinct-ons**.
+The split mirrors `scan_units`/`stream_scan_units` exactly — one shared vector, a per-plan quantity
+rather than a compromise 2x wrong for whichever arm loses.
+
+| branch | n | p50 before | p50 after | in-band before | after |
+|---|---|---|---|---|---|
+| GatheredScan single pass | 9,934 | 1.000 | 1.000 | 74.4% | 74.4% (bit-identical) |
+| SS permutation walk | 4,991 | 0.997 | 0.997 | 76.3% | 75.9% |
+| **SS small-total redo** | 3,207 | **0.500** | **1.000** | 8.3% | **58.8%** |
+| SS no-emit exit | 172 | 1.000 | **2.000** | 72.7% | **19.8%** |
+
+`StreamedSelect [candidates]` goes 0.500 -> 1.000, band share 35.8% -> 73.3%. The honest cost is those
+**172 rows (0.9%) regressing to 2.000** — the estimate says small-gather and the executor returned
+early, the same estimate-vs-reality disagreement the shipped `SMALL_TOTAL_FLOOR` term already has on
+those rows, and the whole added charge there is p50 0 ns / p90 161 ns against a 32.4 us floor already
+firing. The walk half deliberately gets **no** term: its second pass is 0.1% of that plan's measured
+run time at p50, and the only plan-time predictor available (`min(page_rows, limit)`) over-counts
+emitting cards 2.24x in printing mode, so a term would trade a graded 0.997 for a worse feature.
+
+**Worth zero to routing, and structurally so rather than by measurement.** `0 plan flips` — verified
+three times independently: the fix lane over 59,498 keys, the value lane over 20,000 rows x 4
+replicates x both populations (bit-identical every time), and separately here over 3,600 prefer-varied
+keys with only StreamedSelect's cost moving (484 rows) and every feature unchanged. The reason is an
+identity: **StreamedSelect is picked on the model-small-total branch 0 times** — 0 of 6,398 (uniform),
+0 of 6,652 (realistic) — because `stream_runs_small_gather` also gates `n_cards * 1.02` = **32.4 us
+flat**, larger than the entire mean picked-plan time (~23-28 us/query). Making a plan more expensive
+where it is picked zero times cannot move an argmin. Defect size / margin-to-winner is p50 **0.0024**;
+only 2 of 6,398 rows where it even reaches the margin, and those need the opposite sign.
+
+The oracle ceiling for the whole term is **-0.06 to -0.09%** (uniform) / -0.02 to -0.02% (realistic) of
+picked time, and **98% of it sits on rows a router cannot see** — where the executor took small-total
+while the model predicted the walk. Gated on what the router CAN see it is a regression (+0.007% /
++0.019%). The value lane's argmin mirror was validated against the engine's own `picked` flag on
+**20,000/20,000 rows every run**, and its `stream_runs_small_gather` copy pinned against the engine's
+derived `stream_perm_steps`.
+
+**And it makes the arm's total prediction ~0.8% WORSE**, which the audit lane predicted and the fix
+lane then confirmed on a common-mode comparison (one set of measured times, two predictions):
+small-total measured/predicted 0.390 -> 0.387, over-predicting rows 87.0% -> 87.7%. The branch is
+priced by a flat `n_cards * 1.02` floor that over-charges ~2.5x; adding a p50 51 ns charge to an
+already-over-charged prediction cannot help. Regressing that arm's residual on candidate drivers over
+3,310 rows settles where the error actually lives:
+
+| driver | R² | has a term? |
+|---|---|---|
+| `printings_examined` | **0.537** | graded, but gated OFF on 39% of rows |
+| `redo_examined` | **0.536** | **none** (one special case reaches 379 of 3,310) |
+| `result_total` | 0.258 | yes |
+| `card_pass_calls` | **0.040** | **this round's term** |
+| `eval_domain` | 0.007 | yes |
+
+**So why ship it at all.** `fit_cost_model`'s `CARD_PASS+FLOOR` column IS this quantity, and the
+small-total branch is **11,048 of 29,779** StreamedSelect rows — 37% of the fit population. A refit run
+today solves for STREAM coefficients against a column 2x low on more than a third of its rows, and
+least squares pushes that error into whichever column correlates: exactly the failure this doc's own
+header warns about and `bench_feature_accuracy` exists to prevent. A correct count is a prerequisite
+for the floor work being honest, not an alternative to it. The fix lane recommended holding the diff
+until the floor round; that was overridden because routing risk is proven zero three ways, the
+0.8% is on a branch worth 0% of picked cost, and an uncommitted diff in a temp worktree is how
+prerequisites get lost.
+
+**A methodology trap the fix lane caught, worth more than the fix.** Scoring each build against *its
+own* run's measured times reported the walk branch's mean absolute residual moving 89.8 -> 104.3 us —
+on rows whose predicted delta is **exactly zero on every row**. Pure machine drift masquerading as a
+1-2% effect. Any before/after on an arm must score both predictions against ONE set of times. The
+value lane's A/A control says the same from the other side: 0 flip difference but **+3.6%** apparent
+aggregate time drift (uniform), **+1.9%** (realistic), so only the paired within-response deltas and
+the deterministic flip counts clear the floor.
+
+**Where the value actually is, per the value lane.** On rows where the executor took small-total but
+the model did not, the **`matches` estimate over-states the realized total by p50 5.97x** (uniform) /
+4.18x (realistic), p90 36.5x. That is the branch's real lever, and it is cardinality estimation, not
+this term.
+
+**Findings from the audit lane, none of which is a `count x rate` defect:**
+
+- **A 3.59% wall-clock leak, the largest number in this arc.** 1,907 of 12,000 queries hit
+  `DeclineSparseExact`; **74 had compose PICKED**, so they paid the entire build — compose `pbits`,
+  project `card_bits`, popcount — and then `return None`. `declined_ns` p50 **17.2 us**, p90 44.3 us,
+  **sum 11.66 ms = 3.59% of all picked-plan measured time**, thrown away before the fallback starts.
+  `ComposePaging::Decline => INFINITY` exists to prevent exactly this, but predicts off the acquire's
+  ESTIMATE of the total while the refusal runs off the real one. **Not a missing cost term** — no
+  addition to `cost.rs` can reach a mispredicted gate. It is an estimator or guard problem and needs
+  its own round.
+- **`EmptyPage` runs in 9.1 us median against a 64.1 us median prediction**, 1,261 of 1,551 rows priced
+  INFINITY — the largest single over-charge found.
+- **Two clean negatives on named suspicions**: `GatherWalkDeclined` is 6 rows of 12,000 with 0 picked;
+  GatheredScan is genuinely single-pass (p50 1.000, its tails being `eval_domain`'s estimate error,
+  and its artwork dedupe and page phases are all already priced).
+- **773 uniform rows read `card_pass_calls / residual_card_pass` = exactly 0.000** — the acquire says
+  `residual_tier_ns100 > 0` while the executor finds `all_match_known`. An over-charge in the opposite
+  direction, concentrated on `printing_compose` acquires, and the coarse broad-regime caveat in
+  `explain`'s own doc surfacing as a graded number.
+
+`cargo test` **307 debug / 304 release** (+1 each, the new gate test), clippy clean both profiles,
+ruff clean, and `fit_cost_model`'s mirror stays at **100.0%** over 60,974 rows — the `design_row`
+update is exactly consistent with the arm.
+
 ### Round 75 — the four largest terms in the model get counters
 
 Round 73 found that the biggest terms in the cost model were graded by nothing at all. This adds the

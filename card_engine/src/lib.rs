@@ -15700,10 +15700,13 @@ pub(crate) struct PhaseStats {
     /// those counts is a local the loop already keeps. Round 68's precedent -- accumulate nothing new
     /// in the inner loop, publish once at the exit position.
     ///
-    /// The reason it exists: the term's own doc in `cost.rs` says "the loop calls `filter.card_pass`
-    /// once per `cid`", which is true of `exec_gathered_scan` and NOT of `run_query_streamed`, whose
-    /// small-total redo loop and permutation walk each re-derive it for a second population no term
-    /// prices. That is a claim about the executor, so it is graded against the executor.
+    /// The reason it exists: the term's own doc in `cost.rs` used to say "the loop calls
+    /// `filter.card_pass` once per `cid`", which is true of `exec_gathered_scan` and NOT of
+    /// `run_query_streamed`, whose small-total redo loop and permutation walk each re-derive it for a
+    /// second population. That is a claim about the executor, so it is graded against the executor --
+    /// and this counter is what sized the gap. The small-total redo is now priced
+    /// (`cost::stream_redo_cards`); the walk's own re-derivation is measured, deliberately unpriced,
+    /// and still visible here.
     pub(crate) card_pass_calls: u64,
     /// Printings `PrintingCompose`'s BUILD broadcast passes wrote or cleared -- realized ground truth
     /// for `PlanFeatures::broadcast_printings`, charged at `COMPOSE_LINEAR_PASS_PER_PRINTING_NS`. Zero
@@ -19693,7 +19696,8 @@ fn plan_trial_to_pydict<'py>(py: Python<'py>, t: &PlanTrial) -> PyResult<Bound<'
     // StreamedSelect's small-total branch only (0 for every other plan/exit) -- see
     // `PhaseStats::redo_examined`'s own doc for what this counts and why it's free.
     d.set_item("redo_examined", t.phases.redo_examined)?;
-    // Realized ground truth for `cost::residual_card_pass` -- the two materializing plans only. See
+    // Realized ground truth for `cost::residual_card_pass` (GatheredScan) and
+    // `cost::stream_residual_card_pass` (StreamedSelect) -- the two materializing plans only. See
     // `PhaseStats::card_pass_calls` for why StreamedSelect's is not just `cards_visited`.
     d.set_item("card_pass_calls", t.phases.card_pass_calls)?;
     // Realized ground truth for `PlanFeatures::broadcast_printings` -- PrintingCompose only.
@@ -19855,12 +19859,19 @@ fn acquire_facts_to_pydict<'py>(py: Python<'py>, f: &AcquireFacts) -> PyResult<B
         // this against the realized `perm_steps` is exactly the check. 0 where the arm charges no walk
         // (the small-total gather, or a return before both branches).
         ("stream_perm_steps", cost::stream_perm_steps(g) as u32),
-        // The residual-gated per-card term BOTH materializing arms charge (`CARD_PASS + max(tier,
-        // FLOOR)`), which on GatheredScan is 58% of predicted time. Derived from the same gate the
-        // arms read, and exposed rather than recomputed in Python for the reason above: the gate is
-        // `residual_tier_ns100 > 0`, and a harness holding its own copy of that is a second
-        // definition. Graded against the realized `card_pass_calls`.
+        // The residual-gated per-card term (`CARD_PASS + max(tier, FLOOR)`), which on GatheredScan is
+        // 58% of predicted time. Derived from the same gate the arms read, and exposed rather than
+        // recomputed in Python for the reason above: the gate is `residual_tier_ns100 > 0`, and a
+        // harness holding its own copy of that is a second definition. Graded against the realized
+        // `card_pass_calls`.
+        //
+        // TWO keys, because the two materializing arms multiply DIFFERENT quantities -- exactly as
+        // `scan_units`/`stream_scan_units` do, and for the same reason. `GatheredScan`'s loop calls
+        // `card_pass` once per candidate; `run_query_streamed` runs two passes and its small-total
+        // exit re-derives the call for every matching card, so a consumer must pick the key that
+        // matches the plan it is grading or it grades a number that arm never reads.
         ("residual_card_pass", cost::residual_card_pass(g)),
+        ("stream_residual_card_pass", cost::stream_residual_card_pass(g)),
     ] {
         d.set_item(k, v)?;
     }

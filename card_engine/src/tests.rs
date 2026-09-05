@@ -7715,6 +7715,79 @@ fn stream_perm_steps_gates_and_cap() {
     }
 }
 
+/// `run_query_streamed` runs TWO passes and the arm used to price one. `cost::residual_card_pass`
+/// describes the counting pass; `cost::stream_residual_card_pass` adds the small-total redo loop,
+/// which re-derives `card_pass` for every card with a nonzero count (measured p50 0.500 against the
+/// realized `card_pass_calls` before this existed -- an exact 2x under-count).
+///
+/// Pinned as gates and bounds rather than through a cost total, for the reason
+/// `stream_perm_steps_gates_and_cap` gives: a total can absorb a wrong gate against another term's
+/// rate. The two functions must also stay CONSISTENT -- `explain` reports both and the arm reads the
+/// second, so a divergence grades a number the router does not use.
+#[test]
+fn stream_residual_card_pass_adds_only_the_small_total_redo() {
+    use super::cost::{residual_card_pass, stream_residual_card_pass, PlanFeatures};
+
+    let base = PlanFeatures {
+        n_cards: 30_000, n_printings: 90_000,
+        matches: 0, eval_domain: 4_000, scan_units: 0, stream_scan_units: 0,
+        residual_card_invariant: false, residual_tier_ns100: 900,
+        artwork_seen_cards: 0, artwork_seen_printings: 0, compose_scan_printings: 0,
+        limit: 60, offset: 0, perm_walk_span: 30_000,
+        broadcast_printings: 0, scatter_printings: 0, project_printings: 0, popcount_words: 0,
+        compose_paging: ComposePaging::Gather, collection_broadcast_printings: 0,
+        gather_group_printings: 0,
+    };
+    let min_matches = *super::STREAM_MIN_MATCHES as u32;
+
+    // `all_match_known`: #634 step 1 skips `card_pass` in BOTH passes, so both quantities are 0 --
+    // charging the redo on a query that runs no verify at all would resurrect the over-cost the
+    // gating fixed.
+    let all_match = PlanFeatures { matches: 200, residual_tier_ns100: 0, ..base };
+    assert_eq!(residual_card_pass(&all_match), 0, "all_match_known runs no card_pass");
+    assert_eq!(stream_residual_card_pass(&all_match), 0, "and so the redo cannot be charged either");
+
+    // The walk branch: above the boundary the redo loop does not run, so the two agree exactly. This
+    // is the cell that already graded 0.997 and must not move.
+    let walking = PlanFeatures { matches: min_matches + 1, ..base };
+    assert_eq!(
+        stream_residual_card_pass(&walking), residual_card_pass(&walking),
+        "the permutation walk exit is deliberately unpriced; only the counting pass is charged",
+    );
+
+    // Both early returns -- no matches, and a page starting past the end -- return before the redo,
+    // exactly as `stream_runs_small_gather` (and the SMALL_TOTAL floor beside it) already gate.
+    for f in [PlanFeatures { matches: 0, ..base }, PlanFeatures { matches: 500, offset: 500, ..base }] {
+        assert_eq!(
+            stream_residual_card_pass(&f), residual_card_pass(&f),
+            "an exit that returns before both branches runs no redo: matches={} offset={}", f.matches, f.offset,
+        );
+    }
+
+    // On the small-total branch the redo IS charged, and its count is bounded by BOTH the candidates
+    // visited and the total -- a card the narrowing never offered cannot have a count, and a card
+    // with a count contributes at least one match. Checked with each bound binding in turn.
+    let matches_binds = PlanFeatures { matches: 300, eval_domain: 4_000, ..base };
+    assert_eq!(
+        stream_residual_card_pass(&matches_binds), 4_000 + 300,
+        "fewer matches than candidates: the total bounds the redo",
+    );
+    let candidates_bind = PlanFeatures { matches: 900, eval_domain: 120, ..base };
+    assert_eq!(
+        stream_residual_card_pass(&candidates_bind), 120 + 120,
+        "fewer candidates than matches: the visited set bounds the redo",
+    );
+
+    // The boundary itself, both sides, since an off-by-one prices the wrong branch. At
+    // STREAM_MIN_MATCHES the gather runs (redo charged); one above it the walk does (not charged).
+    let at = PlanFeatures { matches: min_matches, eval_domain: 4_000, ..base };
+    assert_eq!(stream_residual_card_pass(&at), 4_000 + min_matches, "at STREAM_MIN_MATCHES the redo runs");
+    assert_eq!(
+        stream_residual_card_pass(&PlanFeatures { matches: min_matches + 1, ..at }), 4_000,
+        "one match above the boundary the walk runs instead",
+    );
+}
+
 // Group counts collapse duplicate illustrations within a card.
 #[test]
 fn artwork_group_counts_dedup_illustrations() {

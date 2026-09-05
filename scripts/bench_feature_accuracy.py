@@ -88,6 +88,9 @@ MIN_COUNTER = 100
 # the gate belongs to the arm, and a harness holding its own copy of it is a second definition. It is
 # the largest single term in the model -- 58% of GatheredScan's predicted time and 28% of
 # StreamedSelect's, because its coefficient IS the residual floor -- and nothing graded it before.
+# Like `scan_units` it is a PER-PLAN feature (see `residual_feature`): `StreamedSelect` runs two
+# passes, so its arm multiplies `stream_residual_card_pass` and grading it on the shared key reads an
+# exact 2x under-count on the small-total branch.
 #
 # `broadcast_printings` and `project_printings` are compose's two `LINEAR_PASS` build terms, 37% and
 # 23% of that plan's predicted time. Their counters are what the build really touched:
@@ -211,6 +214,30 @@ def scan_feature(plan: str, paging: str, tier_ns100: int) -> str | None:
     return "scan_units"
 
 
+def residual_feature(plan: str) -> str | None:
+    """Which per-card `card_pass` feature the ARM multiplies, or None if this plan verifies none.
+
+    Same shape and same `None` contract as `scan_feature`, for the same reason: one shared vector,
+    arms doing different amounts of work with it. `None` is compose and the two bitmap plans, which
+    verify no residual at all -- their `card_pass_calls` is 0 and grading them would compare a feature
+    to work no arm charges for. `exec_gathered_scan` calls `card_pass` once per visited candidate, so its
+    arm charges `residual_card_pass`. `run_query_streamed` runs TWO passes -- a counting pass over the
+    candidates and, on the small-total exit, a redo over every card with a nonzero count -- so its arm
+    charges `stream_residual_card_pass`, which is the first plus the second.
+
+    Grading StreamedSelect on the shared key read p50 **0.500** on the small-total branch (3,213 rows
+    of a 40,000-query sample): an exact 2x under-count, invisible in the pooled `<StreamedSelect>` cell
+    at 0.988 and inside the [0.8, 1.25] band. Both keys come from `cost.rs` so neither is a second copy
+    of a gate.
+    """
+    if plan not in RESIDUAL_TERM_PLANS:
+        return None
+    return "stream_residual_card_pass" if plan == "StreamedSelect" else "residual_card_pass"
+
+
+#: The two per-plan spellings of the residual per-card term, for the slices that select it by name.
+RESIDUAL_FEATURES = frozenset({"residual_card_pass", "stream_residual_card_pass"})
+
 percentile = costbench.percentile
 
 
@@ -232,14 +259,17 @@ def collect(engine: object, sampler: QuerySampler, rng: random.Random, budget: c
             # compose on the latter -- they disagree exactly where a walk was predicted and declined.
             paging = plan.get("paging_taken") if plan["plan"] == "PrintingCompose" else acq["compose_paging"]
             for feat, counter in PAIRS:
+                # Two features have a per-PLAN spelling, because one shared vector costs every plan
+                # but they do not all read the same field; `None` means this arm charges no such
+                # term for this query and there is nothing to grade.
                 if feat == "scan_units":
                     feat = scan_feature(plan["plan"], paging, acq["residual_tier_ns100"])  # noqa: PLW2901 - the arm decides
-                    if feat is None:
-                        continue  # this arm charges no scan term for this query; there is nothing to grade
+                elif feat == "residual_card_pass":
+                    feat = residual_feature(plan["plan"])  # noqa: PLW2901 - ditto
+                if feat is None:
+                    continue
                 if feat == "stream_perm_steps" and plan["plan"] not in WALK_TERM_PLANS:
                     continue  # this plan's arm has no permutation-walk term
-                if feat == "residual_card_pass" and plan["plan"] not in RESIDUAL_TERM_PLANS:
-                    continue  # this plan verifies no residual, so it calls `card_pass` never
                 if feat == "project_printings" and sample.kw["unique"] not in PROJECT_MODES:
                     continue  # no projection pass exists in printing mode; the arm charges 0 and is right
                 if feat in COMPOSE_BUILD_CHARGES and plan["plan"] != "PrintingCompose":
@@ -369,7 +399,7 @@ def main() -> None:
     # arms; what no table there separates is `prefer`, and this term is exactly where that matters:
     # `card_pass` is per CARD, so its count should not move with `prefer` at all, and a row here that
     # does move is the feature failing to see a real difference in how many passes run.
-    residual = [r for r in rows if r["feature"] == "residual_card_pass"]
+    residual = [r for r in rows if r["feature"] in RESIDUAL_FEATURES]
     table(
         residual,
         lambda r: f"<{r['plan']}> / {r['unique']} / prefer={r['prefer']}",

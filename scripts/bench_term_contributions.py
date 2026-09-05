@@ -87,10 +87,12 @@ MEASURED_SPREAD = {
     # p10 0.883 / p50 1.000 / p90 2.168 over 9,978 rows. Structurally exact -- 64% of rows read
     # exactly 1.000 -- so the spread is `eval_domain`'s, inherited, not this term's own.
     ("GatheredScan", "CARD_PASS+FLOOR"): 2.5,
-    # p10 0.500 / p50 0.988 / p90 1.822 over 8,410 rows, and the p10 is not noise: it is the exact
-    # 2x under-count of the small-total redo pass, which re-derives `card_pass` for every matching
-    # card while the term prices one pass. Read that cell, not this median.
-    ("StreamedSelect", "CARD_PASS+FLOOR"): 3.6,
+    # p10 0.810 / p50 1.000 / p90 2.061 over the same 8,410 rows, now graded against
+    # `stream_residual_card_pass` -- the quantity this arm actually multiplies. It read p10 0.500 /
+    # p50 0.988 / p90 1.822 (spread 3.6) while graded on `residual_card_pass`, and that p10 was not
+    # noise: it was the exact 2x under-count of the small-total redo pass, which re-derives
+    # `card_pass` for every matching card while the shared feature prices one pass.
+    ("StreamedSelect", "CARD_PASS+FLOOR"): 2.5,
     # p10 0.915 / p50 1.000 / p90 1.040 over 8,388 rows -- the tightest cell in the whole toolkit.
     ("PrintingCompose", "BROADCAST_PER_PRINTING"): 1.1,
     # p10 1.000 / p50 1.000 / p90 2.119 over 5,957 rows: exact or over, never under.

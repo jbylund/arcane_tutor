@@ -795,10 +795,12 @@ fn residual_verified(f: &PlanFeatures) -> bool {
 /// `printings_walked` are: a harness recomputing the gate in Python is a second definition of it.
 /// Graded against the realized `card_pass_calls` counter.
 ///
-/// **It describes ONE call per visited candidate, which is `GatheredScan`'s loop and only the FIRST
-/// of `StreamedSelect`'s passes.** That plan re-derives `card_pass` in its small-total redo loop and
-/// again per emitting entry of its permutation walk (see `run_query_streamed`), and no term prices
-/// those — which is what the counter exists to size.
+/// **It describes ONE call per visited candidate, which is `GatheredScan`'s whole loop and only the
+/// FIRST of `StreamedSelect`'s passes.** `StreamedSelect`'s arm therefore does NOT multiply this — it
+/// multiplies [`stream_residual_card_pass`], which adds the small-total redo pass on top. The split
+/// follows `scan_units`/`stream_scan_units` exactly: one shared feature vector, two arms that do
+/// different amounts of work with it, and a per-plan quantity rather than a compromise value that is
+/// ~2x wrong for whichever arm loses.
 pub(crate) fn residual_card_pass(f: &PlanFeatures) -> u32 {
     if residual_verified(f) { f.eval_domain } else { 0 }
 }
@@ -815,6 +817,53 @@ fn stream_runs_small_gather(f: &PlanFeatures) -> bool {
     u64::from(f.matches) <= *super::STREAM_MIN_MATCHES as u64
         && f.matches > 0
         && u64::from(f.offset) < u64::from(f.matches)
+}
+
+/// Cards `run_query_streamed`'s small-total redo loop re-derives `card_pass` for — a SECOND
+/// population on top of [`residual_card_pass`], and `0` on every other exit.
+///
+/// That loop's `card_pass` call sits directly below its `counts[cid] == 0` continue, so it runs for
+/// every card with a nonzero count: bounded above by the candidates the counting pass visited
+/// (`eval_domain` — a card the narrowing never offered cannot have a count) and, independently, by
+/// the total itself (each such card contributes at least one match), hence the `min`. Both bounds
+/// bind in practice, which is why neither alone is used: measured against the realized
+/// `card_pass_calls - cards_visited` over the 6,638 sampled rows where this gate fires and the redo
+/// really ran, `eval_domain` alone reads p75 1.667 / p90 6.197 and `matches` alone p50 1.231 /
+/// p90 9.500, while the `min` reads **p50 1.000 in all three distinct-ons** at p75 1.489 / p90 5.281.
+/// The residual p90 is the cardinality estimate's own error arriving through `matches`, not this
+/// term's shape — `eval_domain`, which does not read `matches` at all, carries the same tail.
+///
+/// The loop OVERHEAD is deliberately not charged here: that loop iterates `0..n_cards`, not the
+/// candidates, and `STREAM_SMALL_TOTAL_FLOOR_PER_CARD_NS * n_cards` already prices exactly that
+/// sweep. What no term priced is the `card_pass` + residual verify these matching cards pay a second
+/// time, which is what this counts.
+///
+/// The permutation-walk exit re-derives `card_pass` too, and deliberately gets NO term. It re-derives
+/// only for entries it actually emits from (both skip continues come first), which measured p50 57
+/// cards against a p50 `eval_domain` in the thousands: **0.1% of that plan's own measured run time at
+/// p50 and 0.8% at p90**, an order of magnitude under the ~9% noise floor, and the cell already reads
+/// 0.997. The only plan-time predictor available for it (`min(page_rows, limit)`) over-counts the
+/// emitting cards by 2.24x at p50 in printing mode and 1.28x in artwork, because one card can supply
+/// many page rows — so a term would trade a graded 0.997 for a worse feature to price work that
+/// cannot move a routing decision.
+fn stream_redo_cards(f: &PlanFeatures) -> u32 {
+    if !residual_verified(f) || !stream_runs_small_gather(f) {
+        return 0;
+    }
+    f.matches.min(f.eval_domain)
+}
+
+/// `StreamedSelect`'s own count of `filter.card_pass` invocations: BOTH of its passes, where
+/// [`residual_card_pass`] is one. This is what that arm's `CARD_PASS + max(tier, RESIDUAL_FLOOR)`
+/// term multiplies and what `bench_feature_accuracy` must grade it on — the shared
+/// `residual_card_pass` read StreamedSelect at p50 **0.500** on the small-total branch (3,213 graded
+/// rows), an exact 2x under-count, while the pooled `<StreamedSelect>` cell hid it at 0.988.
+///
+/// Exposed by `explain` alongside `residual_card_pass` for the reason `stream_perm_steps` is: the
+/// arm's quantity and the harness's must be one definition, or the harness grades a number the arm
+/// does not use.
+pub(crate) fn stream_residual_card_pass(f: &PlanFeatures) -> u32 {
+    residual_card_pass(f).saturating_add(stream_redo_cards(f))
 }
 
 /// Permutation entries `StreamedSelect`'s page walk steps to fill one page, and the whole of what
@@ -1006,9 +1055,20 @@ pub(crate) fn plan_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
             // CALL only happens when there is a residual to check. `all_match_known` skips it outright
             // (#634 step 1), and `tier_ns == 0` is exactly that condition. Charging the call anyway made
             // the arm's card-mode body read p50 1.90 over-costed.
-            eval_domain
-                * (STREAM_LOOP_PER_CARD_NS
-                    + if residual_verified(f) { STREAM_CARD_PASS_NS + tier_ns.max(STREAM_RESIDUAL_FLOOR_NS) } else { 0.0 })
+            //
+            // And the residual half is charged over `stream_residual_card_pass`, NOT `eval_domain`,
+            // because this plan runs TWO passes and only the counting one visits `eval_domain` cards.
+            // The small-total exit re-derives `card_pass` for every card with a nonzero count -- it
+            // has to, since that call returns the per-card residual conjunct list `push_card_matches`
+            // needs and not just a cacheable verdict. Graded against the realized `card_pass_calls`
+            // the small-total cell read p50 0.500, an exact 2x under-count on 3,213 rows, which the
+            // pooled 0.988 and the [0.8, 1.25] band both hid. See `stream_redo_cards` for the
+            // quantity, for why the loop overhead is NOT charged here (the floor below is that
+            // sweep), and for the evidence that the walk exit's own re-derivation stays unpriced.
+            let residual_ns =
+                if residual_verified(f) { STREAM_CARD_PASS_NS + tier_ns.max(STREAM_RESIDUAL_FLOOR_NS) } else { 0.0 };
+            eval_domain * STREAM_LOOP_PER_CARD_NS
+                + f64::from(stream_residual_card_pass(f)) * residual_ns
                 // Only with a residual does P3 walk printings; see STREAM_SCAN_PER_ROW_NS.
                 + if residual_verified(f) { f64::from(f.stream_scan_units) * STREAM_SCAN_PER_ROW_NS } else { 0.0 }
                 + matches * STREAM_EMIT_PER_MATCH_NS

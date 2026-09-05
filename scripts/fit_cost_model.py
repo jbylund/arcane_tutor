@@ -244,6 +244,17 @@ def nnls(rows: list[list[float]], targets: list[float]) -> list[float]:
 SHIPPED_RESIDUAL_FLOOR = {"GatheredScan": 18.89, "StreamedSelect": 6.58}
 
 
+def residual_excess(cards: float, tier_ns: float, floor: float) -> float:
+    """The part of `cards * max(tier_ns, FLOOR)` that no fitted coefficient scales.
+
+    One definition, because the two arms no longer multiply the same card count: `StreamedSelect`
+    charges its residual over `stream_residual_card_pass` (two passes) where `GatheredScan` charges
+    `eval_domain` (one), and the offset has to ride the SAME quantity as the column or the mirror
+    check drops below its bar for exactly the rows where the redo pass fires.
+    """
+    return cards * max(tier_ns - floor, 0.0) if tier_ns > 0.0 else 0.0
+
+
 def design_row(plan: str, acq: dict, limit: int, offset: int) -> tuple[dict[str, float], float] | None:
     """The feature vector for one plan's cost arm, plus the part no coefficient scales.
 
@@ -278,7 +289,7 @@ def design_row(plan: str, acq: dict, limit: int, offset: int) -> tuple[dict[str,
     page_rows = float(min(max(acq["matches"] - offset, 0), limit))
     residual_on = 1.0 if tier_ns > 0.0 else 0.0
     floor = SHIPPED_RESIDUAL_FLOOR.get(plan, 0.0)
-    excess = eval_domain * max(tier_ns - floor, 0.0) if tier_ns > 0.0 else 0.0
+    excess = residual_excess(eval_domain, tier_ns, floor)
 
     if plan == "GatheredScan":
         # NOT `artwork_seen_cards`-if-nonzero: `exec_gathered_scan`'s per-printing dedupe loop runs
@@ -336,11 +347,20 @@ def design_row(plan: str, acq: dict, limit: int, offset: int) -> tuple[dict[str,
         # `card_match_count` is O(1) offset arithmetic under all_match, so it walks printings only
         # when a residual must be tested. `n_cards` carries the O(corpus) work it pays regardless of
         # selectivity -- the counts buffer resized and cleared every query.
+        #
+        # The residual column is NOT `eval_domain`: this plan runs two passes, and its small-total
+        # exit re-derives `card_pass` for every matching card on top of the counting pass. `cost.rs`
+        # exposes the arm's own quantity as `stream_residual_card_pass` (already zero under
+        # `all_match_known`, so no `residual_on` gate here), for the same reason `stream_perm_steps`
+        # is exposed -- a second copy of a gate in this file is how the PERM_STEP column silently
+        # fitted a pre-Round-32 formula. The fallback is for runs recorded before the key existed and
+        # mirrors the pre-split arm exactly.
+        residual_cards = float(acq.get("stream_residual_card_pass", eval_domain * residual_on))
         return (
             {
                 "LOOP_PER_CARD": eval_domain,
                 "SCAN_PER_ROW": stream_scan_units * residual_on,
-                "CARD_PASS+FLOOR": eval_domain * residual_on,
+                "CARD_PASS+FLOOR": residual_cards,
                 "EMIT_PER_MATCH": matches,
                 "PERM_STEP": perm_steps,
                 "ARTWORK_SEEN_PER_CARD": float(acq["artwork_seen_cards"]),
@@ -348,7 +368,8 @@ def design_row(plan: str, acq: dict, limit: int, offset: int) -> tuple[dict[str,
                 "CORPUS_PASS_PER_CARD": n_cards,
                 "FIXED": 1.0,
             },
-            excess,
+            # The offset must ride the same card count as the column above; see `residual_excess`.
+            residual_excess(residual_cards, tier_ns, floor),
         )
     if plan == "PrintingCompose":
         # The arm no tool has ever fitted, while the regret matrix puts 75% of all lost time on it.
