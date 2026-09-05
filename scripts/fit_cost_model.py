@@ -373,8 +373,18 @@ def design_row(plan: str, acq: dict, limit: int, offset: int) -> tuple[dict[str,
     # `cost::gather_page_span` / `cost::gather_page_rows` themselves, exposed by `explain` for exactly
     # this reason -- these were two more Python copies of an arm's formula, the shape that has already
     # drifted twice in this file (`stream_perm_steps`' `n_cards`, `printings_walked`'s bias). The
-    # fallbacks mirror the current arm and are only for runs recorded before the fields existed.
-    page_span = float(acq.get("gather_page_span", min(offset + limit, acq["matches"])))
+    # fallbacks are the PRE-Round-88 forms and are only for runs recorded before the fields existed --
+    # correct for those runs, and deliberately not updated to the current arm, since a run's fallback
+    # has to match the engine that produced it.
+    # TWO different quantities, and conflating them is a live bug this mirror carried from the round
+    # that first read the exposed field. `cost::gather_page_span` is GatheredScan's QUICKSELECT INPUT
+    # -- since Round 88 it is `min(matches, k + CHUNK * fraction)`, not the page -- while compose's walk
+    # and StreamedSelect's perm-step fallback want the plain page clamp `min(k, matches)`. They were
+    # identical until Round 88 changed the first, at which point the compose arm's mirror drifted on
+    # 77% of its rows while GatheredScan's stayed exact. Bound apart so a future change to either
+    # cannot silently move the other.
+    gather_select_span = float(acq.get("gather_page_span", min(offset + limit, acq["matches"])))
+    page_span = float(min(offset + limit, acq["matches"]))
     # Mirrors cost.rs: `select_page` returns clamp(matches - offset, 0, limit), so a page past the end of
     # the matches collects fewer rows than requested.
     page_rows = float(acq.get("gather_page_rows", min(max(acq["matches"] - offset, 0), limit)))
@@ -401,7 +411,7 @@ def design_row(plan: str, acq: dict, limit: int, offset: int) -> tuple[dict[str,
                 "SCAN_PER_ROW": scan_units,
                 "CARD_PASS+FLOOR": eval_domain * residual_on,
                 "PUSH_PER_MATCH": matches,
-                "SELECT_PER_PAGE_SLOT": page_span,
+                "SELECT_PER_PAGE_SLOT": gather_select_span,
                 "COLLECT_PER_PAGE_ROW": page_rows,
                 "ARTWORK_PER_PRINTING": artwork_seen_printings,
                 "FIXED": 1.0 - zero_match,

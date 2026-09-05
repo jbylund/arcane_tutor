@@ -1130,21 +1130,55 @@ pub(crate) fn stream_perm_steps(f: &PlanFeatures) -> f64 {
 /// not something a density ratio can see, and no constant will fix that.
 const WALK_LENGTH_BIAS: f64 = 1.45;
 
-/// Page slots `GatheredScan`'s finish phase quickselects, charged at `GATHER_SELECT_PER_PAGE_SLOT_NS`.
-/// `min(offset + limit, matches)` -- bounded by `matches` because a page past the end of the matches
-/// returns early out of `select_page` (see that constant's own doc for the sweep that established it).
+/// Where `GatherSelect`'s buffer settles once its prune has fired, as a fraction of
+/// `GATHER_PRUNE_CHUNK` above `k`. **Measured, and much closer to `k` than the bound suggests.**
+///
+/// `absorb` prunes back to `k` and sets a `cutoff`; every later batch has its `>= cutoff` matches
+/// dropped BEFORE they are appended, so the buffer refills far more slowly than it filled the first
+/// time. Over the 1,814 sampled rows where a prune provably fired (realized total above
+/// `k + GATHER_PRUNE_CHUNK`), the buffer's final position inside `[k, k + CHUNK)` reads p10 0.007 /
+/// p25 0.019 / **median 0.064** / p75 0.158 / p90 0.304, mean **0.119**. So the naive `k + CHUNK`
+/// bound over-charges the pruned population by ~8x.
+///
+/// 0.12 is the measured mean. Swept against the realized counter, it is also where the median lands
+/// at exactly 1.000 on BOTH populations: `f` of 0.00 / 0.06 / 0.12 / 0.25 / 0.50 / 1.00 gives an
+/// all-rows median of 0.253 / 0.929 / **1.000** / 1.000 / 1.249 / 1.557 and a p90 of 1.00 / 2.44 /
+/// **3.87** / 6.80 / 12.27 / 23.11. `within-25%` rises monotonically with `f` (16% -> 41%) and would
+/// argue for 1.00, but that costs a 1.557 median and a 23x p90 on the broad queries — over-charging
+/// `GatheredScan` there pushes traffic to compose, which this engine already over-picks in artwork.
+/// Median-neutral is the defensible target, the same call Round 74 made for
+/// `COMPOSE_FULL_SPAN_REPRINT_PREMIUM`.
+const GATHER_POST_PRUNE_FRACTION: f64 = 0.12;
+
+/// Rows `GatheredScan`'s finish phase quickselects, charged at `GATHER_SELECT_PER_PAGE_SLOT_NS`.
+///
+/// **NOT `min(offset + limit, matches)`, which is what this charged before Round 88 and which is the
+/// page, not the quickselect input.** `GatherSelect` holds a bounded buffer and prunes it back to
+/// `k = offset + limit` only once it has grown `GATHER_PRUNE_CHUNK` past `k` — so below `k + CHUNK`
+/// matches **no prune has ever run and `select_page` quickselects the WHOLE match set**. Realized
+/// `select_input_len` equals the realized total on **59%** of sampled rows. Graded against that
+/// counter the old form read p50 **0.474** on picked rows (p10 0.052) and was flagged UNDER-COUNTS in
+/// every acquire route, every distinct-on and every orderby — the worst-calibrated feature in the
+/// toolkit.
+///
+/// Two regimes, and the formula is just both of them:
+/// - `matches <= k + CHUNK`: nothing was ever pruned, so the input is `matches`.
+/// - beyond that: the buffer sits a little above `k` — see `GATHER_POST_PRUNE_FRACTION`.
 ///
 /// Exposed to `explain` for the reason `stream_perm_steps` and `residual_card_pass` are: the arm's
 /// quantity and the harness's must be ONE definition. `fit_cost_model.design_row` held its own copy of
-/// this clamp, which is the exact shape that has drifted twice in this file's history.
+/// the old clamp, which is the exact shape that has drifted twice in this file's history.
 ///
-/// Graded against the realized `PhaseStats::select_input_len`, which is NOT this quantity and is not
-/// meant to be: `GatherSelect` keeps a bounded buffer and prunes it back to `k = offset + limit` only
-/// once it has grown `GATHER_PRUNE_CHUNK` past `k`, so what `select_page` really quickselects over is
-/// anywhere in `[k, k + GATHER_PRUNE_CHUNK)` on any query with more matches than one page. On the
-/// default 60-row page that is a bound of 4,156 against a charged 60.
+/// **The rate is collinear with `GATHER_PUSH_PER_MATCH_NS` on the 59% of rows where the input IS the
+/// match count**, so a traffic fit cannot separate the quickselect from the push. That is why this
+/// round corrects the FEATURE and leaves the rate alone: the two must be refit together or not at
+/// all, and refitting them apart is how a term absorbs its neighbour's error.
 pub(crate) fn gather_page_span(f: &PlanFeatures) -> u32 {
-    (f.offset.saturating_add(f.limit)).min(f.matches)
+    // `super::GATHER_PRUNE_CHUNK` rather than a local copy: the slack the executor actually allows
+    // is the executor's number, and a second definition of it here is how the two drift.
+    let k = f64::from(f.offset.saturating_add(f.limit));
+    let settled = k + super::GATHER_PRUNE_CHUNK as f64 * GATHER_POST_PRUNE_FRACTION;
+    f.matches.min(settled as u32)
 }
 
 /// Rows `GatheredScan`'s finish phase collects into the page, charged at

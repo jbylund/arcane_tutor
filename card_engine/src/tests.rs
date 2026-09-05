@@ -5188,12 +5188,20 @@ fn gathered_scan_zero_match_uses_the_lower_fixed_cost() {
 
     // matches == 1, eval_domain/scan_units still 0 — the gate reads `matches` itself, not a
     // derived "is everything else zero" check, so this must NOT take the zero-match branch even
-    // though eval_domain/scan_units look identical to the zero-match case above. The one match
-    // still pays GATHER_PUSH_PER_MATCH_NS (2.24) on top of the higher fixed cost (169.6).
+    // though eval_domain/scan_units look identical to the zero-match case above. The one match pays
+    // GATHER_PUSH_PER_MATCH_NS (2.24) AND one quickselect slot (3.51) on top of the higher fixed
+    // cost (169.6).
+    //
+    // That third term is Round 88 and the expectation moved 171.84 -> 175.35 because of it. The old
+    // number encoded the bug: `gather_page_span` was `min(offset + limit, matches)`, which is 0 in
+    // this fixture (`limit` and `offset` are both 0) — i.e. it claimed a query with a match
+    // quickselects over nothing. `GatherSelect` buffers that match and `select_page` runs over it, so
+    // the realized input is 1. Asserted here rather than left to the sampled cells because it is the
+    // smallest case where the old and new formulas visibly disagree.
     let one_match = plan_cost(PhysicalPlan::GatheredScan, &PlanFeatures { matches: 1, ..base });
     assert!(
-        (one_match - 171.84).abs() < 1e-9,
-        "a single-match round must still use GATHER_FIXED_COST_NS (169.6) plus its own push cost, got {one_match}"
+        (one_match - 175.35).abs() < 1e-9,
+        "a single-match round must use GATHER_FIXED_COST_NS (169.6) + push (2.24) + one select slot (3.51), got {one_match}"
     );
 
     // A non-trivial, real-shaped `candidates` round (nonzero eval_domain/scan_units/matches) also
