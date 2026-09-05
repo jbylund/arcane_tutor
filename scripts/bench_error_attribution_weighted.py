@@ -95,6 +95,10 @@ TERM_ORACLE: dict[tuple[str, str], tuple[str, str]] = {
     ("StreamedSelect", "CARD_PASS+FLOOR"): ("stream_residual_card_pass", "card_pass_calls"),
     ("StreamedSelect", "EMIT_PER_MATCH"): ("matches", "matches_pushed"),
     ("StreamedSelect", "PERM_STEP"): ("stream_perm_steps", "perm_steps"),
+    # Round 81. `redo_examined` was a published counter no term consumed; it now prices the small-total
+    # redo pass's `push_card_matches` walk. Graded here from the term's first day, so the joint
+    # substitution below covers it instead of reporting it as UNGRADED.
+    ("StreamedSelect", "REDO_SCAN_PER_ROW"): ("stream_redo_printings", "redo_examined"),
     ("PrintingCompose", "WALK_STEP"): ("printings_walked", "printings_examined"),
     ("PrintingCompose", "GATHER_BITTEST_PER_PRINTING"): ("compose_scan_printings", "printings_examined"),
     ("PrintingCompose", "BROADCAST_PER_PRINTING"): ("broadcast_printings", "broadcast_printings"),

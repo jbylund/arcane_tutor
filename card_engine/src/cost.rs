@@ -494,18 +494,56 @@ const STREAM_ARTWORK_SEEN_PER_CARD_NS: f64 = 1.21;
 /// evaluation cost), `Mode::Printing` vs `Mode::Artwork`, min-of-150 rounds. Four runs (two repeats,
 /// one on a different 5,000-card slice): 0.489, 0.528, 0.508, 0.489 ns/printing.
 const GATHER_ARTWORK_PER_PRINTING_NS: f64 = 0.50;
-/// ns per card scanned in the small-total gather (`for cid in 0..n_cards`,
-/// counts[cid]==0 check). Cheaper than a match-phase visit (no filter work). Fit
-/// from the narrow-query floor: cmc>=15 / o:annihilator / cmc==7 card SHALLOW all
-/// ~52µs = 31508 × 1.65. Only added when `matches <= STREAM_MIN_MATCHES`, the
-/// exact condition that routes P3 into that gather branch. The 1.65 above was fit on three hand
-/// picked narrow queries; across the sampled space the floor measures ~31µs, not 52µs.
+/// ns per card SWEPT in the small-total gather (`for cid in 0..n_cards`, `counts[cid] == 0` check
+/// and nothing else). Only added when `matches <= STREAM_MIN_MATCHES`, the exact condition that
+/// routes P3 into that gather branch.
 ///
-/// CONFIRMED 2026-08-03 by `bench_streamed_loop`, which needed 600-card cells to reach this branch at
-/// all -- every earlier cell had more than `STREAM_MIN_MATCHES` matches and took the permutation walk
-/// instead, so this constant had never been measured against the branch it prices. It now reads
-/// 1.075-1.250 ns per card scanned against the 1.02 shipped, on a 33.9 us finish phase. Left alone.
-const STREAM_SMALL_TOTAL_FLOOR_PER_CARD_NS: f64 = 1.02;
+/// **Round 81 (2026-09-05): 1.02 -> 0.30, because the old value was a per-card rate that had absorbed
+/// the per-MATCH work of the same loop.** The redo loop does two things per iteration: it reads one
+/// `u32` count (every card), and where that count is nonzero it runs `card_pass` and
+/// `push_card_matches` over the card's printings (a few dozen cards out of ~31.7k). Charging both on
+/// `n_cards` makes the rate a function of how many matches the cell happened to have, and every fit
+/// this constant ever had was taken at a match count far above the median query's.
+///
+/// The two confirmations of 1.02 both have that shape. `bench_streamed_loop`'s 2026-08-03 reading of
+/// 1.075-1.250 came from its 600-card cells -- the only ones that reached this branch at all -- "on a
+/// 33.9 us finish phase". Re-run today at `n_cards = 31,724`, the SAME harness reads **0.305-0.332 at
+/// its 100-card cells and 0.369-0.478 at its 400-card cells**: the per-card rate tracks the match
+/// count, which a per-card cost cannot do. The intercept those cells imply is ~0.30, and the slope is
+/// ~15.6 ns per matching singleton card with a residual (10,500 -> 15,166 ns over 300 more matches),
+/// i.e. the `card_pass` this arm already charges plus one printing's push. And `fit_cost_model`'s
+/// 0.98 is the same conflation seen from traffic: that column is literally `n_cards` or 0, collinear
+/// with the intercept, with no second column for the per-match half to separate against.
+///
+/// Measured directly against the phase it names, on 1,085 sampled rows where the executor really took
+/// this exit (`perm_steps == 0`, `0 < result_total <= STREAM_MIN_MATCHES`, page inside the total), the
+/// realized `ns_finish` is p10 8.3 / p50 11.0 / p90 27.5 us against a flat 32.4 us charged -- **the
+/// whole of StreamedSelect's finish-phase over-charge, which reads 2.0x aggregate against its loop's
+/// 0.996 and is the single reason the arm over-prices itself on a `printing_compose` acquire.**
+///
+/// NNLS on those rows: `n_cards` alone takes 0.474 and still reads p10 0.55 / p90 1.81, while
+/// `n_cards = 0.304` beside `redo_examined = 6.565` reads p10 0.83 / p50 1.07 / p90 1.21. The second
+/// column is [`STREAM_REDO_SCAN_PER_ROW_NS`]; 0.30 is this one's half of that fit.
+const STREAM_SMALL_TOTAL_FLOOR_PER_CARD_NS: f64 = 0.30;
+/// ns per printing the small-total redo pass's `push_card_matches` walks, over
+/// [`stream_redo_printings`].
+///
+/// The per-MATCH half of the redo loop that [`STREAM_SMALL_TOTAL_FLOOR_PER_CARD_NS`] used to absorb.
+/// `push_card_matches` walks `offsets[cid]..offsets[cid + 1]` for every card with a nonzero count and
+/// builds a `Match` per surviving printing -- the same printing walk `card_match_count` does in the
+/// counting pass, which is why this is set EQUAL to [`STREAM_SCAN_PER_ROW_NS`] rather than fitted to a
+/// free value of its own. The two independent estimates of it bracket that number: NNLS on 1,085
+/// sampled redo rows takes 6.565 (two-column) / 5.074 (three-column), and `bench_streamed_loop`'s
+/// singleton-card cells imply ~8.9 ns per matching 1-printing card under `all_match` (9,791 -> 12,458
+/// ns over 300 more matches), which is one printing's push plus the loop iteration.
+///
+/// It is a SEPARATE constant rather than a second use of `STREAM_SCAN_PER_ROW_NS` so that the two
+/// populations stay independently refittable: the counting pass early-breaks in card mode and skips
+/// printings entirely under `all_match`, and this pass does neither.
+///
+/// Unlike the counting pass's term, this is NOT gated on [`residual_verified`] -- see
+/// [`stream_redo_printings`] for why the walk happens either way.
+const STREAM_REDO_SCAN_PER_ROW_NS: f64 = STREAM_SCAN_PER_ROW_NS;
 /// ns per permutation entry stepped in the streaming walk, the branch taken when
 /// `total > STREAM_MIN_MATCHES`.
 ///
@@ -847,10 +885,55 @@ fn stream_runs_small_gather(f: &PlanFeatures) -> bool {
 /// many page rows — so a term would trade a graded 0.997 for a worse feature to price work that
 /// cannot move a routing decision.
 fn stream_redo_cards(f: &PlanFeatures) -> u32 {
-    if !residual_verified(f) || !stream_runs_small_gather(f) {
+    if !residual_verified(f) {
+        return 0;
+    }
+    stream_redo_matching_cards(f)
+}
+
+/// Cards the small-total redo loop runs its BODY for -- every card with a nonzero count -- with no
+/// `residual_verified` gate, which is the difference from [`stream_redo_cards`].
+///
+/// Both quantities count the same cards. They differ in what the card is charged FOR: `card_pass` is
+/// skipped under `all_match_known` (#634 step 1) and so has to be gated, while `push_card_matches`
+/// runs on every one of these cards regardless — `all_match` changes what it tests per printing, not
+/// whether it walks them. Split out so the two gates are visible as one shared population with one
+/// conditional charge on top, rather than as two nearly-identical formulas that could drift.
+///
+/// The `min` and the evidence for it are in [`stream_redo_cards`]'s doc.
+fn stream_redo_matching_cards(f: &PlanFeatures) -> u32 {
+    if !stream_runs_small_gather(f) {
         return 0;
     }
     f.matches.min(f.eval_domain)
+}
+
+/// Printings the small-total redo pass walks, priced at [`STREAM_REDO_SCAN_PER_ROW_NS`].
+///
+/// `push_card_matches` walks the whole of `offsets[cid]..offsets[cid + 1]` for each card the redo
+/// loop finds with a nonzero count, so this is (matching cards) x (printings per card). The card
+/// count is [`stream_redo_matching_cards`]; the per-card printing count is the corpus ratio
+/// `n_printings / n_cards`, because nothing on `PlanFeatures` describes the printing span of the
+/// MATCHING subset specifically — `scan_units` spans the candidates, not the matches.
+///
+/// Graded against the realized `redo_examined`, a counter that until now no term consumed at all.
+/// Over 1,085 sampled redo rows this estimate reads p10 0.19 / p50 0.93 / p90 3.38 against it, and
+/// the tail is the cardinality estimate arriving through `matches` rather than this shape: the same
+/// tail rides [`stream_redo_cards`], which the `CARD_PASS+FLOOR` term already multiplies. Scored as a
+/// whole formula against the measured `ns_finish` — the number that decides whether the term helps —
+/// `n_cards * 0.30 + 5.97 * this` reads p10 0.57 / p50 1.03 / p90 1.22, against p10 0.80 / p50 1.04 /
+/// p90 1.19 for the same formula given the ORACLE `redo_examined`. It is within noise of the best a
+/// perfect counter could do.
+///
+/// Exposed by `explain` as a `u32` and computed as a `u32` here for the reason `printings_walked` is
+/// NOT: the value the arm multiplies and the value a harness (or `fit_cost_model`'s mirror) reads
+/// have to be the same number, and rounding it once here means there is no truncation gap to tolerate.
+pub(crate) fn stream_redo_printings(f: &PlanFeatures) -> u32 {
+    let cards = stream_redo_matching_cards(f);
+    if cards == 0 || f.n_cards == 0 {
+        return 0;
+    }
+    (f64::from(cards) * f64::from(f.n_printings) / f64::from(f.n_cards)).round() as u32
 }
 
 /// `StreamedSelect`'s own count of `filter.card_pass` invocations: BOTH of its passes, where
@@ -1067,8 +1150,14 @@ pub(crate) fn plan_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
             // must not be charged for it. Charging them anyway over-costs by the whole floor --
             // measured est/real of 55.7 at p50 on zero-match queries, which really take 0.62 us
             // against a ~35 us estimate, and 1,265 of 33k StreamedSelect rows land there.
+            //
+            // Round 81 split this in two. The sweep rate below prices the `counts[cid] == 0` read
+            // that every card pays; `stream_redo_printings` prices the `push_card_matches` walk the
+            // matching handful pays on top, which the old flat rate had absorbed into a per-card
+            // number and so charged over the whole corpus. See both constants.
             let floor =
                 if stream_runs_small_gather(f) { n_cards * STREAM_SMALL_TOTAL_FLOOR_PER_CARD_NS } else { 0.0 };
+            let redo_scan = f64::from(stream_redo_printings(f)) * STREAM_REDO_SCAN_PER_ROW_NS;
             // The other branch: when the small-total gather does NOT run and there is a page to emit,
             // the walk steps the permutation until it fills. Same guards as the gather -- a query with
             // no matches, or a page past the end, returns before the walk too. Both the guards and the
@@ -1106,6 +1195,7 @@ pub(crate) fn plan_cost(plan: PhysicalPlan, f: &PlanFeatures) -> f64 {
                 + perm_steps * STREAM_PERM_STEP_NS
                 + f64::from(f.artwork_seen_cards) * STREAM_ARTWORK_SEEN_PER_CARD_NS
                 + floor
+                + redo_scan
                 + n_cards * STREAM_CORPUS_PASS_PER_CARD_NS
                 + STREAM_FIXED_COST_NS
         }

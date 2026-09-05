@@ -222,6 +222,77 @@ total regret by 0.0 ms).
 | 68 | **First EXECUTOR round in this arc — removes real work rather than improving a prediction.** `walk_grouped_page` stepped the permutation and, per card, bit-tested the card's WHOLE printing span and called `prefer_score` on every set printing. But printings are stored prefer-DESCENDING within a card (`from_rows`' load-time sort, ties by illustration_id then scryfall_id), so under `Mode::Card` + `Prefer::Default` the FIRST set printing already IS the chosen representative — every later `prefer_score`, the `touched`/`group_best` bookkeeping and the post-loop group emit were waste. Now takes the same `(start..end).find(is_set)` early break `gather_composed_page` and `push_card_matches` already used. `printings_examined` moved off its unconditional pre-match `(end - start)` to the EXIT POSITION, per arm, with no per-iteration add (the project's hot-path instrumentation rule). Scoped to the only LIVE walk: `walk_card_page_via_popcount_skip` sits behind `COMPOSE_SIGMA_ENABLED` (defaults 0) and the printing/artwork popcount-skip walks have zero production call sites | kept | n/a (not this doc's own metric) | **Row identity is the gate and it passed twice independently.** Agent: 7,776 cells / 374,712 rows byte-identical (3 distinct-ons x 4 prefers x 3 sort cols x both directions x 6 page points x 6 densities), debug AND release, plus 9,000 cells / 235,692 rows matching by sha256 from routed dumps. Me, separately: **21,912 compose cells including 5,920 `Perm`-paging, 750,580 rows, identical sha256** over printing identity — my first attempt used `orderby=rarity` and hit **0 Perm cells**, so it proved nothing until the orderby was varied. **Realized time**: `PrintingCompose` `ns_loop` p50 **0.707** (3,896 → 1,979 ns), interleaved over 6 block pairs, with GatheredScan/StreamedSelect/PlanePopcountOrder/CardRangePopcount controls all reading p50 **1.000**. Plan choice unaffected: **0 changes over 66,414** survey observations, and 0 `paging_taken`/`picked`/`result_total` flips over 595 exact-population paired compose cells. `cargo test` 305 debug / 302 release, clippy clean both profiles (verified by me) | see "Round 68" narrative below — why the end-to-end number is much smaller than the loop number, a density regime the router never reaches, and a cost-feature consequence that is now a queue item |
 | 69 | **Measurement only.** Grades StreamedSelect's two never-graded cost drivers (`perm_walk_span` via the walk term, `stream_scan_units`) against realized counters, answers whether the permutation-less sort columns need their own cost branch, and re-measures the compose walk's per-orderby clump after Round 68 invalidated it | n/a | n/a | **No instrumentation round was needed — item 1's stated blocker was wrong.** Both realized counters (`perm_steps`, `printings_examined`) already exist and are already published. Walk term: pooled median **1.023**, spread 9.6x, split by sort column into **1.9x** (`name`) to **38.8x** (`cmc`) at flat medians (0.918-1.183) — so a per-orderby scalar cannot help in CARD space, and no existing feature predicts the residual (max \|r\| 0.12). `stream_scan_units` is **bimodal**: p25/p50 exactly 1.000, p90 **11.8** (printing 16.7x, artwork 14.0x). Both cost GATES are correct — all 83 walk-gate disagreements (2.79%) are the estimate crossing `STREAM_MIN_MATCHES`, and 720 of 778 scan-gate ones (92.5%) are the plan returning before any loop. `rarity`/`usd` need **no** cost branch: they have no permutation and `streamed_select_applicable` drops the plan from the argmin (offered 0/12 vs 12/12 for `name`/`cmc`). Compose's `Perm`/`OrderbyWalk` shared arm is likewise **correct** (residual medians 1.277 vs 1.449) — but its per-column medians span **0.925-3.579** against one shipped `WALK_LENGTH_BIAS` of 1.45, which CONFIRMS item 5 | see "Round 69" narrative below — a blocker that was already unblocked, and a stale table that validated its own replacement |
 
+### Round 81 — StreamedSelect's small-total floor, and step 3's precondition is NOT what we thought
+
+Step 2 of the refit sequence Round 80 identified. It found the over-charge, fixed it, and then
+established that **fixing it does not unblock step 3** — which is the more important half.
+
+**The 77% is entirely the finish phase, and 96% of that is one flat constant.**
+`SMALL_TOTAL_FLOOR_PER_CARD` charges `n_cards * 1.02` = **32.4 us** on the small-total branch; measured
+`ns_finish` on 1,085 rows where the executor really took that exit is p10 8.3 / **p50 11.0** / p90
+27.5 us.
+
+**Why 1.02 was wrong, and why two prior confirmations agreed with it.** The redo loop does two things —
+a `counts[cid] == 0` read on every card, and `card_pass` + `push_card_matches` on the few dozen with a
+nonzero count. Charging both on `n_cards` makes the per-card rate a function of the cell's MATCH count,
+which a per-card cost cannot express. Re-running `bench_streamed_loop` at `n_cards = 31,724` reads
+**0.305-0.332 at its 100-match cells and 0.369-0.478 at its 400-match cells**; the constant's doc cites
+1.075-1.250, which are its **600-match** cells. And `fit_cost_model`'s 0.98 is the same conflation from
+traffic: that column is literally `n_cards` or 0, **collinear with the intercept, with no second column
+to separate against**. So the fit could not identify it either.
+
+The fix drops it to **0.30** (the sweep alone) and adds `STREAM_REDO_SCAN_PER_ROW_NS` over a new
+`stream_redo_printings = min(matches, eval_domain) * n_printings / n_cards` — **`redo_examined`'s first
+consumer**, and the second column that makes the term identifiable at all. Scored as whole formulas
+against measured `ns_finish`: shipped p50 **2.94** / agg 2.16 -> new p50 **1.03** / agg **0.97**, with
+the *oracle* `redo_examined` at p50 1.04 — i.e. within noise of what a perfect counter could do.
+
+**The finding that redirects step 3: the over-charge lives entirely OFF the argmin path.** On rows
+where StreamedSelect is PICKED the arm was already calibrated *before* this change. Measured
+independently here on picked rows, `--mode uniform`, 6,000 queries:
+
+| plan / acquire | n | p / `plan_self_ns` | p / executor | prep share |
+|---|---|---|---|---|
+| GatheredScan / `printing_compose` | 1,072 | **0.648** | 1.149 | 11.7% |
+| StreamedSelect / `printing_compose` | 498 | **0.973** | 1.314 | 26.4% |
+| PrintingCompose / `printing_compose` | 860 | 1.106 | 1.106 | 0.0% |
+| GatheredScan / `candidates` | 833 | 1.241 | 1.241 | 0.0% |
+| StreamedSelect / `candidates` | 213 | 1.197 | 1.197 | 0.0% |
+
+On the 6,398 small-gather rows StreamedSelect loses by p50 **33 us**; removing 22 us leaves it losing
+by 10.3 us, still **0-for-6,398**. So this term never routes, and after the change the picked-row
+ratios move 0.973 -> 0.989 — i.e. barely at all, exactly as predicted.
+
+**What actually causes Round 80's `StreamedSelect -> PrintingCompose` regression is a denominator, not
+a miscalibration.** `plan_self_ns` adds `ns_prepare` on a `RANGE_ACQUIRES` route, so on
+`printing_compose` StreamedSelect's shipped rates are ALREADY scored against a measured time that
+includes the candidate build — and they read 0.973, correct. Charging the build symmetrically adds its
+26.4% prep share on top, pushing it to ~1.24, past `PrintingCompose`'s 1.106. GatheredScan, whose prep
+share is only 11.7% and which reads 0.648, moves to ~0.77 and stays under. **That is the +5.58 ms,
+mechanism and magnitude.**
+
+**So step 3's plan changes: charge the build term to GatheredScan only, or scale it per plan.**
+StreamedSelect's rates already absorb the build on range routes, and no amount of work on its finish
+phase changes that. This is what step 2 was for — establishing whether its precondition was met. It is
+not, and the sequence needed to know before step 3 spent a round on it.
+
+**Shipped anyway, on the Round 76 precedent**: a strict accuracy improvement (p50 2.94 -> 1.03) with an
+unmeasurable routing effect, and the refit argument is stronger here than it was there — the term is
+currently *unidentifiable* by `fit_cost_model` (one column, collinear with the intercept), and this
+change gives it a second column. **0 plan flips** over 3,600 prefer-varied rows verified here; the lane
+saw 0/2/0/2 over four 20,000-query sweeps, all 4 losses, net **+0.099 ms over 35,160 timed queries**
+(+0.0028 us/query) against a same-build A/A drift of **+0.48%** on 146 ms — 25-50x under the floor, so
+unmeasurable rather than measurably negative. Recorded plainly because 4/4 is a 0% win rate, on n=4.
+`fit_cost_model`'s mirror stays **100.0% over 41,551 rows**; joint substitution unchanged at -0.4%, so
+no error moved into a feature. `cargo test` 308 debug / 305 release, clippy clean both.
+
+**A briefing error of mine that this lane caught.** I gave it "StreamedSelect over-charges its own
+executor by 77%, target 1.767 -> 1.0", quoting Round 80's **pred/executor** column while the lane
+measured **pred/`plan_self_ns`** (1.319). Both were in Round 80's table; I quoted one and described it
+as the other. `scripts/bench_picked_ratios_by_route.py` is added so the two denominators are always
+reported side by side — the gap between them IS the unpriced build, so a ratio quoted without its
+denominator makes a plan look calibrated or broken depending on a choice nobody stated.
+
 ### Round 80 — three routes at GatheredScan's 78.7%, and they agree: it is not counting
 
 Three agents attacked the same target by three deliberately different routes — add COUNTERS for the

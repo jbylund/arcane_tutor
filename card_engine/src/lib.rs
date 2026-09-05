@@ -20051,6 +20051,12 @@ fn acquire_facts_to_pydict<'py>(py: Python<'py>, f: &AcquireFacts) -> PyResult<B
         // matches the plan it is grading or it grades a number that arm never reads.
         ("residual_card_pass", cost::residual_card_pass(g)),
         ("stream_residual_card_pass", cost::stream_residual_card_pass(g)),
+        // Round 81: the small-total redo pass's printing walk, the term that took `redo_examined`
+        // from a published counter no arm consumed to a graded one. Exposed for the same
+        // one-definition reason as the two above -- the arm's quantity and the mirror's have to be
+        // the same number, and this one is a `u32` in `cost.rs` precisely so that reading it here
+        // introduces no rounding gap for `fit_cost_model`'s mirror check to tolerate.
+        ("stream_redo_printings", cost::stream_redo_printings(g)),
         // `GatheredScan`'s finish phase, whose two terms are 3,290 of the 3,320 rows the error
         // attribution reports as UNGRADED. Derived from `limit`/`offset`/`matches` rather than stored,
         // and exposed for the same reason `stream_perm_steps` is: `fit_cost_model.design_row` held a

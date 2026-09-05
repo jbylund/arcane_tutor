@@ -130,7 +130,12 @@ CURRENT: dict[str, dict[str, float]] = {
         # ~page_span * perm_walk_span / matches entries, inversely proportional to selectivity.
         "PERM_STEP": 1.0,
         "ARTWORK_SEEN_PER_CARD": 1.21,
-        "SMALL_TOTAL_FLOOR_PER_CARD": 1.02,
+        # Round 81 split the small-total redo exit into the `counts[cid] == 0` sweep every card pays
+        # and the `push_card_matches` walk the matching handful pays. The old single per-card rate of
+        # 1.02 was the second folded into the first, so it charged a few dozen cards' printing walk
+        # over all 31.7k cards -- 32.4 us flat against a measured p50 `ns_finish` of 11.0 us.
+        "SMALL_TOTAL_FLOOR_PER_CARD": 0.30,
+        "REDO_SCAN_PER_ROW": 5.97,
         "CORPUS_PASS_PER_CARD": 0.02,
         "FIXED": 217.0,
     },
@@ -369,6 +374,17 @@ def design_row(plan: str, acq: dict, limit: int, offset: int) -> tuple[dict[str,
                 "PERM_STEP": perm_steps,
                 "ARTWORK_SEEN_PER_CARD": float(acq["artwork_seen_cards"]),
                 "SMALL_TOTAL_FLOOR_PER_CARD": small_total,
+                # `cost::stream_redo_printings` itself, for the reason `stream_perm_steps` is read
+                # rather than recomputed: a Python copy of a gate is how the PERM_STEP column silently
+                # fitted a pre-Round-32 formula. It is a u32 on both sides, so there is no truncation
+                # gap here of the kind `printings_walked` has. The fallback mirrors the CURRENT arm
+                # and is only for runs recorded before the key existed.
+                "REDO_SCAN_PER_ROW": float(
+                    acq.get(
+                        "stream_redo_printings",
+                        round(min(matches, eval_domain) * acq["n_printings"] / n_cards) if runs_small_gather else 0.0,
+                    )
+                ),
                 "CORPUS_PASS_PER_CARD": n_cards,
                 "FIXED": 1.0,
             },

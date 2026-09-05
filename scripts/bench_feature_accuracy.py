@@ -134,6 +134,10 @@ PAIRS = (
     ("project_printings", "set_printings"),
     ("gather_page_span", "select_input_len"),
     ("gather_page_rows", "page_rows_collected"),
+    # Round 81: `redo_examined` stopped being a counter with no term behind it. See
+    # `cost::stream_redo_printings` -- (matching cards) x (corpus printings per card), because nothing
+    # on `PlanFeatures` describes the printing span of the matching subset specifically.
+    ("stream_redo_printings", "redo_examined"),
 )
 
 #: Plans whose arm charges the two finish-phase page terms. Only `GatheredScan` does: no other arm has
@@ -143,6 +147,12 @@ PAIRS = (
 #: and neither is priced for it; that is unmeasured work, not a grading opportunity.
 GATHER_PAGE_FEATURES = frozenset({"gather_page_span", "gather_page_rows"})
 GATHER_PAGE_TERM_PLANS = frozenset({"GatheredScan"})
+#: The redo-pass printing walk, and the one arm that charges it. Same shape as the pair above: only
+#: `run_query_streamed` has a small-total redo exit, and only its arm prices the walk. Every other
+#: plan reports `redo_examined == 0`, which `MIN_COUNTER` would drop anyway -- the gate keeps the
+#: reason visible instead of leaving it to a filter's side effect.
+REDO_SCAN_FEATURE = "stream_redo_printings"
+REDO_SCAN_TERM_PLANS = frozenset({"StreamedSelect"})
 
 #: `gather_page_rows` is BOUNDED BY `limit`, which the sampler draws from `costbench.LIMITS`
 #: (10, 100, 175) -- so the shared `MIN_COUNTER` of 100 is not a noise floor here, it is a filter that
@@ -295,6 +305,8 @@ def arm_charges(feat: str, plan: str, paging: str, unique: str) -> bool:
         return False
     if feat in GATHER_PAGE_FEATURES and plan not in GATHER_PAGE_TERM_PLANS:
         return False  # no other arm has a finish-phase page term to grade
+    if feat == REDO_SCAN_FEATURE and plan not in REDO_SCAN_TERM_PLANS:
+        return False  # no other executor has a small-total redo exit, let alone a term for it
     # This branch's arm never multiplies this feature by a rate.
     return not (plan == "PrintingCompose" and not compose_grades(paging, feat))
 
