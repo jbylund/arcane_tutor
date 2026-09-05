@@ -54,13 +54,33 @@ Item #7 also records what `None` really overloads today — a genuine unknown, a
 
 **The real cost is verification, and it is the reason to sequence carefully.** Rounds 58/59/60 were each verified by byte-identical survey output, the strongest guard this arc has, and seeding makes that unavailable by construction — those 41,838 absences become values, so `and_trace` diffs are non-empty on purpose. That is weaker evidence for a change whose entire point is that it changes nothing, which is why the explicit-flag half goes first, while byte-identical verification is still available.
 
+## `best()` is two jobs, and both can be retired rather than renamed
+
+Measured 2026-09-05 over the survey's 32,745 traced queries, every node in every tree:
+
+| space | both channels present | `estimate > guaranteed` | share |
+|---|---|---|---|
+| card | 57,282 | **0** | 0.00% |
+| artwork | 57,264 | **0** | 0.00% |
+| printing | 122,124 | **6,888** | **5.64%** |
+
+`estimate <= guaranteed` already holds in two of the three spaces. Where it fails, the estimate is provably wrong — `pow>=2 pow<=2` reads `guaranteed=13,388` against `estimate=24,351`, a guess 82% above a proven ceiling. So `best()` is doing two separable jobs:
+
+1. **Clamping the guess to the proven ceiling** — those 6,888 printing nodes. Retired by enforcing `estimate <= guaranteed` in the mutators. **Behaviour-neutral for every current consumer**, since they read `min(e, g)`, which already equals `g` exactly there.
+2. **Falling back when a channel is absent** — 8,007 printing nodes carry only `guaranteed`, 17,604 only `estimate`, and card has 33,222 guaranteed-only. Retired by domain-seeding, which makes both channels total.
+
+With both done, `best()` is not renamed but **deleted**: it becomes identically `.estimate`, and consumers read `.estimate` for accuracy or `.guaranteed` for soundness with no third accessor. That also dissolves `SpaceMeasure::add`'s documented asymmetry, which today must sum `best()`s rather than `estimate`s precisely because the two can diverge.
+
+**The cost, stated plainly: clamping at write time throws away the raw guess.** On those 6,888 nodes we lose the ability to see that the estimator overshot by 82%, which is the signal estimator-calibration work reads. That is the same lossiness `best()` is being retired for, relocated to the write. The alternative is to store the raw estimate and keep a clamping read, which is `best()` again under a better name. Taking the clamp means the diagnostic trace, not the stored value, becomes the place estimator error is preserved.
+
 ## Staging
 
 Each stage is separately landable and separately measured. Stage 1 unblocks the empty-page fastpath ([local-engine-empty-page-priced-infinity.md](local-engine-empty-page-priced-infinity.md)) without waiting for the rest.
 
 0. **The explicit exact-card-source flag** (item #7's own prescribed first commit). Replaces the one genuine PRESENCE test, `is_and && card.guaranteed.is_some()`, with a signal recorded where the structure happens. Behaviour-neutral and byte-identical-verifiable, and it must land while that guard is still available.
-1. **Rename, no behaviour change.** `best()` -> `routing_cardinality()`, add `proven()`. Every one of the 23 `lib.rs` call sites classified in the commit message as soundness or accuracy. Must be a measured zero-delta on the estimate survey; if anything moves, a call site was mis-classified and that is the finding.
-2. **Seed the domain** (item #7 proper). `guaranteed` becomes total, `proven()` drops its `Option`. Lands on a codebase where no consumer reads presence any more, so it is provably inert. Verification is necessarily weaker here — semantic scalars plus the `{space} == min(guaranteed, estimate)` fidelity check plus an explicit diff of the one behavioural site — which is exactly why stages 0 and 1 go first.
+1. **Enforce `estimate <= guaranteed` in the mutators.** Retires `best()`'s clamping job. Expected byte-identical on every value consumer — they already read `min(e, g)` — with the delta confined to the trace's `{space}_estimate` keys on the 6,888 nodes, which is precisely where it should show up and nowhere else. Same byte-identity guard as stage 0.
+2. **Seed the domain** (item #7 proper). Retires `best()`'s fallback job; both channels become total. Lands on a codebase where no consumer reads presence any more, so it is provably inert. Verification is necessarily weaker here — semantic scalars plus an explicit diff of the one behavioural site — which is exactly why stages 0 and 1 go first.
+   - With 1 and 2 both done, **delete `best()`**: it is now identically `.estimate`. Each of the 23 `lib.rs` call sites becomes `.estimate` or `.guaranteed` according to which consumer it is, and the classification is forced by the code rather than by a prose contract. Retiring `SpaceMeasure::add`'s `best()`-summing asymmetry belongs here too.
 3. **Carry both channels to the routing boundary.** Widen what `mk_plan_feats` accepts. This is a hot path: needs a paired A/B isolating *this* change, per `.claude/rules/benchmark-methodology-review.md` — a measurement of a nearby change does not cover it.
 4. **Re-derive the cross-space inference from `proven()` only.** Finding 2 should become unexpressible rather than fixed in place.
 5. **Revisit `narrow_floor`.** Finding 3, which by then has no way to spell itself — though note seeding alone does not reach it, so item #2's own fix is still required.
