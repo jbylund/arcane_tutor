@@ -1,0 +1,35 @@
+WHERE estimate > guaranteed (printing space), over every node of every And trace in the
+300-per-shape estimate survey (32,745 traced queries).
+
+  position      violations      nodes     rate
+  ROOT               6,888     32,745   21.04%
+  depth 1                0     20,475    0.00%
+  depth 2                0     68,904    0.00%
+
+EVERY violation is at the root, and every one comes from a single site:
+
+  (kind, op, mechanism) = ('op', 'min_fold', None)      6,888
+
+  by query count_source:
+    printing_compose           6,134 of  119,241 nodes  (5.14%)
+    plane                        754 of    2,883 nodes  (26.15%)
+
+  by query shape (top 8):
+    unsafe:color+identity          888     subtype_cube:type+tou          363
+    arith:pow+tou+cmc              888     subtype_cube:type+pow+tou+cmc  339
+    same_family:type+type_realistic 879    subtype_cube:type+pow+tou      321
+    star:color+identity+usd        720     subtype_cube:type+pow          309
+
+  magnitude (guaranteed > 0): n=5,568  est/guar  p50=3.49  p90=99.00  max=9350.00
+
+  guaranteed == 0 while estimate > 0: 1,320 nodes -- true_total is 0 in every case:
+    plane  est=18,721  true_total=0   id:b c:g
+    plane  est=2,000   true_total=0   c:uw id:r
+    plane  est=18,503  true_total=0   id:bu c:r
+    plane  est=18,467  true_total=0   id:w c:b
+
+READING. The pooled 5.64% understated this: at the node consumers actually read, one in five
+And queries carries an estimate above a proven ceiling, typically 3.5x above it. best() has
+been masking an estimator failure of that size -- the estimator reads exact at the median on
+every acquire route partly BECAUSE min() rescues it. The 1,320 proven-empty nodes are the
+Tier 1 empty-page population, confirming the proof is already in hand for them.
