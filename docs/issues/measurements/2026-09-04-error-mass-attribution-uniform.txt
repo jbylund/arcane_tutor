@@ -1,0 +1,93 @@
+Engine loaded: 97,812 printings in 2.7s
+
+5,911 picked rows, mode=uniform, bound=8,000 queries
+
+============================================================================================
+ESTIMATE ERROR -- `matches` against realized `result_total` (3,800 rows)
+============================================================================================
+total estimate log-error mass: 663.2
+
+by acquire route
+  slice                                     rows    row%  err mass%  median |log|  mass/row
+  printing_compose                         2,469   65.0%      79.1%         0.000     0.213
+  candidates                                 793   20.9%      20.7%         0.000     0.173
+  card_range_popcount                        110    2.9%       0.2%         0.000     0.011
+  printing_range_scan                         92    2.4%       0.0%         0.000     0.000
+  plane                                      336    8.8%       0.0%         0.000     0.000
+
+by distinct-on
+  slice                                     rows    row%  err mass%  median |log|  mass/row
+  printing                                 1,309   34.4%      38.7%         0.000     0.196
+  artwork                                  1,273   33.5%      34.8%         0.000     0.181
+  card                                     1,218   32.1%      26.5%         0.000     0.144
+
+============================================================================================
+COST ERROR -- picked plan's predicted_ns against measured
+============================================================================================
+total cost log-error mass: 3808.3
+
+by plan
+  slice                                     rows    row%  err mass%  median |log|  mass/row
+  GatheredScan                             3,353   56.7%      78.7%         0.547     0.894
+  PrintingCompose                          1,093   18.5%       8.9%         0.213     0.311
+  StreamedSelect                             935   15.8%       8.0%         0.259     0.328
+  PlanePopcountOrder                         354    6.0%       3.0%         0.200     0.326
+  PrintingRangeScan                           62    1.0%       0.7%         0.282     0.412
+  CardRangePopcount                          114    1.9%       0.6%         0.164     0.196
+
+by plan and acquire route
+  slice                                     rows    row%  err mass%  median |log|  mass/row
+  GatheredScan [printing_compose]          2,236   37.8%      67.7%         0.764     1.153
+  GatheredScan [candidates]                1,097   18.6%      10.5%         0.328     0.365
+  PrintingCompose [printing_compose]       1,074   18.2%       8.7%         0.213     0.309
+  StreamedSelect [printing_compose]          641   10.8%       5.7%         0.256     0.340
+  PlanePopcountOrder [plane]                 354    6.0%       3.0%         0.200     0.326
+  StreamedSelect [candidates]                291    4.9%       2.3%         0.258     0.299
+  PrintingRangeScan [printing_range_scan]      62    1.0%       0.7%         0.282     0.412
+  CardRangePopcount [card_range_popcount]     114    1.9%       0.6%         0.164     0.196
+
+by distinct-on
+  slice                                     rows    row%  err mass%  median |log|  mass/row
+  printing                                 1,950   33.0%      33.5%         0.376     0.654
+  card                                     1,956   33.1%      33.3%         0.334     0.649
+  artwork                                  2,005   33.9%      33.2%         0.366     0.631
+
+compose only, by paging branch taken
+  slice                                     rows    row%  err mass%  median |log|  mass/row
+  compose Perm                               699   64.0%      62.6%         0.204     0.305
+  compose OrderbyWalk                        371   33.9%      35.0%         0.234     0.321
+
+============================================================================================
+PER-TERM ERROR MASS -- substitute the realized counter, see what error disappears
+============================================================================================
+5,381 picked rows with a mirror-exact reconstruction (0 excluded on mirror drift)
+total cost log-error mass: 3644.9
+
+  plan / term                                             rows  mass removed    share
+  GatheredScan / SCAN_PER_ROW                            2,160        501.25    13.8%
+  PrintingCompose / WALK_STEP                              982         39.52     1.1%
+  PrintingCompose / GATHER_BITTEST_PER_PRINTING            982         24.36     0.7%
+  GatheredScan / CARD_PASS+FLOOR                           600         20.25     0.6%
+  StreamedSelect / SCAN_PER_ROW                            152         12.52     0.3%
+  GatheredScan / LOOP_PER_CARD                           1,176         10.43     0.3%
+  StreamedSelect / PERM_STEP                               594          8.97     0.2%
+  PrintingCompose / BROADCAST_PER_PRINTING                 341          3.78     0.1%
+  StreamedSelect / EMIT_PER_MATCH                          901         -0.66    -0.0%
+  StreamedSelect / CARD_PASS+FLOOR                         159         -1.32    -0.0%
+  GatheredScan / PUSH_PER_MATCH                          1,308         -2.58    -0.1%
+  StreamedSelect / LOOP_PER_CARD                           898         -8.49    -0.2%
+  PrintingCompose / PROJECT_PER_PRINTING                 1,083       -372.43   -10.2%
+
+  Positive = substituting truth REMOVES error, so the feature is a real source.
+  Negative = the feature's error was CANCELLING another term's; fixing it alone makes the
+  arm worse, which is exactly what Round 76 measured and shipped anyway on correctness grounds.
+
+  UNGRADED terms that carry nonzero cost (no counter exists -- unmeasured, not clean):
+    GatheredScan / SELECT_PER_PAGE_SLOT                  3,290 rows
+    GatheredScan / FIXED                                 3,290 rows
+    GatheredScan / COLLECT_PER_PAGE_ROW                  2,917 rows
+    GatheredScan / ARTWORK_PER_PRINTING                  1,171 rows
+    PrintingCompose / FIXED                              1,093 rows
+    PrintingCompose / WALK_EMIT_PER_ROW                  1,087 rows
+    PrintingCompose / POPCOUNT_PER_WORD                  1,074 rows
+    StreamedSelect / CORPUS_PASS_PER_CARD                  935 rows
