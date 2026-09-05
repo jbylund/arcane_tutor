@@ -222,6 +222,62 @@ total regret by 0.0 ms).
 | 68 | **First EXECUTOR round in this arc — removes real work rather than improving a prediction.** `walk_grouped_page` stepped the permutation and, per card, bit-tested the card's WHOLE printing span and called `prefer_score` on every set printing. But printings are stored prefer-DESCENDING within a card (`from_rows`' load-time sort, ties by illustration_id then scryfall_id), so under `Mode::Card` + `Prefer::Default` the FIRST set printing already IS the chosen representative — every later `prefer_score`, the `touched`/`group_best` bookkeeping and the post-loop group emit were waste. Now takes the same `(start..end).find(is_set)` early break `gather_composed_page` and `push_card_matches` already used. `printings_examined` moved off its unconditional pre-match `(end - start)` to the EXIT POSITION, per arm, with no per-iteration add (the project's hot-path instrumentation rule). Scoped to the only LIVE walk: `walk_card_page_via_popcount_skip` sits behind `COMPOSE_SIGMA_ENABLED` (defaults 0) and the printing/artwork popcount-skip walks have zero production call sites | kept | n/a (not this doc's own metric) | **Row identity is the gate and it passed twice independently.** Agent: 7,776 cells / 374,712 rows byte-identical (3 distinct-ons x 4 prefers x 3 sort cols x both directions x 6 page points x 6 densities), debug AND release, plus 9,000 cells / 235,692 rows matching by sha256 from routed dumps. Me, separately: **21,912 compose cells including 5,920 `Perm`-paging, 750,580 rows, identical sha256** over printing identity — my first attempt used `orderby=rarity` and hit **0 Perm cells**, so it proved nothing until the orderby was varied. **Realized time**: `PrintingCompose` `ns_loop` p50 **0.707** (3,896 → 1,979 ns), interleaved over 6 block pairs, with GatheredScan/StreamedSelect/PlanePopcountOrder/CardRangePopcount controls all reading p50 **1.000**. Plan choice unaffected: **0 changes over 66,414** survey observations, and 0 `paging_taken`/`picked`/`result_total` flips over 595 exact-population paired compose cells. `cargo test` 305 debug / 302 release, clippy clean both profiles (verified by me) | see "Round 68" narrative below — why the end-to-end number is much smaller than the loop number, a density regime the router never reaches, and a cost-feature consequence that is now a queue item |
 | 69 | **Measurement only.** Grades StreamedSelect's two never-graded cost drivers (`perm_walk_span` via the walk term, `stream_scan_units`) against realized counters, answers whether the permutation-less sort columns need their own cost branch, and re-measures the compose walk's per-orderby clump after Round 68 invalidated it | n/a | n/a | **No instrumentation round was needed — item 1's stated blocker was wrong.** Both realized counters (`perm_steps`, `printings_examined`) already exist and are already published. Walk term: pooled median **1.023**, spread 9.6x, split by sort column into **1.9x** (`name`) to **38.8x** (`cmc`) at flat medians (0.918-1.183) — so a per-orderby scalar cannot help in CARD space, and no existing feature predicts the residual (max \|r\| 0.12). `stream_scan_units` is **bimodal**: p25/p50 exactly 1.000, p90 **11.8** (printing 16.7x, artwork 14.0x). Both cost GATES are correct — all 83 walk-gate disagreements (2.79%) are the estimate crossing `STREAM_MIN_MATCHES`, and 720 of 778 scan-gate ones (92.5%) are the plan returning before any loop. `rarity`/`usd` need **no** cost branch: they have no permutation and `streamed_select_applicable` drops the plan from the argmin (offered 0/12 vs 12/12 for `name`/`cmc`). Compose's `Perm`/`OrderbyWalk` shared arm is likewise **correct** (residual medians 1.277 vs 1.449) — but its per-column medians span **0.925-3.579** against one shipped `WALK_LENGTH_BIAS` of 1.45, which CONFIRMS item 5 | see "Round 69" narrative below — a blocker that was already unblocked, and a stale table that validated its own replacement |
 
+### Round 85 (measurement only) — the mis-pick tail is ONE bug, and it is the empty page
+
+Round 84's miss margin has a p99 of 19.1x and a max of 29.7x. `bench_pick_quality.py --worst N
+--worst-by ratio` dumps those with each plan's PREDICTION beside its measurement, and **every single
+one of the top ten has the same signature**:
+
+```
+  lost  41.0 us   measured 27.61x   predicted 0.00x   headroom 23.98x
+    set:tmp frame:1993
+    printing/cubecobra/off=100/prefer=newest  [printing_compose]  matches=350 eval_domain=196
+      PICKED GatheredScan     predicted    8.0 us   measured   42.5 us   p/m 0.19
+      BEST   PrintingCompose  predicted    inf us   measured    1.5 us   p/m  inf
+```
+
+**`PrintingCompose predicted = inf` on all ten.** That is `ComposePaging::Decline => INFINITY`, which
+exists to keep a plan that will refuse out of the argmin. But the executor does not refuse — it takes
+**`EmptyPage`** and returns in ~1.4 us, while the two materializing plans grind the whole candidate
+set producing nothing (42.5 us and 38.5 us on that query, `result_total = 0` for all three).
+
+Verified directly rather than inferred: forcing all three plans on `set:tmp frame:1993` gives compose
+7 trials, **0 declines**, `paging_taken = EmptyPage`, min 1,417 ns. So this is a genuine mis-pick, not
+a decline being mistimed as a run — the first thing to rule out, since a refusal is cheap for the
+wrong reason.
+
+**Sized:**
+
+| slice | n | hit% | time-wtd hit% | share of lost time |
+|---|---|---|---|---|
+| ordinary queries | 4,449 | **95.9%** | 89.7% | 79.4% |
+| **empty result or page past the end** | **917 (17.1%)** | **83.8%** | **55.8%** | **20.6%** |
+
+So one query shape — 17% of the sample — carries **a fifth of all routing loss**, and its
+time-weighted hit rate is **55.8%** against 89.7% everywhere else. Excluding it, the router's hit rate
+is 95.9% under uniform.
+
+**This is the same gate Round 80's audit lane found from the other side**, and its significance was
+understated there as a footnote. That lane measured `EmptyPage` running in 9.1 us median against a
+**64.1 us** median prediction with **1,261 of 1,551 rows priced INFINITY**, and separately found 74
+queries where compose WAS picked and then refused after paying the whole build (3.59% of measured
+time). Both are the same defect: **`compose_paging` predicts `Decline` from the acquire's ESTIMATE of
+the total while the executor branches on the real one.** One direction costs a wasted build; the other
+excludes the fastest plan from the argmin entirely.
+
+**Why the ratio tail and the absolute tail are disjoint, and why both are worth having.** The
+ratio-worst rows lose 15-41 us each — real but small. The absolute-worst rows lose 120-490 us and have
+a completely different signature: **predicted ratios of 0.70-0.98**, i.e. the model saw a near-tie and
+lost the coin flip, with the truth being ~2x. Those are `card` mode, `off=100`, `[printing_compose]`,
+and they are mis-calibration rather than a gate bug. `--worst-by loss` ranks what to fix for total
+time; `--worst-by ratio` ranks what is structurally wrong. Neither list finds the other's entries.
+
+**What would fix the empty-page class** is not a cost-model change: `plan_cost` cannot see that the
+page is empty, because `matches` is an estimate and the branch is on the realized total. Either the
+decline gate stops returning INFINITY when the fastpath's actual exit would be `EmptyPage`, or the
+router gets an exact zero-result test before costing. Both are estimator/dispatch work, not costing —
+recorded here rather than scheduled.
+
 ### Round 84 (measurement only) — the router is right 94-96% of the time, and its misses are ties
 
 Twenty rounds of this ledger measure how wrong the cost MODEL is. None of them asked the question in

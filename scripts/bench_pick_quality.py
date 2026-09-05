@@ -73,8 +73,25 @@ def collect(engine: object, sampler: QuerySampler, rng: random.Random, budget: B
             continue
         ordered = sorted(timed.values())
         best_plan = min(timed, key=lambda k: timed[k])
+        predicted = {p["plan"]: p.get("predicted_ns") for p in sample.plans}
         rows.append(
             {
+                "q": sample.q,
+                "orderby": sample.kw["orderby"],
+                "prefer": sample.kw.get("prefer", "default"),
+                "offset": sample.kw["offset"],
+                "limit": sample.kw["limit"],
+                "predicted": predicted,
+                # A query whose result is empty, or whose page starts past the end, has a fast exit
+                # every plan could take -- and compose's `EmptyPage` really does, in ~1.4 us, while the
+                # materializing plans grind the whole candidate set producing nothing. The model prices
+                # compose INFINITY there (it predicts `Decline`), so it is never picked. Sliced out
+                # because it is a distinct failure from mis-costing a plan that does real work.
+                "empty_page": (picked_total := next((pp.get("result_total") or 0 for pp in sample.plans if pp.get("picked")), 0))
+                == 0
+                or sample.kw["offset"] >= picked_total,
+                "matches": acq["matches"],
+                "eval_domain": acq["eval_domain"],
                 "acquire": acq["count_source"],
                 "unique": sample.kw["unique"],
                 "picked": picked,
@@ -117,6 +134,43 @@ def hit_table(rows: list[dict], key, label: str) -> None:  # noqa: ANN001
         )
 
 
+def worst_misses(miss: list[dict], n: int, by: str) -> None:
+    """Dump the costliest mis-picks with both plans' PREDICTIONS beside their measurements.
+
+    The measured ratio says how bad the miss was; the PREDICTED ratio says what kind of mistake it
+    is, and they are different questions:
+
+    - predicted ratio near 1.0 -> the model saw a near-tie and lost the coin flip. Cheap to hold,
+      hard to fix, and not evidence of a broken term.
+    - predicted ratio well below 1.0 -> the model was CONFIDENT the picked plan was much cheaper and
+      was wrong. That is a term failing, and the per-plan predicted/measured columns say whose.
+
+    Both plans' numbers come from the same `explain_analyze` call, so the comparison is common-mode.
+    """
+    # Two different "worst". Absolute loss ranks what to fix for total time; RATIO ranks the
+    # pathological shapes -- a 20x miss on a 30 us query costs less than a 2x miss on a 1 ms one, but
+    # it is the one that says a term is structurally wrong rather than slightly mis-fit.
+    rank = (lambda r: -(r["picked_ns"] - r["best_ns"])) if by == "loss" else (lambda r: -r["picked_ns"] / r["best_ns"])
+    print(f"\n{'=' * 108}\nWORST {n} MIS-PICKS by {by} -- predicted vs measured, per plan\n{'=' * 108}")
+    for r in sorted(miss, key=rank)[:n]:
+        pick_p, best_p = r["predicted"].get(r["picked"]), r["predicted"].get(r["best"])
+        pred_ratio = (pick_p / best_p) if pick_p and best_p else float("nan")
+        print(
+            f"\n  lost {(r['picked_ns'] - r['best_ns']) / 1000:>8.1f} us   measured {r['picked_ns'] / r['best_ns']:>7.2f}x   "
+            f"predicted {pred_ratio:>6.2f}x   headroom {r['headroom']:>6.2f}x"
+        )
+        print(f"    {r['q'][:78]}")
+        print(
+            f"    {r['unique']}/{r['orderby']}/off={r['offset']}/prefer={r['prefer']}  "
+            f"[{r['acquire']}]  matches={r['matches']:,} eval_domain={r['eval_domain']:,}"
+        )
+        for tag, plan in (("PICKED", r["picked"]), ("BEST  ", r["best"])):
+            pred, meas = r["predicted"].get(plan), r["picked_ns"] if plan == r["picked"] else r["best_ns"]
+            ratio = f"{pred / meas:>6.2f}" if pred else "     -"
+            pred_s = f"{pred / 1000:>9.1f}" if pred else "        -"
+            print(f"      {tag} {plan:<19} predicted {pred_s} us   measured {meas / 1000:>9.1f} us   p/m {ratio}")
+
+
 def main() -> None:
     """Report hit rate, miss margin and available headroom."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -125,6 +179,10 @@ def main() -> None:
     parser.add_argument("--mode", choices=MODES, default="uniform")
     parser.add_argument("--corpus", type=pathlib.Path, default=REPO_ROOT / "benchmarks/bitplanes/corpus.jsonl")
     parser.add_argument("--shm-path", type=pathlib.Path, default=None)
+    parser.add_argument("--worst", type=int, default=0, help="dump this many worst misses with per-plan predictions")
+    parser.add_argument(
+        "--worst-by", choices=("loss", "ratio"), default="loss", help="rank the dump by absolute us lost or by picked/best"
+    )
     args = parser.parse_args()
 
     engine = load_engine(args.corpus, args.shm_path or args.corpus.with_suffix(".pickq.store"))
@@ -171,8 +229,13 @@ def main() -> None:
     hit_table(rows, lambda r: r["acquire"], "by acquire route")
     hit_table(rows, lambda r: r["picked"], "by picked plan")
     hit_table(rows, lambda r: r["unique"], "by distinct-on")
+    hit_table(
+        rows, lambda r: f"empty-or-past-end={r['empty_page']}", "by EMPTY PAGE -- compose exits fast, model prices it INFINITY"
+    )
     if miss:
         hit_table(miss, lambda r: f"{r['picked']} -> {r['best']}", "MISSES ONLY, by transition")
+    if args.worst and miss:
+        worst_misses(miss, args.worst, args.worst_by)
 
 
 if __name__ == "__main__":
