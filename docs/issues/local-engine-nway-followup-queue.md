@@ -183,14 +183,39 @@ direction: 74 queries pay an entire compose build and then refuse, **3.59% of al
 Largest single routing item, and it is estimator/dispatch work, not costing — `plan_cost` cannot see
 an empty page because `matches` is an estimate.
 
-**B. The tail's under-counting walk/page terms.** `PERM_STEP` 0.47x, `WALK_STEP` 0.58x on the tail
-against ~0.87-0.91 elsewhere. `SELECT_PER_PAGE_SLOT` was the third and is FIXED (Round 88, off-tail
-p50 0.349 -> 1.000). The remaining two are the same shape and now have a reason to be worked that
-their mass never gave them.
+**B. StreamedSelect's `SCAN_PER_ROW` — the one term that is both LARGE and WRONG on the tail.**
+Decomposing the top-40-by-loss queries by which terms carry their predicted cost (both plans in each
+comparison), against the same decomposition on correctly-picked queries:
 
-**C. StreamedSelect's `SCAN_PER_ROW` on the tail** — 1.68x where it is 1.000 everywhere else, and the
-only term over-counting where the others under-count. It is the other half of the opposite-sign
-mechanism.
+| term | tail share | rest share | ratio | tail accuracy |
+|---|---|---|---|---|
+| **`StreamedSelect / SCAN_PER_ROW`** | **20.1%** | 6.2% | **3.3x** | **1.68x over** |
+| `PrintingCompose / BROADCAST_PER_PRINTING` | 18.8% | 16.1% | 1.2x | 1.00 (accurate) |
+| `GatheredScan / CARD_PASS+FLOOR` | 14.0% | 3.7% | 3.8x | 1.00 (accurate) |
+| `StreamedSelect / CARD_PASS+FLOOR` | 10.9% | 3.8% | 2.9x | 1.00 (accurate) |
+| `PrintingCompose / GATHER_CARD_PASS` | 4.7% | 0.2% | **21.6x** | — |
+| `PrintingCompose / WALK_STEP` | **0.7%** | 1.0% | 0.7x | 0.58x under |
+| `GatheredScan / SELECT_PER_PAGE_SLOT` | **0.3%** | 1.1% | 0.3x | fixed, Round 88 |
+
+**Of the four terms that carry tail cost, only the first is also inaccurate.** The rest are large and
+right — nothing to fix. That makes `stream_scan_units`' tail behaviour the single actionable feature
+item: 20% of the cost being compared, over-counting by 1.68x, and it is the OVER-counting half of the
+opposite-sign mechanism, so correcting it moves StreamedSelect down where the walk terms would have
+moved others up.
+
+**An earlier version of this block ranked the under-counting walk/page terms second, and that was
+wrong.** `PERM_STEP` (0.47x) and `WALK_STEP` (0.58x) have the worst tail ACCURACY but carry **0.7% and
+under** of tail cost — `PERM_STEP` does not reach the top sixteen terms by share at all. A term can be
+badly estimated and still not decide anything. Accuracy shift ranks how wrong a term is; share ranks
+whether that wrongness can move a pick, and both are needed. Round 88's `SELECT_PER_PAGE_SLOT` fix was
+correct on its own terms and, by this measure, was never going to flip picks either — which is exactly
+what its 5 flips / net -13 us showed.
+
+**C. Compose's GATHER branch is wildly over-represented on the tail** — `GATHER_CARD_PASS` at **21.6x**
+its normal share, `GATHER_PUSH_PER_MATCH` 22.9x, `GATHER_GROUP_PER_PRINTING` 28.1x. Compose appears in
+**36 of the 40** tail comparisons as either the picked or the best plan (14 `GatheredScan -> compose`,
+11 `compose -> StreamedSelect`, 6 `compose -> GatheredScan`, 5 `StreamedSelect -> compose`). Nothing
+here is graded against a counter on the tail yet; that is the gap to close before proposing a fix.
 
 **D. The 36-40% of the tail that perfect features do NOT fix** — rate or model form on near-ties. A
 different kind of work, and nobody has characterised it.
