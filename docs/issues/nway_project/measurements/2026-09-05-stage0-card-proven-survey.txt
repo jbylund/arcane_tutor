@@ -1,0 +1,65 @@
+card_engine: /private/tmp/claude-502/-Users-joseph-bylund-scratch-sylvan-librarian/b2503d7a-32f2-40d0-8376-060ecce3967d/scratchpad/enginedir_new/card_engine/__init__.py
+mining corpus vocab for the same-family-twice supplement...
+Engine loaded: 97,812 printings in 2.7s
+generating query catalog...
+  22,126 distinct queries across 102 shape specs
+measuring (estimate + ground truth + picked plan, all 3 spaces)...
+  ...500/22,126 queries measured, 1,500 rows so far
+  ...1,000/22,126 queries measured, 3,000 rows so far
+  ...1,500/22,126 queries measured, 4,500 rows so far
+  ...2,000/22,126 queries measured, 6,000 rows so far
+  ...2,500/22,126 queries measured, 7,500 rows so far
+  ...3,000/22,126 queries measured, 9,000 rows so far
+  ...3,500/22,126 queries measured, 10,500 rows so far
+  ...4,000/22,126 queries measured, 12,000 rows so far
+  ...4,500/22,126 queries measured, 13,500 rows so far
+  ...5,000/22,126 queries measured, 15,000 rows so far
+  ...5,500/22,126 queries measured, 16,500 rows so far
+  ...6,000/22,126 queries measured, 18,000 rows so far
+  ...6,500/22,126 queries measured, 19,500 rows so far
+  ...7,000/22,126 queries measured, 21,000 rows so far
+  ...7,500/22,126 queries measured, 22,500 rows so far
+  ...8,000/22,126 queries measured, 24,000 rows so far
+  ...8,500/22,126 queries measured, 25,500 rows so far
+  ...9,000/22,126 queries measured, 27,000 rows so far
+  ...9,500/22,126 queries measured, 28,500 rows so far
+  ...10,000/22,126 queries measured, 30,000 rows so far
+  ...10,500/22,126 queries measured, 31,500 rows so far
+  ...11,000/22,126 queries measured, 33,000 rows so far
+  ...11,500/22,126 queries measured, 34,500 rows so far
+  ...12,000/22,126 queries measured, 36,000 rows so far
+  ...12,500/22,126 queries measured, 37,500 rows so far
+  ...13,000/22,126 queries measured, 39,000 rows so far
+  ...13,500/22,126 queries measured, 40,500 rows so far
+  ...14,000/22,126 queries measured, 42,000 rows so far
+  ...14,500/22,126 queries measured, 43,500 rows so far
+  ...15,000/22,126 queries measured, 45,000 rows so far
+  ...15,500/22,126 queries measured, 46,500 rows so far
+  ...16,000/22,126 queries measured, 48,000 rows so far
+  ...16,500/22,126 queries measured, 49,500 rows so far
+  ...17,000/22,126 queries measured, 51,000 rows so far
+  ...17,500/22,126 queries measured, 52,500 rows so far
+  ...18,000/22,126 queries measured, 54,000 rows so far
+  ...18,500/22,126 queries measured, 55,500 rows so far
+  ...19,000/22,126 queries measured, 57,000 rows so far
+  ...19,500/22,126 queries measured, 58,500 rows so far
+  ...20,000/22,126 queries measured, 60,000 rows so far
+  ...20,500/22,126 queries measured, 61,500 rows so far
+  ...21,000/22,126 queries measured, 63,000 rows so far
+  ...21,500/22,126 queries measured, 64,500 rows so far
+  ...22,000/22,126 queries measured, 66,000 rows so far
+wrote 66,378 rows to /private/tmp/claude-502/-Users-joseph-bylund-scratch-sylvan-librarian/b2503d7a-32f2-40d0-8376-060ecce3967d/scratchpad/survey_new.jsonl
+
+=== STAGE 0 VERIFICATION: byte-identity of the estimate survey, 300 per shape ===
+66,378 rows each build. Field-level diff of every row:
+  rows differing in ANY field      37,626
+  and_estimate_ns (single-shot ns) 37,626   <- TIMING, not semantic
+  SEMANTIC fields changed          NONE
+
+predicted_matches / picked_plan / and_mechanism / count_source / true_total / ratio: all identical.
+
+Paired and_estimate_ns (times compose_printing_estimate, the widened struct's own function):
+  all paired      n=41,038  p10=0.751 p25=0.922 MEDIAN=1.000 p75=1.109 p90=1.336  sum=1.0102
+  both >=1000 ns  n=27,059  p10=0.782 p25=0.928 MEDIAN=1.006 p75=1.099 p90=1.285  sum=1.0101
+  -> no resolvable effect at the median; a single-shot timer with this spread cannot
+     distinguish the 1% on the sum from noise, and no same-build control was run.

@@ -8187,6 +8187,12 @@ fn domain_hint_is_card_space_not_printing_scaled() {
     // it exists to confirm the plumbing (`card_bits_span_total` over `indexes.artwork_base`) runs at
     // all and produces a real, present value rather than silently staying `None`.
     assert_eq!(est.result.artwork.best(), Some(4), "est.result.artwork.best() must be the exact artwork span of the same 2-card intersection");
+    // Stage 0 of the structured-channel arc: the narrowing exemption in `acquire_plan_features` asks
+    // "did this `And` produce a TRUSTED card number" and used to answer it with a PRESENCE test on
+    // `result.card.guaranteed`. This is that same question asked as a flag recorded where the
+    // mechanism fires, so it keeps its meaning once domain-seeding makes the channel total. Pinned on
+    // an `And` that really does prove one -- the exact 2-card intersection asserted just above.
+    assert!(est.card_proven, "the exact card intersection above IS a proven card count, so card_proven must be set");
 }
 
 // #746: `set:`/`watermark:` postings leaves join the PrintingCompose leaf table. This is the

@@ -9703,6 +9703,35 @@ struct ComposeEstimate {
     /// consumer is asking). `false` for every leaf, where `result` and `candidate` are the same value
     /// by construction.
     printing_tightened: bool,
+    /// Did a real mechanism produce a PROVEN card count for this node?
+    ///
+    /// Stage 0 of `docs/issues/nway_project/local-engine-structured-space-measure-consumers.md`. The
+    /// question is the narrowing exemption's (`acquire_plan_features`, the `is_and` arm): "did the
+    /// `And` arm produce a TRUSTED card number", which it asks today as
+    /// `est.result.card.guaranteed.is_some()`. That is a PRESENCE test, and presence is a structural
+    /// proxy that only works while nothing seeds the channel. Domain-seeding (queue item #7) makes
+    /// `guaranteed` total, at which point the test reads `true` for every `And` and the exemption
+    /// fires unconditionally.
+    ///
+    /// Stated the way Round 62 states `printing_tightened`, and for the same reason: as a comparison
+    /// of ONE field against its OWN seed, both taken from the same expression, rather than a `&mut
+    /// bool` threaded through every mechanism. `SpaceMeasure`'s mutators are monotone, so `!=` against
+    /// the seed holds exactly when one of them fired, and it cannot go stale when a future mechanism
+    /// writes the field without updating a bookkeeping parameter. Because the seed is read from the
+    /// same place the channel is initialised, seeding the domain later moves both sides together and
+    /// the flag keeps meaning "a mechanism tightened this below the seed" rather than silently
+    /// becoming vacuous.
+    ///
+    /// Only the `guaranteed` channel is compared. `result.card` can be moved by an estimate-only
+    /// mechanism (`Candidate::Estimate` writes `card` through `estimate_only`), and such a move is
+    /// exactly what this consumer must NOT treat as a trusted card number -- comparing the whole
+    /// `SpaceMeasure` would admit it and change behaviour today.
+    ///
+    /// Deliberately NOT ORed with the children's flag in the `And` arm, unlike `printing_tightened`:
+    /// that arm seeds `result.card` as `UNKNOWN` and does not inherit `folded.result.card` at all, so
+    /// a child's proven card count reaches the answer only through `card_floor`, which the comparison
+    /// already sees. ORing the children in would report trusted where the arm had discarded the number.
+    card_proven: bool,
 }
 
 impl ComposeEstimate {
@@ -9710,14 +9739,14 @@ impl ComposeEstimate {
     /// the same count, and there is no space beyond printing to report.
     fn leaf(k: usize, broadcast: usize, scatter: usize) -> Self {
         let space = SpaceEstimate::printing_only(k);
-        Self { result: space, candidate: space, broadcast, scatter, collection_broadcast: 0, exact_domain: None, and_trace: None, printing_tightened: false }
+        Self { result: space, candidate: space, broadcast, scatter, collection_broadcast: 0, exact_domain: None, and_trace: None, printing_tightened: false, card_proven: false }
     }
 
     /// `leaf`, plus whichever of the card/artwork spaces the caller already has in hand for free --
     /// every call site that has one is expected to pass it, not re-derive it via `result`'s own scale.
     fn leaf_spaces(k: usize, broadcast: usize, scatter: usize, card: Option<usize>, artwork: Option<usize>) -> Self {
         let space = SpaceEstimate::spaces(k, card, artwork);
-        Self { result: space, candidate: space, broadcast, scatter, collection_broadcast: 0, exact_domain: None, and_trace: None, printing_tightened: false }
+        Self { result: space, candidate: space, broadcast, scatter, collection_broadcast: 0, exact_domain: None, and_trace: None, printing_tightened: false, card_proven: card.is_some() }
     }
 
     /// `leaf_spaces`, for the two leaf arms whose printing figure is a card count scaled by the corpus
@@ -9726,14 +9755,14 @@ impl ComposeEstimate {
     /// without leaving the line, that `k` here is a GUESS and not a bound.
     fn leaf_spaces_approx_printing(k: usize, broadcast: usize, scatter: usize, card: Option<usize>, artwork: Option<usize>) -> Self {
         let space = SpaceEstimate::spaces_approx_printing(k, card, artwork);
-        Self { result: space, candidate: space, broadcast, scatter, collection_broadcast: 0, exact_domain: None, and_trace: None, printing_tightened: false }
+        Self { result: space, candidate: space, broadcast, scatter, collection_broadcast: 0, exact_domain: None, and_trace: None, printing_tightened: false, card_proven: card.is_some() }
     }
 
     /// A card-space collection leaf specifically -- see `collection_broadcast`'s doc for why this
     /// isn't just `leaf(k, 0, k)`.
     fn collection_leaf(k: usize, card: Option<usize>, artwork: Option<usize>) -> Self {
         let space = SpaceEstimate::spaces(k, card, artwork);
-        Self { result: space, candidate: space, broadcast: 0, scatter: 0, collection_broadcast: k, exact_domain: None, and_trace: None, printing_tightened: false }
+        Self { result: space, candidate: space, broadcast: 0, scatter: 0, collection_broadcast: k, exact_domain: None, and_trace: None, printing_tightened: false, card_proven: card.is_some() }
     }
 }
 
@@ -10947,6 +10976,9 @@ fn compose_printing_estimate(
                 // "nothing tightened" to a consumer whose candidate set really is broader than the
                 // answer, which is the same false negative the numeric test is being replaced for.
                 printing_tightened: a.printing_tightened || c.printing_tightened,
+                // Overridden by the arm's own comparison below; ORed here so `folded` stays a
+                // faithful summary of its children rather than carrying a stale default.
+                card_proven: a.card_proven || c.card_proven,
             });
             // Round 37a: `leaves` reports each DIRECT child's own solo estimate -- recomputed here
             // (not read off `children_estimates`, which is keyed to `and_sources` and can hold FEWER
@@ -11041,6 +11073,10 @@ fn compose_printing_estimate(
             printing.lower_guaranteed(pair.printing);
             printing.lower_estimate(pair.printing);
             let mut result = SpaceEstimate { printing, card: SpaceMeasure::UNKNOWN, artwork: SpaceMeasure::UNKNOWN };
+            // Stage 0: the seed `card_proven` is measured against, read from the line above so that
+            // seeding the domain later moves the seed and the comparison together. Note this arm
+            // deliberately does NOT inherit `folded.result.card` -- see `card_proven`'s own doc.
+            let seed_card = result.card;
             // Round 63: `PairTotals`' card/artwork columns now reach `result` instead of being fetched
             // for the trace and discarded. `guaranteed` only, mirroring `fold_candidate`'s
             // `Candidate::Exact` arm -- these are real counts of a real set, so they are proven bounds;
@@ -12747,7 +12783,11 @@ fn compose_printing_estimate(
             // fields (`candidate` vs `result`), which is blind to a bound-only tightening; this reads
             // both channels of one field against its own earlier value.
             let printing_tightened = folded.printing_tightened || result_space.printing != seed_printing;
-            ComposeEstimate { result: result_space, exact_domain, and_trace: and_trace.map(Box::new), printing_tightened, ..folded }
+            // Stage 0: replaces the consumer's `est.result.card.guaranteed.is_some()` presence test.
+            // Byte-identical today -- `seed_card` is `UNKNOWN`, so this is `guaranteed.is_some()` --
+            // and it keeps meaning "a mechanism proved a card count" once the seed is a real domain.
+            let card_proven = result_space.card.guaranteed != seed_card.guaranteed;
+            ComposeEstimate { result: result_space, exact_domain, and_trace: and_trace.map(Box::new), printing_tightened, card_proven, ..folded }
         }
         FilterExpr::Or(v) => {
             let n_cards = offsets.len() - 1;
@@ -12774,6 +12814,12 @@ fn compose_printing_estimate(
                     // `clamp` below cannot introduce a divergence: it applies the identical `min` to
                     // `result` and `candidate` alike.
                     printing_tightened: a.printing_tightened || c.printing_tightened,
+                    // `&&`, not `||`, mirroring the value's own rule: `SpaceMeasure::add` zips the
+                    // two `guaranteed` channels, so a sum is proven only when BOTH sides are. The
+                    // fold seeds from `leaf(0, 0, 0)`, whose card channel is `UNKNOWN`, so this is
+                    // always `false` -- which is exactly right, since `add` from an absent seed can
+                    // never yield a proven card count either.
+                    card_proven: a.card_proven && c.card_proven,
                 });
             ComposeEstimate { result: clamp(summed.result), candidate: clamp(summed.candidate), ..summed }
         }
@@ -12870,7 +12916,7 @@ fn compose_printing_estimate(
             let artwork = exact_result_total(inner, indexes, Mode::Artwork).map(|a| n_artworks.saturating_sub(a));
             if src.card_space {
                 let space = SpaceEstimate::spaces(complement, card, artwork);
-                ComposeEstimate { result: space, candidate: space, broadcast: 0, scatter: 0, collection_broadcast: k, exact_domain: None, and_trace: None, printing_tightened: false }
+                ComposeEstimate { result: space, candidate: space, broadcast: 0, scatter: 0, collection_broadcast: k, exact_domain: None, and_trace: None, printing_tightened: false, card_proven: card.is_some() }
             } else {
                 ComposeEstimate::leaf_spaces(complement, 0, k, card, artwork)
             }
@@ -18136,7 +18182,7 @@ fn acquire_plan_features_inner(
         // P3/P4 split computed above no longer applies and is dropped to `None`.
         let (eval_domain, scan_units, stream_scan_base) = if !(compose_leaf_nothing_to_verify(filter)
             || plane_leaves_nothing_to_verify(filter, mode, plane, indexes)
-            || (is_and && est.result.card.guaranteed.is_some())
+            || (is_and && est.card_proven)
             || card_invariant_domain_exact)
             && range_too_broad_to_narrow(printing_matches, n_printings as usize)
         {
