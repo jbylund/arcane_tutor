@@ -1,0 +1,31 @@
+STAGE 1 VERIFICATION -- enforce estimate <= guaranteed at the And arm's final assembly.
+
+Prediction made BEFORE the change, from the violation census: every consumer reads
+best() = min(e, g), and the clamp fires only where that already equals g, so no value
+consumer can move. The delta should be confined to the trace's printing_estimate key,
+on exactly the 6,888 nodes measured as violating, and nowhere else.
+
+RESULT -- two isolated release wheels, survey at 300 per shape, 66,378 rows each:
+
+  TOP-LEVEL survey fields that changed:
+    and_estimate_ns          37,770 rows   <- TIMING, not semantic
+    (no semantic top-level field moved)
+
+  predicted_matches / picked_plan / count_source / and_mechanism / true_total / ratio:
+    all identical.
+
+  and_trace tree-node keys that changed:
+    printing_estimate         6,888 nodes  <- EXACTLY the predicted count
+
+  card_estimate, artwork_estimate, every *_guaranteed, every best-channel key: unchanged.
+  (32,745 and_trace rows differ overall, because every And row gains the new pre_clamp key.)
+
+PRE-CLAMP CAPTURE -- the raw guess is preserved, not destroyed:
+
+  pow>=2 pow<=2    guar=13,388  clamped_est=13,388  pre_clamp=24,351  (was 24,351)
+  pow>=2 pow<=3    guar=22,457  clamped_est=22,457  pre_clamp=33,420  (was 33,420)
+
+  pre_clamp disagreeing with the pre-change estimate: 0 rows.
+
+cargo test 309 debug / 306 release, clippy -D warnings clean. The new debug_assert on the
+arm's output holds across the whole debug suite, which is what CI runs.

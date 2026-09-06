@@ -8195,6 +8195,32 @@ fn domain_hint_is_card_space_not_printing_scaled() {
     assert!(est.card_proven, "the exact card intersection above IS a proven card count, so card_proven must be set");
 }
 
+/// Stage 1: the clamp that lets `best()` be retired. A guess above a bound the SAME measure already
+/// proved is error, not information -- `best()` was discarding it at every read, so applying it once
+/// at the source makes `.estimate` safe to read directly. Measured at a 3.49x median over 21.04% of
+/// `And` roots before the change, always from the arm's own `min_fold`.
+#[test]
+fn clamp_estimate_to_guaranteed_lowers_only_a_guess_above_its_own_bound() {
+    let clamped = |guaranteed, estimate| {
+        let mut m = super::SpaceMeasure { guaranteed, estimate };
+        m.clamp_estimate_to_guaranteed();
+        (m.guaranteed, m.estimate)
+    };
+    // The violation this exists for: `Candidate::Exact` lowers `guaranteed` and deliberately leaves
+    // `estimate` alone, so a proven bound lands under an untouched guess (`pow>=2 pow<=2`: 13,388
+    // proven against a 24,351 guess).
+    assert_eq!(clamped(Some(13_388), Some(24_351)), (Some(13_388), Some(13_388)), "a guess above its own proven bound must come down to it");
+    // Everything else is untouched -- the clamp must never raise a guess, move a bound, or
+    // manufacture a channel that no mechanism filled.
+    assert_eq!(clamped(Some(100), Some(40)), (Some(100), Some(40)), "a guess BELOW the bound is the normal case and must not move");
+    assert_eq!(clamped(Some(100), Some(100)), (Some(100), Some(100)), "equal channels are already consistent");
+    assert_eq!(clamped(None, Some(24_351)), (None, Some(24_351)), "no bound proved: `None` is unknown, never a ceiling of zero");
+    assert_eq!(clamped(Some(13_388), None), (Some(13_388), None), "an absent guess must not be manufactured from the bound");
+    // The one that would be a wrong answer rather than a slow one: a PROVEN zero really does clamp
+    // the guess to zero, which is what makes `.estimate` usable by the empty-page fastpath.
+    assert_eq!(clamped(Some(0), Some(18_721)), (Some(0), Some(0)), "a proven zero clamps the guess to zero");
+}
+
 // #746: `set:`/`watermark:` postings leaves join the PrintingCompose leaf table. This is the
 // differential test the design doc calls for: for every filter shape (both `set:` polarities,
 // `watermark:` positive, and mixes with a year range) the exact `compose_printing_bits` bitmap must

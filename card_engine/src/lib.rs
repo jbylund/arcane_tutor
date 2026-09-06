@@ -9474,6 +9474,24 @@ impl SpaceMeasure {
         self.guaranteed = Some(self.guaranteed.map_or(v, |g| g.min(v)));
     }
 
+    /// Clamp the GUESS to the PROVEN ceiling. A guess above a bound the same measure already
+    /// proved is not information, it is error: `best()` has been silently discarding it at every
+    /// read since Round 58, so applying it once at the source is what lets `best()` be retired.
+    ///
+    /// Not applied inside `min`/`lower_guaranteed`, though those are what create the violation
+    /// (`Candidate::Exact` contributes `guaranteed` only and deliberately leaves `estimate` alone,
+    /// so a proven bound lands below an untouched guess). Doing it there would destroy the raw
+    /// guess mid-fold, and the raw guess is exactly what the diagnostic trace needs in order to
+    /// keep estimator error observable -- measured at a 3.49x median over a fifth of `And` roots.
+    /// So the arm clamps once, at its own final assembly, after capturing the raw value.
+    fn clamp_estimate_to_guaranteed(&mut self) {
+        if let (Some(g), Some(e)) = (self.guaranteed, self.estimate)
+            && e > g
+        {
+            self.estimate = Some(g);
+        }
+    }
+
     /// Fold in a mechanism that guessed. Cannot touch `guaranteed` -- the whole point of the split.
     fn lower_estimate(&mut self, v: usize) {
         self.estimate = Some(self.estimate.map_or(v, |e| e.min(v)));
@@ -9590,6 +9608,13 @@ impl SpaceEstimate {
     /// sum-then-clamp already worked. Unlike `min`, a card/artwork total here needs BOTH sides known --
     /// `Some(0) + None` must not silently drop the unknown side's real contribution and under-report
     /// the union.
+    /// `SpaceMeasure::clamp_estimate_to_guaranteed` in all three spaces.
+    fn clamp_estimates_to_guaranteed(&mut self) {
+        self.printing.clamp_estimate_to_guaranteed();
+        self.card.clamp_estimate_to_guaranteed();
+        self.artwork.clamp_estimate_to_guaranteed();
+    }
+
     fn add(self, other: Self) -> Self {
         Self {
             printing: self.printing.add(other.printing),
@@ -10730,6 +10755,15 @@ struct AndTrace {
     /// empty root (`Op { op: "min_fold", ..., children: vec![] }`) is a placeholder only ever
     /// observed if a caller inspects `AndTrace` before the `And` arm finishes, which no caller does.
     tree: AndTraceNode,
+    /// Stage 1: the arm's own `result` BEFORE `clamp_estimates_to_guaranteed` ran on it.
+    ///
+    /// Diagnostic only, and it exists because the clamp is otherwise information-destroying. A
+    /// guess above a proven ceiling is error, so the router should never see it -- but the SIZE of
+    /// that error is the estimator's own accuracy signal, measured at a 3.49x median across 21.04%
+    /// of `And` roots. Clamping without recording this would make a defect of that size permanently
+    /// unobservable. Costs nothing on any production path: `AndTrace` is built only under
+    /// `want_trace`, which is the `explain`/`explain_analyze` entry points and never a real acquire.
+    pre_clamp: Option<SpaceEstimate>,
 }
 
 impl Default for AndTraceNode {
@@ -10999,6 +11033,7 @@ fn compose_printing_estimate(
                     .collect(),
                 considered: Vec::new(),
                 tree: AndTraceNode::default(), // placeholder; `and_trace_build_tree` fills this in once `considered` is finished
+                            pre_clamp: None,
             });
             // Tighten the `min` bound with every PAIR of children the table stores. `min` over singles
             // lets the most selective leaf decide alone, which is why `f:modern r:rare border:white`
@@ -12768,7 +12803,22 @@ fn compose_printing_estimate(
             // Round 37a: `tree` is assembled last, from the now-finished `leaves`/`considered`
             // against this arm's own final `result_space` -- see `and_trace_build_tree`'s own doc for
             // why this is exact (for printing) rather than a heuristic.
+            // Stage 1: the guess is clamped to the proven ceiling once, here, at the arm's own
+            // final assembly -- the single site the violations were measured to originate from.
+            // The raw value goes to the trace first; see `AndTrace::pre_clamp`.
+            let pre_clamp = result_space;
+            result_space.clamp_estimates_to_guaranteed();
+            debug_assert!(
+                [result_space.printing, result_space.card, result_space.artwork]
+                    .iter()
+                    .all(|m| match (m.guaranteed, m.estimate) {
+                        (Some(g), Some(e)) => e <= g,
+                        _ => true,
+                    }),
+                "the And arm must not emit an estimate above its own proven bound"
+            );
             if let Some(t) = and_trace.as_mut() {
+                t.pre_clamp = Some(pre_clamp);
                 t.tree = and_trace_build_tree(&t.leaves, &t.considered, result_space);
             }
             // Round 62: "did anything in THIS arm move `result.printing` off the per-leaf seed", ORed
@@ -20181,6 +20231,11 @@ fn and_trace_to_pydict<'py>(py: Python<'py>, t: &AndTrace) -> PyResult<Bound<'py
     let d = PyDict::new(py);
     d.set_item("tree", and_trace_node_to_pydict(py, &t.tree)?)?;
     d.set_item("considered", t.considered.iter().map(|g| and_trace_group_to_pydict(py, g)).collect::<PyResult<Vec<_>>>()?)?;
+    // Stage 1: the arm's own numbers before the estimate was clamped to the proven bound. Same
+    // flattened `{space}`/`{space}_guaranteed`/`{space}_estimate` shape every other node uses.
+    let pre = PyDict::new(py);
+    set_space_estimate_keys(&pre, t.pre_clamp)?;
+    d.set_item("pre_clamp", pre)?;
     Ok(d)
 }
 
