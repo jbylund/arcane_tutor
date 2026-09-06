@@ -59,6 +59,15 @@ Measured with `scripts/bench_empty_page_provable.py`, uniform sampler, 8,000 que
 
 Coverage splits along the "real count of a real set" line, which is exactly the admission rule for `guaranteed`: `candidates` materializes a list and `plane` popcounts a bitmap, so on those routes the number IS the proven channel. **Tier 1 is worth 908 of 8,000 queries — 11.4% answered with zero execution**, agreeing with the 11.8% empty-result cell measured independently above.
 
+**CORRECTED 2026-09-05 — `proven()` is not available where the zeros are, and the gate below cannot be written as stated.** The `guaranteed`/`estimate` channels live on `ComposeEstimate`, which only the `printing_compose` acquire builds — the route with 10% coverage. The `plane` and `candidates` branches pass bare `u32`s into `mk_plan_feats`, so 908 of the 908 usable zeros sit on routes with no channel to read. The proof IS in hand at each branch, just not through `SpaceMeasure`:
+
+- **plane** — `count` is the popcount of the one plane eval and is documented exact, so `count == 0` is a proof.
+- **candidates** — `matches == 0` iff `in_space == 0` (both arms of the `all_match_known` split yield 0 only then), and zero candidates means zero results whatever the residual would have done.
+- **printing_compose** — `est.result.<space>.proven() == Some(0)`, i.e. the original design, for the 10% case.
+- **range branches** — `k == 0` proves an empty range; a non-empty range whose residual rejects everything is invisible, which is why `printing_range_scan` measures 1.7% coverage with misses claiming a p50 of 14,876.
+
+So the implementation is the Round-62/stage-0 pattern rather than a channel read: an explicit `provably_empty` signal recorded in each acquire branch from what that branch itself knows, consumed as one bool before dispatch. The soundness argument below is unchanged and still governs — this only changes where the answer is read from.
+
 **The gate must read `guaranteed`, never `matches`.** The same run found 4 queries where `matches == 0` and the executor returned rows, all on `printing_compose`. `matches` is `best() = min(estimate, guaranteed)`, and the zero came from the estimate channel every time. Details, and the structural change that removes the hazard rather than documenting it, in [local-engine-structured-space-measure-consumers.md](local-engine-structured-space-measure-consumers.md) — Tier 1 should land on top of that doc's stage 1, not before it.
 
 `printing_compose` is the coverage gap (777 empties at 10%) and is also the route that pays the wasted build above. Its misses claim a p50 of only 10, so the estimate is not wild — it simply cannot prove zero. `exact_result_total`'s `leaves_are_disjoint` arm already returns `Some(0)` cheaply and is not consulted on this path; that is the obvious follow-on.
