@@ -8179,14 +8179,14 @@ fn domain_hint_is_card_space_not_printing_scaled() {
     // plane residual -- exactly the shape `domain_hint`'s 2+-card-invariant-planes branch targets.
     let filter = FilterExpr::And(vec![green, green_identity, set_dmu]);
     let est = super::compose_printing_estimate(&filter, &archived.indexes, &archived.offsets, n_printings, false);
-    assert_eq!(est.result.card.best(), Some(2), "est.result.card.best() must be the exact 2-card intersection, not scaled by n_printings/n_cards");
+    assert_eq!(est.result.card.routing_cardinality(), Some(2), "est.result.card.routing_cardinality() must be the exact 2-card intersection, not scaled by n_printings/n_cards");
     // The `c:g id:g` intersection's exact ARTWORK span: cards 0 and 2 each have 2 printings with
     // `store_of`'s default all-distinct artwork groups, so 2 + 2 = 4 -- `n_printings/n_cards * 2`
     // (the same average-ratio bug `card` guards against) would give 4 here too by coincidence (this
     // fixture's ratio is exactly 2), so this alone wouldn't distinguish exact-sum from average-scaled;
     // it exists to confirm the plumbing (`card_bits_span_total` over `indexes.artwork_base`) runs at
     // all and produces a real, present value rather than silently staying `None`.
-    assert_eq!(est.result.artwork.best(), Some(4), "est.result.artwork.best() must be the exact artwork span of the same 2-card intersection");
+    assert_eq!(est.result.artwork.routing_cardinality(), Some(4), "est.result.artwork.routing_cardinality() must be the exact artwork span of the same 2-card intersection");
     // Stage 0 of the structured-channel arc: the narrowing exemption in `acquire_plan_features` asks
     // "did this `And` produce a TRUSTED card number" and used to answer it with a PRESENCE test on
     // `result.card.guaranteed`. This is that same question asked as a flag recorded where the
@@ -8195,8 +8195,8 @@ fn domain_hint_is_card_space_not_printing_scaled() {
     assert!(est.card_proven, "the exact card intersection above IS a proven card count, so card_proven must be set");
 }
 
-/// Stage 1: the clamp that lets `best()` be retired. A guess above a bound the SAME measure already
-/// proved is error, not information -- `best()` was discarding it at every read, so applying it once
+/// Stage 1: the clamp that lets `routing_cardinality()` be retired. A guess above a bound the SAME measure already
+/// proved is error, not information -- `routing_cardinality()` was discarding it at every read, so applying it once
 /// at the source makes `.estimate` safe to read directly. Measured at a 3.49x median over 21.04% of
 /// `And` roots before the change, always from the arm's own `min_fold`.
 #[test]
@@ -8823,7 +8823,7 @@ fn subtype_pair_and_arm_tightening() {
     // must leave `exact_domain` empty).
     let bbb = est("bbb");
     assert_eq!(bbb.result.printing(), 4, "set:bbb t:elf: exact table entry must be preferred over the independence fallback");
-    assert_eq!(bbb.result.card.best(), Some(2), "exact table entry's card count must also reach result.card");
+    assert_eq!(bbb.result.card.routing_cardinality(), Some(2), "exact table entry's card count must also reach result.card");
     let bbb_domain = bbb.exact_domain.expect("a table hit is exact -- exact_domain must be populated");
     assert_eq!((bbb_domain.printing, bbb_domain.card, bbb_domain.artwork), (4, Some(2), Some(4)));
 }
@@ -9013,7 +9013,7 @@ fn subtype_pair_hit_min_chains_with_a_different_exact_mechanism() {
 
     let domain = est.exact_domain.expect("both contributing mechanisms are exact -- exact_domain must be populated");
     assert_eq!(domain.card, Some(1), "the tighter of the two independently-exact candidates (1, not 3) must win via min-chaining");
-    assert_eq!(est.result.card.best(), Some(1), "the final result.card must agree with exact_domain, not fall back to the looser PlanePopcount number");
+    assert_eq!(est.result.card.routing_cardinality(), Some(1), "the final result.card must agree with exact_domain, not fall back to the looser PlanePopcount number");
 }
 
 /// Round 42: EVERY `(dim, subtype)` pair found in the residual gets its own independent lookup, and
@@ -10207,7 +10207,7 @@ fn and_skip_probes_range_selectivity() {
     // Broad range (k=250 > best=200 and > floor): skipped -- the candidate set stays the driver.
     assert_eq!(len(&FilterExpr::And(vec![creature(), usd_cmp(CmpOp::Lt, 2.51)])), Some(200));
 
-    // Floor: under the tiny 10-card driver, a range with best(10) < k <= AND_PROBE_FLOOR(64) is
+    // Floor: under the tiny 10-card driver, a range with routing_cardinality(10) < k <= AND_PROBE_FLOOR(64) is
     // still included though it cannot lower the driver -- usd<0.51 (k=50) keeps only the legendary
     // cards priced <51c ({0,40} = 2). One printing past the floor (k=70) is skipped (stays 10).
     assert_eq!(probe_range_k(&usd_cmp(CmpOp::Lt, 0.51), indexes), Some(50));
@@ -11629,7 +11629,7 @@ fn compose_and_arm_tightens_lone_existential_leaf_with_no_card_invariant_partner
 
     let est = super::compose_printing_estimate(&filter, &archived.indexes, &archived.offsets, n_printings, false);
     assert_eq!(
-        est.result.card.best(),
+        est.result.card.routing_cardinality(),
         Some(2),
         "the AND's exact card-space intersection is {{card2, card4}} (2 cards) -- a lone existential \
          leaf with no OTHER card-invariant leaf must still get an exact joint via best_other, not fall \
@@ -11673,14 +11673,14 @@ fn compose_and_arm_narrow_floor_diverges_result_space_from_exact_domain() {
     );
     assert_eq!(exact_domain.card, Some(2), "exact_domain must stay EXACTLY what it was before this fix -- untouched by the new floor, byte-identical to the round-22 fixture's own 2-card joint");
     assert_eq!(
-        est.result.card.best(),
+        est.result.card.routing_cardinality(),
         Some(1),
         "the new floor must tighten result.card BELOW exact_domain.card: kw:outlier_kw's own count (1 \
          card) is narrower than the 2-card best_other joint and uncovered by any other mechanism, so it \
          wins the min"
     );
     assert!(
-        est.result.card.best() < exact_domain.card,
+        est.result.card.routing_cardinality() < exact_domain.card,
         "result_space and exact_domain must have genuinely DIVERGED here, not accidentally stayed equal -- \
          that divergence is the whole point of keeping the two fields separate"
     );
@@ -11757,13 +11757,13 @@ fn compose_and_arm_narrow_residual_leaf_tightens_card_and_artwork_floor() {
          should ever populate exact_domain for this And, before or after this fix"
     );
     assert_eq!(
-        est.result.card.best(),
+        est.result.card.routing_cardinality(),
         Some(2),
         "kw:rare_kw's own exact card count (2 cards) is narrow and uncovered by any other mechanism -- \
          it must tighten result.card from None (the pre-fix behavior) down to its own count"
     );
     assert_eq!(
-        est.result.artwork.best(),
+        est.result.artwork.routing_cardinality(),
         Some(5),
         "the same leaf's own exact artwork count (3 + 2 = 5 artworks across its two matching cards, \
          each with a different printing count) must tighten result.artwork the same way"
@@ -11790,13 +11790,13 @@ fn compose_and_arm_broad_residual_leaf_does_not_tighten_card_or_artwork_floor() 
     let est = super::compose_printing_estimate(&filter, &archived.indexes, &archived.offsets, n_printings, false);
     assert!(est.exact_domain.is_none(), "same reasoning as the narrow-leaf test -- no mechanism ever populates exact_domain here");
     assert_eq!(
-        est.result.card.best(),
+        est.result.card.routing_cardinality(),
         None,
         "kw:common_kw's own count (3,700 of 4,100 cards) is BROAD -- `range_too_broad_to_narrow` must \
          exclude it from the floor, so result.card stays None exactly as it did before this fix (cmc>=1's \
          own count, 4,100 of 4,100, is also broad and excluded the same way)"
     );
-    assert_eq!(est.result.artwork.best(), None, "same reasoning, artwork space (3,700 of 4,103 artworks is also broad)");
+    assert_eq!(est.result.artwork.routing_cardinality(), None, "same reasoning, artwork space (3,700 of 4,103 artworks is also broad)");
 }
 
 /// Round 24: `pair_range_sum`'s own summation and pruning-safety logic, against a hand-built
@@ -17016,7 +17016,7 @@ fn assert_and_trace_channel_fidelity(t: &AndTrace) {
     for g in &t.considered {
         assert_eq!(g.hit, g.spaces.is_some(), "{}: hit must be exactly spaces.is_some()", g.mechanism);
         let Some(s) = g.spaces else { continue };
-        assert!(s.printing.best().is_some(), "{}: a hit always carries a printing figure in some channel", g.mechanism);
+        assert!(s.printing.routing_cardinality().is_some(), "{}: a hit always carries a printing figure in some channel", g.mechanism);
         let m = g.mechanism;
         match trace_class_of(m) {
             TraceClass::Exact => {
@@ -17189,7 +17189,7 @@ fn and_trace_reports_the_winning_mechanism_and_every_considered_one() {
     assert_eq!(and_trace.tree.printing(), 4);
     assert_eq!(
         (and_trace.tree.card(), and_trace.tree.artwork()),
-        (est.result.card.best(), est.result.artwork.best()),
+        (est.result.card.routing_cardinality(), est.result.artwork.routing_cardinality()),
         "root's own numbers must equal the arm's real final answer"
     );
     assert_eq!(children.len(), 1, "one joint_lookup (the winner) and nothing left uncovered");
@@ -17559,8 +17559,8 @@ fn set_leaf_solo_estimate_has_real_card_and_artwork() {
     let f = FilterExpr::TextExact { field: TextField::SetCode, op: CmpOp::Eq, value: "aaa".to_string() };
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, false);
     assert_eq!(est.result.printing(), 3, "aaa: card0's 2 printings + card1's 1");
-    assert_eq!(est.result.card.best(), Some(2), "aaa: card0 + card1 -- must be Some, not None (the bug this round fixes)");
-    assert_eq!(est.result.artwork.best(), Some(3), "aaa: 3 distinct illustrations, no sharing in this fixture -- must be Some, not None");
+    assert_eq!(est.result.card.routing_cardinality(), Some(2), "aaa: card0 + card1 -- must be Some, not None (the bug this round fixes)");
+    assert_eq!(est.result.artwork.routing_cardinality(), Some(3), "aaa: 3 distinct illustrations, no sharing in this fixture -- must be Some, not None");
 }
 
 /// The motivating bug, reproduced at fixture scale: an `And` combining `set:aaa` with an unrelated
@@ -17610,10 +17610,10 @@ fn set_leaf_floor_beats_looser_unrelated_exact_joint() {
     let hit = and_trace.considered.iter().find(|c| c.mechanism == "ColorCmcTable").expect("ColorCmcTable must fire for color:G + cmc<=3");
     assert_eq!((hit.card(), hit.artwork()), (Some(3), Some(3)), "the unrelated joint's own card/artwork must be the looser 3, not already floored");
 
-    assert_eq!(est.result.card.best(), Some(1), "must floor on set:aaa's own true card count (1), not ColorCmcTable's looser 3");
-    assert_eq!(est.result.artwork.best(), Some(1), "must floor on set:aaa's own true artwork count (1), not ColorCmcTable's looser 3");
-    assert!(est.result.card.best().unwrap() <= est.result.printing(), "card must never exceed printing");
-    assert!(est.result.artwork.best().unwrap() <= est.result.printing(), "artwork must never exceed printing");
+    assert_eq!(est.result.card.routing_cardinality(), Some(1), "must floor on set:aaa's own true card count (1), not ColorCmcTable's looser 3");
+    assert_eq!(est.result.artwork.routing_cardinality(), Some(1), "must floor on set:aaa's own true artwork count (1), not ColorCmcTable's looser 3");
+    assert!(est.result.card.routing_cardinality().unwrap() <= est.result.printing(), "card must never exceed printing");
+    assert!(est.result.artwork.routing_cardinality().unwrap() <= est.result.printing(), "artwork must never exceed printing");
 }
 
 /// Same fixture/query as `set_leaf_floor_beats_looser_unrelated_exact_joint`: `exact_domain_cards`/
@@ -17644,7 +17644,7 @@ fn set_leaf_floor_does_not_widen_exact_domain() {
     let f = FilterExpr::And(vec![set_aaa, green, cmc_le3]);
 
     let est = super::compose_printing_estimate(&f, &archived.indexes, &archived.offsets, n_printings, false);
-    assert_eq!(est.result.card.best(), Some(1), "sanity: result is still floored to set:aaa's own count");
+    assert_eq!(est.result.card.routing_cardinality(), Some(1), "sanity: result is still floored to set:aaa's own count");
     let domain = est.exact_domain.expect("ColorCmcTable's own hit must still populate exact_domain");
     assert_eq!(
         (domain.printing, domain.card, domain.artwork),
@@ -18909,7 +18909,7 @@ fn and_arm_independence_permitted_against_a_different_partner_once_covered_by_an
     let legal_solo = super::compose_printing_estimate(&legal, &archived.indexes, &archived.offsets, n_printings, false);
     assert_eq!(legal_solo.result.printing(), 6_000);
     let cmc_solo = super::compose_printing_estimate(&cmc_eq3, &archived.indexes, &archived.offsets, n_printings, false);
-    assert_eq!(cmc_solo.result.card.best(), Some(4_000));
+    assert_eq!(cmc_solo.result.card.routing_cardinality(), Some(4_000));
     let cn_solo = super::compose_printing_estimate(&cn_le4500, &archived.indexes, &archived.offsets, n_printings, false);
     assert_eq!(cn_solo.result.printing(), 4_500);
 
@@ -19174,7 +19174,7 @@ fn candidate_spaces_matches_fold_candidate() {
 /// pairing computes them from both units' own marginals, and its trace group has always reported
 /// them. They must land in the ESTIMATE channel (never `guaranteed` -- an independence product is not
 /// a bound) and must NOT be folded, since lowering `result.card`/`result.artwork` would change
-/// `best()` and is a behaviour change of its own.
+/// `routing_cardinality()` and is a behaviour change of its own.
 #[test]
 fn independence_candidate_reports_card_artwork_guesses_without_folding_them() {
     let candidate = Candidate::Estimate { printing: 20, card: Some(7), artwork: Some(9) };
@@ -19259,19 +19259,19 @@ fn fold_candidate_exact_leaves_the_estimate_channel_untouched() {
     assert_eq!(result.artwork.guaranteed, Some(200));
 }
 
-/// `SpaceMeasure::best()` -- the accuracy read the consumer contract specifies -- is `min` over both
+/// `SpaceMeasure::routing_cardinality()` -- the accuracy read the consumer contract specifies -- is `min` over both
 /// channels, with either side absent simply skipped. Checked at the boundary cases the contract
 /// actually turns on: guess-below-bound (guess wins), guess-above-bound (bound clamps it), equal, one
 /// channel empty each way, and both empty.
 #[test]
 fn space_measure_best_clamps_a_guess_to_the_proven_ceiling_at_the_boundary() {
     let m = |g: Option<usize>, e: Option<usize>| SpaceMeasure { guaranteed: g, estimate: e };
-    assert_eq!(m(Some(100), Some(40)).best(), Some(40), "a guess BELOW the ceiling is reported as-is");
-    assert_eq!(m(Some(100), Some(140)).best(), Some(100), "a guess ABOVE the ceiling is clamped to it");
-    assert_eq!(m(Some(100), Some(100)).best(), Some(100), "exactly at the boundary");
-    assert_eq!(m(Some(100), None).best(), Some(100), "no guess -- the bound is the best available number");
-    assert_eq!(m(None, Some(40)).best(), Some(40), "no bound -- the guess stands alone, unclamped");
-    assert_eq!(m(None, None).best(), None, "neither channel: unknown, and NOT zero");
+    assert_eq!(m(Some(100), Some(40)).routing_cardinality(), Some(40), "a guess BELOW the ceiling is reported as-is");
+    assert_eq!(m(Some(100), Some(140)).routing_cardinality(), Some(100), "a guess ABOVE the ceiling is clamped to it");
+    assert_eq!(m(Some(100), Some(100)).routing_cardinality(), Some(100), "exactly at the boundary");
+    assert_eq!(m(Some(100), None).routing_cardinality(), Some(100), "no guess -- the bound is the best available number");
+    assert_eq!(m(None, Some(40)).routing_cardinality(), Some(40), "no bound -- the guess stands alone, unclamped");
+    assert_eq!(m(None, None).routing_cardinality(), None, "neither channel: unknown, and NOT zero");
     // The soundness read never falls back to the guess, which is the other half of the contract.
     assert_eq!(m(None, Some(40)).guaranteed, None, "absence of a proven bound must read as unknown, never as the guess");
 }
@@ -19288,12 +19288,12 @@ fn space_measure_min_and_add_fold_each_channel_independently() {
     assert_eq!((one_sided.guaranteed, one_sided.estimate), (Some(100), Some(7)), "min takes whichever side has an answer");
     let summed = m(Some(3), Some(3)).add(m(Some(4), None));
     assert_eq!(summed.guaranteed, Some(7), "guaranteed sums the two proven bounds");
-    assert_eq!(summed.estimate, Some(7), "the estimate channel sums the two best()s -- the right side's best IS its bound, 4");
+    assert_eq!(summed.estimate, Some(7), "the estimate channel sums the two routing_cardinality()s -- the right side's best IS its bound, 4");
     let unknown_side = m(Some(3), Some(3)).add(SpaceMeasure { guaranteed: None, estimate: None });
     assert_eq!((unknown_side.guaranteed, unknown_side.estimate), (None, None), "add needs BOTH sides known -- a union cannot drop one");
 }
 
-/// `add` must preserve `best(a.add(b)) == a.best() + b.best()` even when the two sides' tightest
+/// `add` must preserve `routing_cardinality(a.add(b)) == a.routing_cardinality() + b.routing_cardinality()` even when the two sides' tightest
 /// answers come from DIFFERENT channels. `min` distributes over a per-channel fold; `+` does not, and
 /// a naive per-channel `estimate + estimate` silently RAISED an `Or`'s union estimate whenever one
 /// child's tightest number was its proven bound and the other's was its guess. Caught by Round 58's
@@ -19304,9 +19304,9 @@ fn space_measure_add_sums_the_resolved_answers_not_the_channels() {
     // Left side's tightest is its BOUND (0 < 900); right side's tightest is its GUESS (61 < 249).
     let left = SpaceMeasure { guaranteed: Some(0), estimate: Some(900) };
     let right = SpaceMeasure { guaranteed: Some(249), estimate: Some(61) };
-    assert_eq!((left.best(), right.best()), (Some(0), Some(61)), "the two sides resolve from opposite channels");
+    assert_eq!((left.routing_cardinality(), right.routing_cardinality()), (Some(0), Some(61)), "the two sides resolve from opposite channels");
     let summed = left.add(right);
-    assert_eq!(summed.best(), Some(61), "the union's resolved answer must be 0 + 61, NOT min(0 + 249, 900 + 61) = 249");
+    assert_eq!(summed.routing_cardinality(), Some(61), "the union's resolved answer must be 0 + 61, NOT min(0 + 249, 900 + 61) = 249");
     assert_eq!(summed.guaranteed, Some(249), "the union's proven bound is still the sum of the two proven bounds");
 }
 
@@ -19643,8 +19643,8 @@ fn acquire_plan_features_wires_and_arm_exact_card_artwork_for_pure_arith_tuple_a
     // exact in both spaces -- this is the value `acquire_plan_features` was throwing away before this
     // round's fix.
     let est = super::compose_printing_estimate(&filter, &archived.indexes, &archived.offsets, n_printings, false);
-    assert_eq!(est.result.card.best(), Some(true_card), "the And arm's own fold must already be exact card-space");
-    assert_eq!(est.result.artwork.best(), Some(true_artwork), "the And arm's own fold must already be exact artwork-space");
+    assert_eq!(est.result.card.routing_cardinality(), Some(true_card), "the And arm's own fold must already be exact card-space");
+    assert_eq!(est.result.artwork.routing_cardinality(), Some(true_artwork), "the And arm's own fold must already be exact artwork-space");
 
     // Confirm the seed choice: the pre-existing calibrated baselines (computed the same way
     // `acquire_plan_features` does, `exact_cards`/`exact_total` both `None` here) must NOT already sit
@@ -19682,7 +19682,7 @@ fn acquire_plan_features_wires_and_arm_exact_card_artwork_for_pure_arith_tuple_a
     // ... and separately validate the FIX's own logic directly, the same shape
     // `acquire_plan_features`'s Mode::Card arm computes, since real routing can never reach it here:
     // calibrated baseline first (unconditionally), THEN `est.result.card` as an additional tightening.
-    let est_cards = est.result.card.best().map_or(calib_card, |dc| dc.min(calib_card));
+    let est_cards = est.result.card.routing_cardinality().map_or(calib_card, |dc| dc.min(calib_card));
     assert_eq!(est_cards, true_card, "the fix's own logic, applied directly, must resolve to the true card count for this shape");
 }
 
@@ -19806,8 +19806,8 @@ fn and_arm_partial_subset_estimate_does_not_leak_into_artwork_matches() {
 
     // Sanity: this fixture must actually reproduce the failure MODE (a partial-subset exact candidate
     // materially looser than the true full-And answer), or it isn't testing what it claims to.
-    let Some(and_arm_artwork) = est.result.artwork.best() else {
-        panic!("fixture must populate est.result.artwork.best() via a partial-subset mechanism (ColorCmcTable) for this test to mean anything -- got None");
+    let Some(and_arm_artwork) = est.result.artwork.routing_cardinality() else {
+        panic!("fixture must populate est.result.artwork.routing_cardinality() via a partial-subset mechanism (ColorCmcTable) for this test to mean anything -- got None");
     };
     assert!(
         and_arm_artwork > true_artwork,
@@ -20491,7 +20491,7 @@ fn reprint_skewed_store_has_the_claimed_skew() {
 /// costs one `HashMap` lookup the artwork line was already paying for -- so the premise the old test
 /// pinned is gone and its assertions are inverted here rather than deleted.
 ///
-/// This is the accuracy half Round 59 explicitly did not buy: `best()` moves from 36 to the true 100.
+/// This is the accuracy half Round 59 explicitly did not buy: `routing_cardinality()` moves from 36 to the true 100.
 /// The number is asserted against `exact_result_total(.., Mode::Printing)` rather than against a
 /// hard-coded 100 in the primary assertion, so the two can never drift apart -- with
 /// `reprint_skewed_store_has_the_claimed_skew` pinning that function's own answer at 100 separately.
@@ -20581,7 +20581,7 @@ fn legality_leaf_is_exact_for_banned_and_restricted_too() {
 
 /// **The demotions have to survive the `And` arm to mean anything.** The arm's `printing` accumulator
 /// used to be seeded `SpaceMeasure::known(pair_bounded_min(.., folded.result.printing(), ..))` --
-/// `printing()` is `best()`, which resolves from the ESTIMATE channel whenever a leaf's guess is the
+/// `printing()` is `routing_cardinality()`, which resolves from the ESTIMATE channel whenever a leaf's guess is the
 /// smallest number in the fold, so a demoted leaf's approximation was laundered straight back into
 /// `guaranteed` one level up. Seeding from the fold's own two channels fixes that.
 ///

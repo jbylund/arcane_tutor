@@ -9380,7 +9380,7 @@ fn compose_printing_bits(
 /// - A consumer needing SOUNDNESS (`scan_units`, "is this the exact answer", Round 58's own
 ///   `COMPOSE_CARD_ESTIMATE_BIAS` skip) reads `guaranteed` and treats `None` as **unknown**, never as
 ///   zero and never as "the estimate will do".
-/// - A consumer needing ACCURACY (routing cardinality) reads `estimate.min(guaranteed)`, i.e. `best()`.
+/// - A consumer needing ACCURACY (routing cardinality) reads `estimate.min(guaranteed)`, i.e. `routing_cardinality()`.
 ///   Clamping a guess to a proven ceiling is always correct. The reverse -- letting a guess lower a
 ///   proven bound below truth -- is the bug Round 55 found, and is now structurally impossible.
 ///
@@ -9419,13 +9419,13 @@ fn compose_printing_bits(
 /// values BELOW truth. `min(a bound, a guess)` is NOT a bound, which is why `SubtypePairEstimate`'s
 /// `min(indep, rest_max)` stays estimate-only despite `rest_max` alone being a bound.
 ///
-/// A corollary that is easy to lose: a number derived from `best()` may not be written to `guaranteed`
-/// either, since `best()` can resolve from the estimate channel. That is why the `And` arm seeds its
+/// A corollary that is easy to lose: a number derived from `routing_cardinality()` may not be written to `guaranteed`
+/// either, since `routing_cardinality()` can resolve from the estimate channel. That is why the `And` arm seeds its
 /// own `printing` accumulator from the per-leaf fold's `SpaceMeasure` DIRECTLY, channel by channel,
-/// rather than wrapping one `best()`-derived `usize` in `known()` the way Round 58 left it.
+/// rather than wrapping one `routing_cardinality()`-derived `usize` in `known()` the way Round 58 left it.
 /// `PartialEq` (Round 62) is a STRUCTURAL comparison of both channels, deliberately not a comparison
-/// of `best()`: it is used to ask "did a fold move this measure at all", which is precisely the
-/// question `best()` cannot answer once one channel can move while the other decides the number. See
+/// of `routing_cardinality()`: it is used to ask "did a fold move this measure at all", which is precisely the
+/// question `routing_cardinality()` cannot answer once one channel can move while the other decides the number. See
 /// `ComposeEstimate::printing_tightened`.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct SpaceMeasure {
@@ -9465,8 +9465,26 @@ impl SpaceMeasure {
 
     /// The ACCURACY read: `estimate.min(guaranteed)`, with either side absent simply skipped. `None`
     /// only when neither channel has anything.
-    fn best(self) -> Option<usize> {
+    ///
+    /// Named for its CONSUMER, not for being the best number available. It used to be `best()`, which
+    /// reads like a default -- and a default is what a soundness consumer reaches for without
+    /// thinking, which is exactly the mistake this type's prose contract has to keep warning about.
+    /// Measured consequence of getting it wrong: 4 queries in 8,000 reported a `matches` of 0 while
+    /// the executor returned rows, because the zero came from the estimate channel and the consumer
+    /// could not tell. A soundness consumer wants `proven()` below; nothing else should be reaching
+    /// for a clamped guess.
+    fn routing_cardinality(self) -> Option<usize> {
         [self.guaranteed, self.estimate].into_iter().flatten().min()
+    }
+
+    /// The SOUNDNESS read: the tightest PROVEN bound, and nothing else.
+    ///
+    /// `None` means "no mechanism proved a bound" -- **never** zero, and never "the guess will do".
+    /// A consumer that would accept the guess wants `routing_cardinality()`; a consumer that treats
+    /// `None` as zero is a wrong answer waiting to happen, since a proven zero (`Some(0)`) is the one
+    /// value that licenses short-circuiting a query to an empty result.
+    fn proven(self) -> Option<usize> {
+        self.guaranteed
     }
 
     /// Fold in a mechanism that computed a real count. Cannot touch `estimate`.
@@ -9475,8 +9493,8 @@ impl SpaceMeasure {
     }
 
     /// Clamp the GUESS to the PROVEN ceiling. A guess above a bound the same measure already
-    /// proved is not information, it is error: `best()` has been silently discarding it at every
-    /// read since Round 58, so applying it once at the source is what lets `best()` be retired.
+    /// proved is not information, it is error: `routing_cardinality()` has been silently discarding it at every
+    /// read since Round 58, so applying it once at the source is what lets `routing_cardinality()` be retired.
     ///
     /// Not applied inside `min`/`lower_guaranteed`, though those are what create the violation
     /// (`Candidate::Exact` contributes `guaranteed` only and deliberately leaves `estimate` alone,
@@ -9509,20 +9527,20 @@ impl SpaceMeasure {
     /// the unknown side's real contribution and under-report a union.
     ///
     /// **Deliberately asymmetric, and this is load-bearing.** `guaranteed` sums the two `guaranteed`s
-    /// (a sum of proven bounds is a proven bound on the union), but `estimate` sums the two `best()`s,
+    /// (a sum of proven bounds is a proven bound on the union), but `estimate` sums the two `routing_cardinality()`s,
     /// NOT the two `estimate`s -- the best guess for a union is the sum of each side's best guess,
     /// whichever channel that came from. Summing the `estimate` channels alone is wrong and was caught
     /// empirically by Round 58's own phase-1 byte-identity survey (`(pow=8 t:minotaur) or (id:b
     /// set:gtc)`: 61 -> 249): `min` distributes over a per-channel fold, but `+` does not.
     /// `min(g1, e1) + min(g2, e2)` can pick `g` on one side and `e` on the other, which
     /// `min(g1 + g2, e1 + e2)` cannot reproduce -- so the union's number silently rose whenever the
-    /// two children's tightest answers came from DIFFERENT channels. Summing `best()` keeps
-    /// `best(a.add(b)) == a.best() + b.best()` exactly, since `best() <= guaranteed` makes the
+    /// two children's tightest answers came from DIFFERENT channels. Summing `routing_cardinality()` keeps
+    /// `routing_cardinality(a.add(b)) == a.routing_cardinality() + b.routing_cardinality()` exactly, since `routing_cardinality() <= guaranteed` makes the
     /// estimate channel the smaller sum by construction.
     fn add(self, other: Self) -> Self {
         Self {
             guaranteed: self.guaranteed.zip(other.guaranteed).map(|(a, b)| a + b),
-            estimate: self.best().zip(other.best()).map(|(a, b)| a + b),
+            estimate: self.routing_cardinality().zip(other.routing_cardinality()).map(|(a, b)| a + b),
         }
     }
 
@@ -9582,13 +9600,13 @@ impl SpaceEstimate {
     }
 
     /// The printing-space ACCURACY read. Infallible by construction: every constructor above sets
-    /// `printing`'s `estimate` channel (`spaces_approx_printing` sets ONLY that one, which `best()`
+    /// `printing`'s `estimate` channel (`spaces_approx_printing` sets ONLY that one, which `routing_cardinality()`
     /// reads just as happily as a bound), `min` takes whichever side has an answer, and `add` fills
-    /// `estimate` from both children's `best()` -- which is `Some` by induction. Note `add` CAN leave
+    /// `estimate` from both children's `routing_cardinality()` -- which is `Some` by induction. Note `add` CAN leave
     /// `guaranteed` absent (it needs both sides proven), so `printing.guaranteed.is_some()` is not an
-    /// invariant and must never be assumed; `printing.best().is_some()` is.
+    /// invariant and must never be assumed; `printing.routing_cardinality().is_some()` is.
     fn printing(self) -> usize {
-        self.printing.best().expect("printing is set in at least one channel at every SpaceEstimate construction site")
+        self.printing.routing_cardinality().expect("printing is set in at least one channel at every SpaceEstimate construction site")
     }
 
     /// `And`'s fold: printing always narrows (min); card/artwork narrow too whenever EITHER side has
@@ -9714,9 +9732,9 @@ struct ComposeEstimate {
     /// is unsound in the other direction, in two ways, both of which report "nothing tightened" when
     /// something did:
     ///
-    /// - **It cannot see a bound-only tightening.** `printing()` is `SpaceMeasure::best()`, and Round
+    /// - **It cannot see a bound-only tightening.** `printing()` is `SpaceMeasure::routing_cardinality()`, and Round
     ///   60 measured the estimate channel to be the tighter of the two on 17,628 of 32,745 roots -- so
-    ///   on over half of roots `best()` reads the estimate, and a mechanism that lowered only
+    ///   on over half of roots `routing_cardinality()` reads the estimate, and a mechanism that lowered only
     ///   `guaranteed` leaves the number it compares completely unmoved. Round 59 made bound-only
     ///   tightenings the norm rather than a curiosity (`Candidate::PrintingBound`, `pair_bounded_min`'s
     ///   `guaranteed`-seeded fold), so this is a live gap, not a hypothetical.
@@ -10176,7 +10194,7 @@ enum Candidate {
         /// They live on the variant (rather than being hand-attached at that one trace site) so
         /// `spaces()` below stays the single derivation of what a mechanism claimed -- and so the fact
         /// that the `And` arm computes two card/artwork guesses it then throws away is visible in the
-        /// trace instead of only in this source file. Folding them would change `result.card.best()`
+        /// trace instead of only in this source file. Folding them would change `result.card.routing_cardinality()`
         /// and is therefore a behaviour change for its own round, not this one.
         card: Option<usize>,
         artwork: Option<usize>,
@@ -10191,7 +10209,7 @@ impl Candidate {
     /// per-channel shape `fold_candidate` below folds into the arm's accumulator, and nothing else.
     ///
     /// Round 60: this is what an `AndTraceGroup`/`AndTraceNode` reports, so a trace states which
-    /// CHANNEL each mechanism actually wrote rather than one `best()`-collapsed number. Derived here,
+    /// CHANNEL each mechanism actually wrote rather than one `routing_cardinality()`-collapsed number. Derived here,
     /// once, from the variant -- never hand-written at each of the ~17 `AndTraceGroup` construction
     /// sites, which would rot the moment a mechanism changed variant (Round 59 moved two of them).
     ///
@@ -10235,7 +10253,7 @@ impl Candidate {
 /// `result.printing` and neither of the other two spaces. That is the structural replacement for "both write `result` and
 /// `.min()` picks whichever is smaller regardless of which is trustworthy" -- the conflation Rounds
 /// 40/52/55/56/57 each worked around separately (see `SpaceMeasure`'s own doc). It is exactly
-/// behaviour-preserving on the ACCURACY read (`SpaceMeasure::best()` is `min` over both channels, so
+/// behaviour-preserving on the ACCURACY read (`SpaceMeasure::routing_cardinality()` is `min` over both channels, so
 /// the printing number every existing consumer sees is unchanged), and it makes the soundness read
 /// (`guaranteed`) newly available and newly trustworthy: an undershooting `Estimate` can no longer
 /// pull it below truth.
@@ -10289,7 +10307,7 @@ fn fold_candidate(
         }
         // `card`/`artwork` are deliberately NOT read here: they are reported (see `Estimate`'s own
         // doc and `Candidate::spaces`) but folding them would lower `result.card`/`result.artwork`'s
-        // estimate channel and change `best()`, which is a behaviour change and not this round's.
+        // estimate channel and change `routing_cardinality()`, which is a behaviour change and not this round's.
         Candidate::Estimate { printing, card: _, artwork: _ } => {
             result.printing.lower_estimate(printing);
         }
@@ -10630,10 +10648,10 @@ struct AndTraceGroup {
 }
 
 impl AndTraceGroup {
-    /// The printing-space ACCURACY read (`SpaceMeasure::best()`), `None` on a miss -- what this
+    /// The printing-space ACCURACY read (`SpaceMeasure::routing_cardinality()`), `None` on a miss -- what this
     /// group's `printing` key reported before Round 60 split the channels out beside it.
     fn printing(&self) -> Option<usize> {
-        self.spaces.and_then(|s| s.printing.best())
+        self.spaces.and_then(|s| s.printing.routing_cardinality())
     }
 
     /// `printing()`, card space. `None` both on a miss AND on a printing-only mechanism.
@@ -10641,13 +10659,13 @@ impl AndTraceGroup {
     /// which goes channel by channel; the suite is what asserts on the collapsed number.
     #[cfg(test)]
     fn card(&self) -> Option<usize> {
-        self.spaces.and_then(|s| s.card.best())
+        self.spaces.and_then(|s| s.card.routing_cardinality())
     }
 
     /// `card()`, artwork space.
     #[cfg(test)]
     fn artwork(&self) -> Option<usize> {
-        self.spaces.and_then(|s| s.artwork.best())
+        self.spaces.and_then(|s| s.artwork.routing_cardinality())
     }
 }
 
@@ -10677,7 +10695,7 @@ fn and_trace_group(leaves: Vec<String>, mechanism: &'static str, candidate: Opti
 /// `joint_lookup`'s several named table/scan mechanisms).
 ///
 /// Round 60: the three numbers on each variant become one `SpaceEstimate`, so a node reports the
-/// PROVEN bound and the GUESS separately in each space instead of one `best()`-collapsed figure per
+/// PROVEN bound and the GUESS separately in each space instead of one `routing_cardinality()`-collapsed figure per
 /// space. A bare `SpaceEstimate` (not an `Option`, unlike `AndTraceGroup`'s): every node here is a
 /// real answer -- a leaf's own solo estimate, a winning mechanism's hit, or the arm's own final
 /// `result_space` -- never a decline.
@@ -10714,12 +10732,12 @@ impl AndTraceNode {
 
     /// The card-space ACCURACY read; `None` when no mechanism answered this space.
     fn card(&self) -> Option<usize> {
-        self.spaces().card.best()
+        self.spaces().card.routing_cardinality()
     }
 
     /// `card()`, artwork space.
     fn artwork(&self) -> Option<usize> {
-        self.spaces().artwork.best()
+        self.spaces().artwork.routing_cardinality()
     }
 }
 
@@ -10770,7 +10788,7 @@ impl Default for AndTraceNode {
     fn default() -> Self {
         // `estimate_only(0)` rather than `printing_only(0)`: this is a placeholder (`AndTrace::tree`
         // before `and_trace_build_tree` overwrites it) and must not claim a PROVEN count of zero,
-        // which is what a `guaranteed` of 0 asserts. `best()` is 0 either way, so the `printing`
+        // which is what a `guaranteed` of 0 asserts. `routing_cardinality()` is 0 either way, so the `printing`
         // this reports is unchanged from the pre-Round-60 `printing: 0`.
         let spaces = SpaceEstimate { printing: SpaceMeasure::estimate_only(0), card: SpaceMeasure::UNKNOWN, artwork: SpaceMeasure::UNKNOWN };
         AndTraceNode::Op { op: "min_fold", mechanism: None, spaces, children: Vec::new() }
@@ -11027,7 +11045,7 @@ fn compose_printing_estimate(
                         let e = compose_printing_estimate(c, indexes, offsets, n_printings, false);
                         // Round 60: the child's own `SpaceEstimate` carried through verbatim, both
                         // channels intact -- it already IS the right shape, and collapsing it to
-                        // three `best()` numbers is exactly what this round removes.
+                        // three `routing_cardinality()` numbers is exactly what this round removes.
                         AndTraceLeaf { expr: format!("{c:?}"), spaces: e.result }
                     })
                     .collect(),
@@ -11077,14 +11095,14 @@ fn compose_printing_estimate(
             // Round 59: the seed carries the per-leaf fold's OWN two channels through, instead of
             // collapsing them into one `usize` and re-wrapping it in `known()`. That collapse is what
             // made Round 58 byte-identical, but it also undid the leaf-level channel split one level
-            // up: `folded.result.printing()` is `best()`, which resolves from the ESTIMATE channel
+            // up: `folded.result.printing()` is `routing_cardinality()`, which resolves from the ESTIMATE channel
             // whenever a leaf's guess is the smallest number in the fold -- so the reprint-ratio
             // approximations this round demoted at the leaves would be laundered straight back into
             // `guaranteed` here, and `result.printing.guaranteed` at the `And` root (the number the
             // queued cross-space clamp is meant to clamp against) would still sit below truth. This
             // is what makes the leaf demotions mean anything above a single leaf.
             //
-            // `pair_bounded_min` is handed `guaranteed`, not `best()`, for exactly that reason: seeded
+            // `pair_bounded_min` is handed `guaranteed`, not `routing_cardinality()`, for exactly that reason: seeded
             // with a proven bound it can only ever return a proven bound (its own contributions are a
             // real `PairTotals` count or a disjointness proof's exact 0), so folding its result into
             // BOTH channels is sound. `guaranteed` is `Some` here by construction -- the fold above
@@ -11093,7 +11111,7 @@ fn compose_printing_estimate(
             // f:legacy`).
             //
             // Behaviour-preserving on the ACCURACY read, and this is the load-bearing part: the seed's
-            // `best()` was `min(folded.best(), pair_min)` and still is, because `pair_min` is now
+            // `routing_cardinality()` was `min(folded.routing_cardinality(), pair_min)` and still is, because `pair_min` is now
             // `min(folded.guaranteed, k)` and `min(folded.guaranteed, folded.estimate, k)` is the same
             // number either way.
             let folded_printing_bound =
@@ -11115,7 +11133,7 @@ fn compose_printing_estimate(
             // Round 63: `PairTotals`' card/artwork columns now reach `result` instead of being fetched
             // for the trace and discarded. `guaranteed` only, mirroring `fold_candidate`'s
             // `Candidate::Exact` arm -- these are real counts of a real set, so they are proven bounds;
-            // the estimate channel stays absent so `best()` resolves to the bound rather than to a
+            // the estimate channel stays absent so `routing_cardinality()` resolves to the bound rather than to a
             // number nothing guessed. See `PairBound`'s doc for how this was found.
             if let Some(c) = pair.card {
                 result.card.lower_guaranteed(c);
@@ -12699,14 +12717,14 @@ fn compose_printing_estimate(
                     let card_indep = a
                         .est
                         .card
-                        .best()
-                        .zip(b.est.card.best())
+                        .routing_cardinality()
+                        .zip(b.est.card.routing_cardinality())
                         .map(|(x, y)| if n_cards == 0 { 0 } else { ((x as f64) * (y as f64) / (n_cards as f64)).round() as usize });
                     let artwork_indep = a
                         .est
                         .artwork
-                        .best()
-                        .zip(b.est.artwork.best())
+                        .routing_cardinality()
+                        .zip(b.est.artwork.routing_cardinality())
                         .map(|(x, y)| if n_artworks == 0 { 0 } else { ((x as f64) * (y as f64) / (n_artworks as f64)).round() as usize });
                     // The one `Candidate::Estimate` that carries card/artwork guesses: this pairing
                     // computes them from both units' own marginals, and has always REPORTED them in
@@ -12777,8 +12795,21 @@ fn compose_printing_estimate(
             let narrow_floor = |get: fn(&SpaceEstimate) -> Option<usize>, domain: usize| -> Option<usize> {
                 children_estimates.iter().filter_map(|ce| get(&ce.result)).filter(|&c| !range_too_broad_to_narrow(c, domain)).min()
             };
-            let card_floor = narrow_floor(|s| s.card.best(), n_cards);
-            let artwork_floor = narrow_floor(|s| s.artwork.best(), n_artworks);
+            // AUDITED 2026-09-05 AND KNOWN WRONG -- the one channel-mismatched consumer in the file.
+            // These two read the ACCURACY channel (`routing_cardinality()` resolves from `estimate`
+            // whenever that is the tighter side) and the result is written straight into the PROVEN
+            // channel by the `lower_guaranteed` calls below. That is a guess laundered into a bound:
+            // the Round 55 bug class, and the exact thing `min(a bound, a guess) is NOT a bound`
+            // warns about in `SpaceMeasure`'s admission rule.
+            //
+            // Left as-is deliberately. It is queue item #2, its own behaviour change with its own
+            // verification, and bundling it into a rename would make both unattributable. It is not
+            // currently biting the card channel at roots (Round 62 measured 0 of 27,459), so it is
+            // latent by numeric coincidence rather than by any barrier. Reading `proven()` here is
+            // NOT the fix on its own -- that would silently drop every estimate-only child from the
+            // floor and widen the domain, which is a routing change, not a no-op.
+            let card_floor = narrow_floor(|s| s.card.routing_cardinality(), n_cards);
+            let artwork_floor = narrow_floor(|s| s.artwork.routing_cardinality(), n_artworks);
             // Round 58: a narrow leaf's OWN exact card/artwork count is a proven upper bound on the
             // whole `And` (Round 42's principle again -- a sub-conjunction's count bounds the
             // conjunction), so it folds into `guaranteed`, alongside whatever `Candidate::Exact`
@@ -12829,14 +12860,14 @@ fn compose_printing_estimate(
             // fills an absent one, never restores it -- so `!=` against the seed holds exactly when at
             // least one of them fired, and unlike a threaded flag it cannot silently go stale when a
             // future mechanism writes `result.printing` without updating a bookkeeping parameter.
-            // This is NOT the comparison being retired: that one read `best()` across two DIFFERENT
+            // This is NOT the comparison being retired: that one read `routing_cardinality()` across two DIFFERENT
             // fields (`candidate` vs `result`), which is blind to a bound-only tightening; this reads
             // both channels of one field against its own earlier value.
             let printing_tightened = folded.printing_tightened || result_space.printing != seed_printing;
             // Stage 0: replaces the consumer's `est.result.card.guaranteed.is_some()` presence test.
             // Byte-identical today -- `seed_card` is `UNKNOWN`, so this is `guaranteed.is_some()` --
             // and it keeps meaning "a mechanism proved a card count" once the seed is a real domain.
-            let card_proven = result_space.card.guaranteed != seed_card.guaranteed;
+            let card_proven = result_space.card.proven() != seed_card.proven();
             ComposeEstimate { result: result_space, exact_domain, and_trace: and_trace.map(Box::new), printing_tightened, card_proven, ..folded }
         }
         FilterExpr::Or(v) => {
@@ -13572,7 +13603,7 @@ fn walk_value_orderby_page<'a>(
 /// the smallest pairwise intersection -- but a pairwise bound is much tighter than a single-leaf one
 /// whenever the leaves are individually broad, which is exactly when the estimate matters.
 ///
-/// Round 59: `single_min` must itself be a PROVEN bound (`SpaceMeasure::guaranteed`), never a `best()`
+/// Round 59: `single_min` must itself be a PROVEN bound (`SpaceMeasure::guaranteed`), never a `routing_cardinality()`
 /// guess. This function's own contributions are real counts -- a stored `PairTotals` entry, or a
 /// disjointness proof's exact 0 -- so given a bound it returns a bound, and the `And` arm folds the
 /// result into both channels on that basis. Hand it a guess and the guess comes back out wearing the
@@ -17777,7 +17808,7 @@ fn acquire_plan_features_inner(
         // magnitude. `.min()`-folding it in AFTER the calibrated baseline is what keeps this a strict
         // tightening: `est.result.card` is a genuine upper bound on the true count (never smaller), so
         // it can only pull `est_cards` down toward the truth, never push it up past a reasonable guess.
-        let est_cards = est.result.card.best().map_or(est_cards_before_and_arm, |dc| dc.min(est_cards_before_and_arm));
+        let est_cards = est.result.card.routing_cardinality().map_or(est_cards_before_and_arm, |dc| dc.min(est_cards_before_and_arm));
         // Exact PRINTING total for the same composed filter -- valid as the candidate cards' full
         // printing SPAN (what `scan_all` below needs) only when the filter is CARD-INVARIANT
         // (`composed_card_invariant`): for a card-invariant field, every printing of a matching card
@@ -17812,8 +17843,8 @@ fn acquire_plan_features_inner(
         // `est.candidate.printing() == est.result.printing()` test. The structural question here has
         // always been "did any mechanism tighten `result.printing` below the per-leaf fold" -- if it
         // did, `est_cards` describes the ANSWER and no longer describes the domain the materializing
-        // alternatives walk. `printing()` is `best()`, so the old spelling could not see a tightening
-        // that moved only `guaranteed`, and Round 60 measured `best()` reading from the estimate
+        // alternatives walk. `printing()` is `routing_cardinality()`, so the old spelling could not see a tightening
+        // that moved only `guaranteed`, and Round 60 measured `routing_cardinality()` reading from the estimate
         // channel on 17,628 of 32,745 roots -- i.e. on the majority of roots a bound-only tightening
         // was silently reported as "nothing tightened", and this branch handed `scan_units` an
         // answer-shaped number for a domain-shaped slot. See `ComposeEstimate::printing_tightened`.
@@ -17843,7 +17874,7 @@ fn acquire_plan_features_inner(
         // for this pass. Restricting the extra tightening to `And` keeps today's fix to the case it was
         // actually verified against, without newly trusting a leaf-level answer nothing here checked.
         let is_and = matches!(composed, FilterExpr::And(_));
-        let domain_cards = if is_and { est.result.card.best().map_or(domain_cards_before_card, |dc| dc.min(domain_cards_before_card)) } else { domain_cards_before_card };
+        let domain_cards = if is_and { est.result.card.routing_cardinality().map_or(domain_cards_before_card, |dc| dc.min(domain_cards_before_card)) } else { domain_cards_before_card };
         // Card mode's `push_card_matches`/`Prefer::Default` loop settles a card in exactly ONE printing
         // when the composed field is card-invariant: either the first printing checked satisfies the
         // residual (found, done) or it does not -- and since every OTHER printing of that card carries
@@ -17873,20 +17904,20 @@ fn acquire_plan_features_inner(
         // depth-1 true regardless of how selective the predicate is.
         //
         // Round 62: that property is `guaranteed`, so the gate says so directly instead of asking
-        // `best()` and relying on the two coinciding. "Came from a trusted exact source" is
-        // `SpaceMeasure::guaranteed`'s definition post-Round-59; `best()` is the ACCURACY read and is
+        // `routing_cardinality()` and relying on the two coinciding. "Came from a trusted exact source" is
+        // `SpaceMeasure::guaranteed`'s definition post-Round-59; `routing_cardinality()` is the ACCURACY read and is
         // free to resolve from the estimate channel, which would answer a different question.
         // Byte-identical today, provably and not just by measurement: NOTHING writes `result.card`'s
         // estimate channel anywhere in `compose_printing_estimate` (`Candidate::Estimate`/
         // `PrintingBound` touch printing only; the `And` arm seeds card UNKNOWN and reaches it only
         // via `lower_guaranteed`; every leaf constructor fills both channels with the same number;
-        // `Or`'s `add` needs both children's `guaranteed` and its `estimate` sums the same `best()`s),
-        // so `card.best()` and `card.guaranteed` are the SAME `Option<usize>` at every node. Confirmed
+        // `Or`'s `add` needs both children's `guaranteed` and its `estimate` sums the same `routing_cardinality()`s),
+        // so `card.routing_cardinality()` and `card.guaranteed` are the SAME `Option<usize>` at every node. Confirmed
         // by a full survey diff before this swap landed: zero rows moved. The swap matters because the
-        // queued domain-seeding round makes `card.best()` unconditionally `Some`, at which point the
-        // `best()` spelling silently becomes vacuous while the `guaranteed` spelling keeps meaning what
+        // queued domain-seeding round makes `card.routing_cardinality()` unconditionally `Some`, at which point the
+        // `routing_cardinality()` spelling silently becomes vacuous while the `guaranteed` spelling keeps meaning what
         // this doc says.
-        let card_invariant_domain_exact = composed_card_invariant && est.result.card.guaranteed == Some(domain_cards);
+        let card_invariant_domain_exact = composed_card_invariant && est.result.card.proven() == Some(domain_cards);
         // What the MATERIALIZING alternatives scan if compose loses. Every mode narrows -- a
         // composable filter has an index for every leaf -- so all three are the NARROWED counts.
         // Printing mode took the unnarrowed universe while card/artwork took a narrowed count; only
@@ -18129,7 +18160,7 @@ fn acquire_plan_features_inner(
                 // of the two-stage estimate, never a replacement for it.
                 let rt_before_and_arm =
                     exact_total.unwrap_or_else(|| artwork_estimate(printing_matches, capacity_cards, n_cards as usize, n_artworks));
-                let rt = est.result.artwork.best().map_or(rt_before_and_arm, |da| da.min(rt_before_and_arm));
+                let rt = est.result.artwork.routing_cardinality().map_or(rt_before_and_arm, |da| da.min(rt_before_and_arm));
                 // The bitmap `printing_bits_to_artwork_bits` popcounts is n_artworks bits wide, not
                 // n_printings -- 46,112 against 97,206 here, so this was 2.1x over as well.
                 (rt, printing_matches, n_artworks.div_ceil(64), domain_cards, scan_all(domain_cards, card_first_match_break))
@@ -18213,9 +18244,9 @@ fn acquire_plan_features_inner(
         // NOT extended to bare leaves -- see `is_and`'s own doc for the 809-query regression that
         // surfaced when this was tried unscoped.
         //
-        // Round 62: reads `guaranteed` rather than `best()`, for the same reason and with the same
+        // Round 62: reads `guaranteed` rather than `routing_cardinality()`, for the same reason and with the same
         // proof as `card_invariant_domain_exact` above -- the question here is "did the `And` arm
-        // produce a TRUSTED card number", which is `guaranteed`'s definition, not `best()`'s. Same
+        // produce a TRUSTED card number", which is `guaranteed`'s definition, not `routing_cardinality()`'s. Same
         // `Option<usize>` today; not the same question once domain-seeding lands.
         // A fourth exemption, `card_invariant_domain_exact` (computed alongside `domain_cards` above --
         // see its own doc): the same failure mode again, this time for a BARE card-invariant leaf whose
@@ -20145,7 +20176,7 @@ fn plan_trial_to_pydict<'py>(py: Python<'py>, t: &PlanTrial) -> PyResult<Bound<'
     Ok(d)
 }
 
-/// Round 60: one space's THREE keys on a trace dict -- `{space}` (unchanged: `SpaceMeasure::best()`,
+/// Round 60: one space's THREE keys on a trace dict -- `{space}` (unchanged: `SpaceMeasure::routing_cardinality()`,
 /// what every existing consumer reads) plus the two channels behind it, `{space}_guaranteed` (the
 /// tightest PROVEN bound) and `{space}_estimate` (the best GUESS).
 ///
@@ -20157,14 +20188,14 @@ fn plan_trial_to_pydict<'py>(py: Python<'py>, t: &PlanTrial) -> PyResult<Bound<'
 ///
 /// **An absent channel is `None`, never `0`.** `printing.guaranteed` can legitimately be absent (an
 /// `Or` of two estimate-only leaves -- `SpaceMeasure::add` needs both sides proven), while
-/// `printing.best()` is always present. A `0` there would read as "proved the answer is empty", the
+/// `printing.routing_cardinality()` is always present. A `0` there would read as "proved the answer is empty", the
 /// opposite claim. `None`/`Some(usize)` maps to Python `None`/`int` directly, so this holds by
 /// construction.
 ///
 /// `m` itself is `Option` for a MISS group, which has no cardinality in any space at all -- every one
 /// of the three keys is then `None`.
 fn set_space_keys(d: &Bound<'_, PyDict>, keys: (&str, &str, &str), m: Option<SpaceMeasure>) -> PyResult<()> {
-    d.set_item(keys.0, m.and_then(SpaceMeasure::best))?;
+    d.set_item(keys.0, m.and_then(SpaceMeasure::routing_cardinality))?;
     d.set_item(keys.1, m.and_then(|m| m.guaranteed))?;
     d.set_item(keys.2, m.and_then(|m| m.estimate))?;
     Ok(())

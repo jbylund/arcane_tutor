@@ -1,0 +1,43 @@
+CHANNEL CONSUMER AUDIT -- is every call site reading the channel it actually wants?
+
+Done as part of the best() -> routing_cardinality() rename, because a blanket rename preserves
+behaviour without establishing that the behaviour is right. Audited BOTH directions: every read
+of the accuracy channel, and (the stronger inversion) every WRITE into the proven channel traced
+back to its source.
+
+16 read sites in lib.rs. 15 correct, 1 defect.
+
+  CORRECT -- accuracy consumers, reading routing_cardinality() as intended:
+    SpaceMeasure::add            builds the estimate channel of a union; the best()-summing
+                                 asymmetry is documented and was caught empirically in Round 58
+    SpaceEstimate::printing()    every consumer traced: routing `matches` (17204, 17735), the
+                                 independence product (12716), a selectivity fraction (12026), a
+                                 dim estimate (11867), trace tie-detection (10940). lib.rs:11098
+                                 already flags in-code that it resolves from the estimate channel.
+    pair independence product    12720-12727 -- an independence PRODUCT, which the admission rule
+                                 bars from `guaranteed` outright, so the accuracy read is required
+    est_cards / domain_cards     17798 / 17864 -- cost-model inputs feeding scan_units
+    artwork rt                   18150 -- same
+    the three trace accessors    10654 / 10662 / 10668, 10735 / 10740 -- diagnostic
+
+  DEFECT -- accuracy source feeding a soundness sink:
+    narrow_floor                 12798 / 12799. Reads routing_cardinality() (resolves from
+                                 `estimate` whenever that is tighter) and the result is written
+                                 into `guaranteed` by lower_guaranteed at 12807 / 12810. A guess
+                                 laundered into a proven bound -- the Round 55 bug class.
+
+WRITES INTO THE PROVEN CHANNEL, traced to source -- all sound except the above:
+    10301-10303  Candidate::Exact          real counts of a real set
+    10319        Candidate::PrintingBound  a real printing-space count
+    11126        pair.printing             PairTotals, a real count
+    11139/11142  pair.card / pair.artwork  PairTotals, real counts
+    12807/12810  narrow_floor              THE DEFECT ABOVE
+
+NOT FIXED HERE, deliberately: narrow_floor is queue item #2, its own behaviour change with its
+own verification, and bundling it into a rename would make both unattributable. Note also that
+simply reading proven() there is NOT the fix -- it would drop every estimate-only child from the
+floor and widen the domain, which is a routing change rather than a no-op. Marked in-code at the
+site so the audit's finding does not have to be rediscovered.
+
+RENAME VERIFICATION: survey at 300 per shape, 66,378 rows, stage1 -> rename. The only field that
+differs is and_estimate_ns (single-shot wall time). Byte-identical modulo timing.
