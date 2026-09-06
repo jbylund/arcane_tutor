@@ -33,3 +33,31 @@ NOT provably empty, so this fastpath never covered them.
 
 KEPT anyway, deliberately and labelled: sound, no measurable regression, and the flag is wanted by
 the cost-model half. It does NOT earn its place on latency grounds and should not be cited as if it did.
+
+WHY printing_compose PROVES SO FEW (43 of 733 empty compose queries, uniform sampler)
+
+All 690 misses have and_mechanism = (none). Not one joint mechanism fired on any of them.
+Their estimates are tiny: p10 1, p50 7, p75 34, p90 94, max 5,942.
+    estimate <= 1      195 (28%)      <- post-stage-4 floor: the raw product rounded to 0
+    estimate <= 5      321 (47%)
+    estimate <= 20     464 (67%)
+    estimate <= 100    624 (90%)
+
+The reason is structural, not a gap to be patched. Compose is the ONLY route that never looks at the
+intersection: `candidates` materializes a list and `plane` popcounts a bitmap, so both see emptiness
+for free as a byproduct of work they were doing anyway. Compose estimates from MARGINALS -- that
+cheap acquire is its whole reason for existing -- and an independence product of two non-empty
+marginals is never zero. So compose can only prove zero via a mechanism that knows the JOINT:
+leaves_are_disjoint (structural contradictions), the pair/subtype/arith tables (covered pairs), or
+PlanePopcount. None covered any of the 690: `watermark:goblinexplosioneers border:borderless` is
+neither contradictory nor tabled -- its emptiness is an empirical fact about the data.
+
+Sharper version, visible in the estimate distribution: these are RARE x RARE conjunctions, which is
+exactly the population the top-N pair tables exclude BY CONSTRUCTION -- rare pairs fall into
+`rest_max` instead of getting their own entry. The pairs that most need an exact joint answer are the
+ones the tables are designed not to store.
+
+FIXABLE, but temper it: 67% have an estimate <= 20, so materializing the intersection at acquire time
+would be bounded work. The payoff for the FASTPATH is likely the same null Tier 1 measured, since the
+skipped work is cheap either way. The un-measured argument is the other one -- it would replace a
+guess of 7 with an exact 0 in the cost model's input.
