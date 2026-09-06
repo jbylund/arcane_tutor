@@ -43,3 +43,24 @@ VERIFICATION.
 
 HONEST LIMIT: the 1,266 truly-empty roots trade a lucky-correct 0 for a 1. That is a rounding
 difference in the cost model and the pick-quality number above is where it would have shown up.
+
+THE POINT OF THE ROUND, restated after the fact. Stage 4 is not a latency change and the flat
+pick-quality number is the CORRECT result, not a weak one -- the flipped queries run in 1-2 us,
+which is close enough to the timer's own resolution that no useful latency signal exists there
+either way. What the round buys is that `matches == 0` now means exactly one thing.
+
+That is directly testable, because it is the signal the empty-page Tier 1 gate reads.
+scripts/bench_empty_page_provable.py, 8,000 queries, before -> after:
+
+    lies (acquire says 0, executor returns rows)      4  ->  0
+
+  coverage of the 1,857 genuinely empty queries:
+    candidates          899  ->  899   (unchanged: always a real count of a materialized list)
+    plane                 9  ->    9   (unchanged: always a popcount)
+    printing_compose     78  ->   43   (10.0% -> 5.5%)
+    ALL                 987  ->  952   (53.2% -> 51.3%)
+
+Compose lost 35 detections, and losing them is the improvement: they were GUESSED zeros that
+happened to be right. Tier 1's usable population is unchanged at 908 of 8,000 (11.4%), because it
+was already resting entirely on candidates+plane -- but it now rests on 908 proofs rather than on
+908 proofs plus some luck.
