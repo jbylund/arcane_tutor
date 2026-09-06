@@ -14,11 +14,13 @@ Two questions, and the SECOND one is the safety-critical one:
    rows is a wrong-answer bug in the proposed fastpath, not a slow path. Reported per route,
    because a route that lies is a route the fastpath must exclude.
 
-An important caveat on what `matches` is: it is `SpaceMeasure::best()`, i.e. `min(estimate,
-guaranteed)`, and the estimate channel is documented as "may undershoot". So `matches == 0` is NOT
-by itself a proof, and question 2 measures exactly that exposure. A shippable implementation reads
-`guaranteed`; where the `And` trace exposes that channel directly (Round 60, top-level `And` only)
-this also reports it, as the honest floor under the `matches`-based coverage number.
+What is graded is the `provably_empty` FLAG each acquire branch sets from what that branch itself
+can prove -- a popcount, an empty materialized candidate list, an empty index range, or the
+`guaranteed` channel -- which is what `run_query_routed` acts on when it answers `(0, vec![])`
+without choosing or dispatching. Deliberately NOT `matches == 0`: the two coincide today, but the
+count is a derived value and grading it would re-introduce exactly the downstream reconstruction the
+flag exists to avoid. On a build predating the flag this falls back to the count so an old baseline
+still runs.
 
     PYTHONPATH=<enginedir> .venv/bin/python bench_empty_page_provable.py --n-queries 8000
 """
@@ -95,7 +97,11 @@ def collect(engine: object, sampler: QuerySampler, rng: random.Random, budget: B
             continue
         tally["n"] += 1
         route, empty = acq["count_source"], real == 0
-        claimed_zero = int(acq["matches"]) == 0
+        # The FLAG that ships, not `matches == 0`. Those coincide today, but grading the derived
+        # value would be exactly the "reconstruct a structural fact downstream" mistake the flag
+        # exists to avoid -- and it is the flag, not the count, that decides whether a query skips
+        # dispatch entirely. Falls back on a build that predates the flag so an old baseline still runs.
+        claimed_zero = bool(acq["provably_empty"]) if "provably_empty" in acq else int(acq["matches"]) == 0
         tally["cover"][(route, empty)] += 1
         if claimed_zero:
             tally["claims"][(route, empty)] += 1

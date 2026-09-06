@@ -17609,14 +17609,14 @@ fn acquire_plan_features(
     filter: &mut FilterExpr,
     unsplit: Option<&FilterExpr>,
     plane: Option<&PlaneExpr>,
-) -> (cost::PlanFeatures, Prep, Vec<u64>, Option<u64>) {
+) -> (cost::PlanFeatures, Prep, Vec<u64>, Option<u64>, bool) {
     let prepare_nodes = filter.narrow_nodes();
     // `nodes * words` when a plane survived `split_planes`, else 0 — one field carrying both "is
     // there a plane" and "how much word-wise work does it take", because the prepare step's plane
     // work is `eval_planes`, which is exactly that product, and pays nothing when there is no plane.
     let prepare_plane_word_ops =
         plane.map_or(0, |p| p.node_count().saturating_mul(ctx.cards.len().div_ceil(64) as u32));
-    let (mut feats, prep, plane_bits, and_estimate_ns) = acquire_plan_features_inner(ctx, params, filter, unsplit, plane);
+    let (mut feats, prep, plane_bits, and_estimate_ns, provably_empty) = acquire_plan_features_inner(ctx, params, filter, unsplit, plane);
     feats.prepare_nodes = prepare_nodes;
     feats.prepare_plane_word_ops = prepare_plane_word_ops;
     // `eval_domain` is the honest narrowed count under a `Candidates` acquire and under the compose
@@ -17642,7 +17642,7 @@ fn acquire_plan_features(
     if feats.prepare_plane_word_ops == 0 && feats.prepare_cands > breadth_limit {
         feats.prepare_cands = 0;
     }
-    (feats, prep, plane_bits, and_estimate_ns)
+    (feats, prep, plane_bits, and_estimate_ns, provably_empty)
 }
 
 /// The branching body of `acquire_plan_features`; see that wrapper for why the prepare-step features
@@ -17653,7 +17653,7 @@ fn acquire_plan_features_inner(
     filter: &mut FilterExpr,
     unsplit: Option<&FilterExpr>,
     plane: Option<&PlaneExpr>,
-) -> (cost::PlanFeatures, Prep, Vec<u64>, Option<u64>) {
+) -> (cost::PlanFeatures, Prep, Vec<u64>, Option<u64>, bool) {
     let QueryCtx { cards, offsets, indexes, .. } = *ctx;
     let QueryParams { mode, prefer, sort_col, descending, .. } = *params;
     let n_cards = ctx.n_cards();
@@ -17668,7 +17668,7 @@ fn acquire_plan_features_inner(
     // empty (no alloc).
     let mut plane_bits: Vec<u64> = Vec::new();
 
-    let (feats, prep, and_estimate_ns) = if PhysicalPlan::PlanePopcountOrder.applicable(ctx, params, filter, unsplit, plane) {
+    let (feats, prep, and_estimate_ns, provably_empty) = if PhysicalPlan::PlanePopcountOrder.applicable(ctx, params, filter, unsplit, plane) {
         // The ONE plane eval; its popcount IS the exact count. True residual ⇒ tier 0.
         eval_planes(plane.expect("PlanePopcountOrder ⇒ plane"), &indexes.planes, &mut plane_bits);
         let count: u32 = plane_bits.iter().map(|w| w.count_ones()).sum();
@@ -17706,7 +17706,8 @@ fn acquire_plan_features_inner(
             }
             span.min(u64::from(n_printings)) as u32
         };
-        (mk_plan_feats(ctx, params, count, count, scan_units, 0), Prep::Plane, None)
+        // The popcount is the exact count and the residual is True, so zero here is a proof.
+        (mk_plan_feats(ctx, params, count, count, scan_units, 0), Prep::Plane, None, count == 0)
     } else if PhysicalPlan::CardRangePopcount.applicable(ctx, params, filter, unsplit, plane) {
         // Exact in-range printing count `k` from the index partition points (two binary searches, no
         // scan, no scatter). The O(k) card-bitmap build is deferred to dispatch and paid only if this
@@ -17757,7 +17758,10 @@ fn acquire_plan_features_inner(
         feats.project_printings = k;
         feats.compose_scan_printings = k;
         feats.compose_paging = compose_paging_for(indexes, cards.len(), filter, mode, sort_col, descending);
-        (feats, Prep::Range(CountSource::CardRangePopcount), None)
+        // `k` is exact from the index partition points. Nothing in range means nothing after any
+        // residual, so zero proves empty -- while a NON-zero `k` proves nothing, which is why this
+        // route detects so few empties.
+        (feats, Prep::Range(CountSource::CardRangePopcount), None, k == 0)
     } else if PhysicalPlan::PrintingRangeScan.applicable(ctx, params, filter, unsplit, plane) {
         // Bare range: exact k from the index (no scan).
         let (idx, lo, hi) = bare_range_bounds(filter, indexes).expect("applicable ⇒ bare range");
@@ -17784,7 +17788,8 @@ fn acquire_plan_features_inner(
         // `compose_paging` at its `Gather` default charged compose a full-corpus gather it would
         // never run. Compose's page term only reads `eval_domain` in the Gather branch.
         feats.compose_paging = compose_paging_for(indexes, cards.len(), filter, mode, sort_col, descending);
-        (feats, Prep::Range(CountSource::PrintingRangeScan), None)
+        // Same argument as `CardRangePopcount` above.
+        (feats, Prep::Range(CountSource::PrintingRangeScan), None, k == 0)
     } else if PhysicalPlan::PrintingCompose.applicable(ctx, params, filter, unsplit, plane) {
         // Composable printing-space expr, any distinct-on. Estimate the counts cheaply — the fast path
         // composes once, only if this plan wins (never in acquire; a legality broadcast paid here and
@@ -18682,14 +18687,24 @@ fn acquire_plan_features_inner(
             .flatten();
         feats.compose_paging =
             compose_paging_with_total(indexes, cards.len(), composed, mode, sort_col, descending, Some(result_total), gather_declines);
-        (feats, Prep::Range(CountSource::PrintingCompose), Some(and_estimate_ns))
+        // The one route carrying `SpaceMeasure`, so it reads the proven channel directly. Zero in
+        // ANY space proves the page empty in all three: a matching printing implies a matching card
+        // and artwork, and conversely, so the spaces are zero-or-nonzero together. `proven()`, never
+        // `routing_cardinality()` -- an estimate-channel zero is a guess, and 4 queries in 8,000 were
+        // measured guessing exactly that before stage 4.
+        let empty_proof = [est.result.printing, est.result.card, est.result.artwork].iter().any(|m| m.proven() == Some(0));
+        (feats, Prep::Range(CountSource::PrintingCompose), Some(and_estimate_ns), empty_proof)
     } else {
         let prep = prepare_candidates(ctx, params, filter, plane);
         let feats = candidate_feats(ctx, params, &prep, filter);
-        (feats, Prep::Candidates(prep), None)
+        // A materialized candidate list that is EMPTY proves the result empty whatever the residual
+        // would have done -- a different argument from the other four, which count a result. `None`
+        // means no narrowing ran and proves nothing.
+        let empty_proof = prep.candidate_cards.as_ref().is_some_and(|v| v.is_empty());
+        (feats, Prep::Candidates(prep), None, empty_proof)
     };
 
-    (feats, prep, plane_bits, and_estimate_ns)
+    (feats, prep, plane_bits, and_estimate_ns, provably_empty)
 }
 
 /// #702: the single cost-based plan-selection layer for ALL unique modes — the
@@ -18742,8 +18757,30 @@ fn run_query_routed<'a>(
     // ── acquire: pick the count source, build features, materialize its artifact ──
     // `and_estimate_ns` is `explain`/`explain_analyze`'s diagnostic (`AcquireFacts::and_estimate_ns`)
     // -- the real routing path spends its own clock on dispatch, not on reporting this.
-    let (feats, prep, plane_bits, _and_estimate_ns) = acquire_plan_features(ctx, params, filter, unsplit, plane);
+    let (feats, prep, plane_bits, _and_estimate_ns, provably_empty) = acquire_plan_features(ctx, params, filter, unsplit, plane);
     phases.acquired();
+
+    // ── the acquire already PROVED the result is empty: answer without choosing or dispatching ──
+    //
+    // At zero a proven upper bound and the exact count coincide (`0 <= true <= 0`), so this satisfies
+    // the API's "total_cards is always the unpaginated count" contract with no counting work. Every
+    // acquire branch sets the flag from what IT can prove -- a popcount, an empty materialized
+    // candidate list, an empty index range, or the `guaranteed` channel -- never from a guess; see
+    // each arm's own comment. Measured at 11.4% of uniform-sampled queries.
+    //
+    // Placed BEFORE `choose` deliberately. Both failure directions this fixes are dispatch-level, not
+    // cost-level: the router excluding a plan that would have exited fast, and a picked compose paying
+    // its whole build before refusing. Neither can be reached by any rate or feature, and running no
+    // plan at all fixes both at once.
+    //
+    // The early return is the one exception to "the match below has no early returns, so its single
+    // exit is the only place phases are published from" -- it marks `chosen` (there was nothing to
+    // choose) and publishes on its own, keeping the three spans disjoint and totalling.
+    if provably_empty {
+        phases.chosen();
+        phases.finish();
+        return (0, Vec::new());
+    }
 
     // ── choose: cheapest applicable plan this acquire's dispatch arm can run ──
     let plan = choose(filter, &feats, prep.scope());
@@ -19017,6 +19054,13 @@ pub(crate) struct AcquireFacts {
     /// A permanent baseline for the general partition-search estimator's own future "tax" --
     /// see docs/issues/nway_project/local-engine-nway-compose-independence-search.md.
     pub(crate) and_estimate_ns: Option<u64>,
+    /// Did the acquire PROVE this query returns nothing, before any plan ran?
+    ///
+    /// Set by each acquire branch from what that branch itself can prove -- never reconstructed from
+    /// `matches` downstream, which is the mistake the whole channel arc exists to stop. `run_query_routed`
+    /// answers `(0, vec![])` on this without choosing or dispatching. Exposed so
+    /// `scripts/bench_empty_page_provable.py` can grade the flag directly instead of inferring it.
+    pub(crate) provably_empty: bool,
 }
 
 impl Prep {
@@ -19058,7 +19102,7 @@ fn explain(
     plane: Option<&PlaneExpr>,
 ) -> (AcquireFacts, Vec<PlanEstimate>) {
     let t0 = std::time::Instant::now();
-    let (feats, prep, _plane_bits, and_estimate_ns) = acquire_plan_features(ctx, params, filter, unsplit, plane);
+    let (feats, prep, _plane_bits, and_estimate_ns, provably_empty) = acquire_plan_features(ctx, params, filter, unsplit, plane);
     let acquire_ns = t0.elapsed().as_nanos() as u64;
     // Round 37a: the SAME "which filter is really the top-level one" precedence `compose_source`
     // already uses (a plane split some predicate off into `unsplit`'s side, so `unsplit` -- not the
@@ -19079,6 +19123,7 @@ fn explain(
         routed_dispatch_ns: Vec::new(),
         and_trace,
         and_estimate_ns,
+        provably_empty,
     };
     let mut estimates: Vec<PlanEstimate> = PhysicalPlan::ALL
         .into_iter()
@@ -20364,6 +20409,9 @@ fn acquire_facts_to_pydict<'py>(py: Python<'py>, f: &AcquireFacts) -> PyResult<B
         Some(ns) => d.set_item("and_estimate_ns", ns)?,
         None => d.set_item("and_estimate_ns", py.None())?,
     }
+    // Stage-0 pattern again: a signal recorded where the structure happens, exposed so the bench can
+    // grade the flag itself rather than re-deriving it from `matches`.
+    d.set_item("provably_empty", f.provably_empty)?;
     // The model's own inputs, so a calibration fit regresses on the same vector `plan_cost` reads.
     let g = &f.feats;
     for (k, v) in [

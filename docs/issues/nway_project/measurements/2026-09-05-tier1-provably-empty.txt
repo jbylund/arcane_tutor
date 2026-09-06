@@ -1,0 +1,35 @@
+TIER 1 -- a `provably_empty` signal per acquire branch, checked before dispatch.
+
+SHAPE. Each acquire branch sets the flag from what IT can prove, never reconstructed downstream:
+    plane                 the popcount IS the exact count and the residual is True
+    candidates            an empty MATERIALIZED candidate list -- a structural argument, not a
+                          counted one, and the only branch of the five that argues that way
+    printing_compose      est.result.<space>.proven() == Some(0), the proven channel only
+    the two bare ranges   k == 0 from the index partition points
+`run_query_routed` answers (0, vec![]) on the flag without choosing or dispatching.
+
+CORRECTNESS -- solid.
+    4,000 routed queries compared against forced-plan totals:      0 mismatches
+    8,000 queries, bench grading the SHIPPED flag:                 0 lies
+    coverage identical to the matches-based numbers (952, 51.3%), so flag and count agree exactly
+    310 debug / 307 release tests, clippy -D warnings clean, ruff clean
+
+LATENCY -- no win. Paired A/B, 363 identical provably-empty queries, 9 reps each, median per query:
+    before p50 20.88us      after p50 20.62us
+    delta   p10 -2.17us     p50 +0.17us     p90 +2.04us
+    total   8,685us -> 8,625us  (-0.7%)
+The distribution straddles zero. That is noise, not a win.
+
+WHY, and it should have been predicted: the ACQUIRE dominates at ~20us p50, and the execution being
+skipped was already nearly free -- the executors short-circuit on an empty candidate list anyway, so
+dispatch was 1-2us at most. "11.4% of queries answered with zero execution" was true about COVERAGE
+and misleading about SAVINGS: there was nothing expensive to skip.
+
+This also re-reads the number that motivated the item. The 9.3% of routing loss on empty-result
+queries is a time-weighted HIT RATE across plans whose absolute times are all microseconds. It ranked
+the defect; it never said the defect was worth much. The real time in item A is the other half -- the
+74 queries that pay a full compose build before refusing, 3.59% of all measured time -- and those are
+NOT provably empty, so this fastpath never covered them.
+
+KEPT anyway, deliberately and labelled: sound, no measurable regression, and the flag is wanted by
+the cost-model half. It does NOT earn its place on latency grounds and should not be cited as if it did.
