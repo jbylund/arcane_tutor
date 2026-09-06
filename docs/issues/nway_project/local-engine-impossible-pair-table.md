@@ -1,5 +1,7 @@
 # A complete categorical co-occurrence table, so absence proves emptiness
 
+**Filed as REFERENCE, not proposed work.** The mechanism is sound and nearly free; the query shape it answers is essentially absent from real traffic. Numbers at the bottom.
+
 `printing_compose` proves only 43 of 733 empty queries empty, and every one of the 690 misses has `and_mechanism = (none)` — no joint mechanism fired at all. The cause is structural: compose is the only acquire route that never looks at the intersection, so it can prove zero only through a mechanism that knows the joint, and none covers these pairs. See [local-engine-empty-page-priced-infinity.md](local-engine-empty-page-priced-infinity.md) and `measurements/2026-09-05-tier1-provably-empty.txt`.
 
 The existing pair tables cannot fill this in principle: they are **top-N**, so absence from them means "not in the top N", never "impossible". The misses are rare×rare conjunctions — estimate p50 **7** — which is exactly the population top-N excludes by construction.
@@ -9,6 +11,12 @@ The existing pair tables cannot fill this in principle: they are **top-N**, so a
 A **complete** co-occurrence bitmap per pair of low-cardinality categorical dimensions: one bit for `(value_a, value_b)` meaning "at least one printing has both". Bit clear ⟹ the conjunction is provably empty. Complete rather than top-N is the whole point — that is what makes absence a proof.
 
 Hook it into `leaves_are_disjoint`, which already returns `Some(0)` into `exact_result_total` and thence the `guaranteed` channel, so nothing downstream needs to change. It applies to any query with ≥2 positive categorical leaves, not only all-categorical ones: a sub-conjunction being empty proves the whole conjunction empty (Round 42's principle, the same one the pair tables already rest on).
+
+## The claim is about the CORPUS, not about Magic
+
+The bit means "no printing **in this corpus** has both values" — never "this pair is impossible in the game". That distinction is the whole soundness story. A statement about loaded data is exact for answering queries against that data, which is all the engine ever does; a statement about the rules is not, and reasoning from the rules is precisely what the Fallaji Wayfarer check caught being unsound (see the colour-contradiction entry in the queue). Like every other index it is derived data and must be rebuilt when the corpus changes.
+
+So the table is a whitelist of observed co-occurrences with every unrecorded pair defaulting to empty. That default is what makes it complete rather than top-N, and it is the only reason absence can be a proof.
 
 ## It is small enough to be dense, so no compression
 
@@ -24,7 +32,7 @@ Measured over 97,812 printings:
 | is | 23 |
 | border | 5 |
 
-| pair | full grid | observed | dense bitmap | impossible |
+| pair | full grid | observed | dense bitmap | unobserved |
 |---|---|---|---|---|
 | keyword × set | 532,827 | 11,172 | 65.0 KB | 97.9% |
 | keyword × t | 344,675 | 7,621 | 42.1 KB | 97.8% |
@@ -56,3 +64,15 @@ Two arguments could still justify it, and both are unmeasured:
 2. **The decline population** — the 74 queries that pay an entire compose build before refusing, **3.59% of all measured time**, which is where the real time in this area is. Whether the table reaches them is the question to answer FIRST; it is the only version of this with a plausible latency case.
 
 Build cost is also unmeasured: an O(printings × pairs) scan at load, or a new archive section with the format-version bump that implies.
+
+## Same-dimension pairs (`keyword × keyword`, `t × t`) — measured, and the shape is not there
+
+Raised 2026-09-05. Multi-valued dimensions can collide with themselves, and the cells are the strongest in the table: `keyword × keyword` is **99.1%** unobserved (2,826 co-occurring pairs of 328,455), `t × t` **97.5%**. All four set-valued triangles cost **51 KB**. Single-valued dimensions need nothing — `set:a set:b` is already `leaves_are_disjoint`.
+
+But the shape does not occur. In the uniform sampler: **0 of 8,000** queries have two positive leaves on one set-valued dimension, so that harness cannot evaluate this at all. In real crawled traffic, once disjunctions are excluded — `(t:island or t:mountain)` and `t:beast or t:bird` are the common form, and a co-occurrence table says nothing about an `Or` — it is **2 of 14,473 queries (0.01%)**, and both are non-empty (`(type:creature type:legendary) set:cmr`, `t:merfolk t:legend`), so the table would correctly not fire on either.
+
+## The scope check that governs the whole item
+
+The 24%-of-compose-misses figure above comes from the uniform sampler, which over-represents this shape by construction. Against the wild crawl corpus, conjunctive queries carrying **≥2 distinct categorical dimensions** are **17 of 14,473 (0.12%, 0.10% weighted)** — and that is before restricting to the empty ones. The most common pairs there are `is × set` (6) and `set × t` (5).
+
+One caveat against over-reading even that: the categorical set measured here deliberately excludes rarity, format/legality and colours, which are the filters real users actually combine, because each already has its own exact mechanism (`LegalityDateTotals`, the rarity arm, `ColorCmcTable`). A version of this restricted to dimensions with no existing mechanism is what the 0.12% describes.
