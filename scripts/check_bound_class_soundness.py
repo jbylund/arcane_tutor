@@ -90,6 +90,13 @@ BOUND_CLASS_MECHANISMS = frozenset(
         "SubtypeSubtypeExact",
         "arith_tuple_totals",
         "leaves_are_disjoint",
+        # Bound-class since 2026-09-05, and only in the `guaranteed` channel they now populate. These
+        # two also write an independence product to `estimate`; the two numbers are no longer pre-mixed
+        # into one `min` before folding (see `Candidate::BoundedEstimate`). What this script checks for
+        # them is the `rest_max` bound alone -- the max over every pair excluded from `top`, which
+        # bounds any one of them -- and that is exactly the claim worth testing.
+        "SubtypePairEstimate",
+        "SubtypeSubtypeEstimate",
     }
 )
 # ESTIMATE: a guess that can land on either side of the truth. Listed so an unrecognized mechanism is
@@ -100,8 +107,6 @@ ESTIMATE_CLASS_MECHANISMS = frozenset(
         "Independence",
         "SetCollectorRange",
         "SubtypeArithAnchoredIndependence",
-        "SubtypePairEstimate",
-        "SubtypeSubtypeEstimate",
     }
 )
 

@@ -8221,6 +8221,29 @@ fn clamp_estimate_to_guaranteed_lowers_only_a_guess_above_its_own_bound() {
     assert_eq!(clamped(Some(0), Some(18_721)), (Some(0), Some(0)), "a proven zero clamps the guess to zero");
 }
 
+/// Stage 4: the other half of the invariant. A guess of zero asserts the answer is EMPTY, which only
+/// the proven channel may do. An independence product rounding below 0.5 emits 0 as an artifact, and
+/// zero is absorbing -- it collapses `calibrated_balls_into_bins` into card and artwork space, and it
+/// prices every plan as free. Measured: 1,347 of 32,745 `And` roots guessed zero under a nonzero
+/// bound, and 81 of those queries really had results.
+#[test]
+fn raise_unproven_zero_estimate_touches_only_a_guess_that_claims_emptiness() {
+    let raised = |guaranteed, estimate| {
+        let mut m = super::SpaceMeasure { guaranteed, estimate };
+        m.raise_unproven_zero_estimate();
+        (m.guaranteed, m.estimate)
+    };
+    // `c:bu t:whale`: 35 printings proven, the independence product guessed 0, the truth was 2.
+    assert_eq!(raised(Some(35), Some(0)), (Some(35), Some(1)), "a zero guess under a nonzero bound is not a prediction of emptiness");
+    // The case that must NOT move, and the whole reason the two halves are separate methods: a
+    // PROVEN zero keeps `matches == 0` meaning "proved empty" rather than "guessed empty".
+    assert_eq!(raised(Some(0), Some(0)), (Some(0), Some(0)), "a proven zero stays zero -- this is the empty-page fastpath's signal");
+    // Nothing else is the floor's business.
+    assert_eq!(raised(Some(35), Some(12)), (Some(35), Some(12)), "a nonzero guess is untouched");
+    assert_eq!(raised(None, Some(0)), (None, Some(0)), "no bound proved: nothing licenses raising the guess either");
+    assert_eq!(raised(Some(35), None), (Some(35), None), "an absent guess must not be manufactured");
+}
+
 // #746: `set:`/`watermark:` postings leaves join the PrintingCompose leaf table. This is the
 // differential test the design doc calls for: for every filter shape (both `set:` polarities,
 // `watermark:` positive, and mixes with a year range) the exact `compose_printing_bits` bitmap must
@@ -16991,6 +17014,11 @@ enum TraceClass {
     /// `Candidate::Estimate`: a guess -- `printing.estimate` only (plus, for `"Independence"` alone,
     /// the card/artwork estimate channels it also computes; see `Candidate::Estimate`'s own doc).
     Estimate,
+    /// `Candidate::BoundedEstimate`: a real `rest_max` bound AND an independence product, kept in
+    /// their own channels rather than pre-mixed into one `min`. BOTH channels of printing carry a
+    /// number, and they are NOT required to be equal -- which is exactly what distinguishes this from
+    /// `PrintingBound`, where one real count fills both.
+    BoundedEstimate,
 }
 
 /// Panics on an unrecognized mechanism rather than defaulting: an unclassified mechanism is exactly
@@ -17000,8 +17028,10 @@ fn trace_class_of(mechanism: &str) -> TraceClass {
         "ArithIdProbe" | "ColorCmcTable" | "PairRangeSum" | "PairTotals" | "PlanePopcount" | "SubtypeArithBox"
         | "SubtypePairIndexes" | "SubtypeSubtypeExact" | "arith_tuple_totals" | "leaves_are_disjoint" => TraceClass::Exact,
         "LegalityDateTotals" | "PriceJointTable" => TraceClass::PrintingBound,
-        "ColorCmcAnchoredIndependence" | "Independence" | "SetCollectorRange" | "SubtypeArithAnchoredIndependence"
-        | "SubtypePairEstimate" | "SubtypeSubtypeEstimate" => TraceClass::Estimate,
+        "ColorCmcAnchoredIndependence" | "Independence" | "SetCollectorRange" | "SubtypeArithAnchoredIndependence" => {
+            TraceClass::Estimate
+        }
+        "SubtypePairEstimate" | "SubtypeSubtypeEstimate" => TraceClass::BoundedEstimate,
         other => panic!("unclassified trace mechanism {other:?} -- add it to trace_class_of AND to check_bound_class_soundness.py"),
     }
 }
@@ -17030,6 +17060,16 @@ fn assert_and_trace_channel_fidelity(t: &AndTrace) {
                 assert_eq!(s.printing.guaranteed, s.printing.estimate, "{m}: a real count is simultaneously the bound and the guess");
                 let other = (s.card.guaranteed, s.card.estimate, s.artwork.guaranteed, s.artwork.estimate);
                 assert_eq!(other, (None, None, None, None), "{m}: a PrintingBound claims nothing in card/artwork space");
+            }
+            TraceClass::BoundedEstimate => {
+                // The bound and the guess are separate numbers in separate channels. The `min` the
+                // old shape applied here is now `routing_cardinality()`'s job, so the two are NOT
+                // required to be equal -- and asserting only that both are present would not catch a
+                // swap, hence the ordering check below.
+                assert!(s.printing.guaranteed.is_some(), "{m}: the rest_max bound belongs in the guaranteed channel");
+                assert!(s.printing.estimate.is_some(), "{m}: the independence product belongs in the estimate channel");
+                let other = (s.card.guaranteed, s.card.estimate, s.artwork.guaranteed, s.artwork.estimate);
+                assert_eq!(other, (None, None, None, None), "{m}: printing space only -- it claims nothing in card/artwork");
             }
             TraceClass::Estimate => {
                 assert_eq!(s.printing.guaranteed, None, "{m}: a guess must never appear in the guaranteed channel");

@@ -9510,6 +9510,33 @@ impl SpaceMeasure {
         }
     }
 
+    /// The other half of the same invariant: a guess of ZERO is a claim that the answer is EMPTY,
+    /// and only the proven channel is allowed to make that claim.
+    ///
+    /// Stage 4. An independence product rounding below 0.5 emits 0, which is not a prediction of
+    /// emptiness but an artifact of `.round()`. Zero is absorbing in a way no other guess is: it
+    /// collapses every downstream derivation (`calibrated_balls_into_bins(0, ..)` is 0, so card and
+    /// artwork inherit it through `est_cards_before_and_arm`) and it prices every plan as if there
+    /// were no work to do, so the plan wins the argmin and then does the work anyway. Measured over
+    /// 32,745 `And` roots: 1,347 carried a zero guess under a NONZERO proven bound, and on 81 of them
+    /// the query really had results -- up to 30 of them, priced at zero.
+    ///
+    /// Raising to 1 rather than to anything cleverer, because the honest claim is only "not provably
+    /// empty". On the 1,266 of those roots that ARE empty this trades a lucky-correct 0 for a 1,
+    /// which is a rounding difference in the cost model; against that it stops the estimator
+    /// asserting emptiness it cannot prove. Together with `clamp_estimate_to_guaranteed` the
+    /// invariant is `1 <= estimate <= guaranteed` whenever a nonzero bound exists.
+    ///
+    /// A PROVEN zero is untouched -- `guaranteed == Some(0)` leaves the guess at 0, which is what
+    /// keeps `matches == 0` meaning "proved empty" instead of "guessed empty".
+    fn raise_unproven_zero_estimate(&mut self) {
+        if let (Some(g), Some(0)) = (self.guaranteed, self.estimate)
+            && g > 0
+        {
+            self.estimate = Some(1);
+        }
+    }
+
     /// Fold in a mechanism that guessed. Cannot touch `guaranteed` -- the whole point of the split.
     fn lower_estimate(&mut self, v: usize) {
         self.estimate = Some(self.estimate.map_or(v, |e| e.min(v)));
@@ -9626,11 +9653,13 @@ impl SpaceEstimate {
     /// sum-then-clamp already worked. Unlike `min`, a card/artwork total here needs BOTH sides known --
     /// `Some(0) + None` must not silently drop the unknown side's real contribution and under-report
     /// the union.
-    /// `SpaceMeasure::clamp_estimate_to_guaranteed` in all three spaces.
+    /// Both halves of the estimate invariant, in all three spaces: `1 <= estimate <= guaranteed`
+    /// wherever a nonzero bound exists, and a proven zero left exactly as it is.
     fn clamp_estimates_to_guaranteed(&mut self) {
-        self.printing.clamp_estimate_to_guaranteed();
-        self.card.clamp_estimate_to_guaranteed();
-        self.artwork.clamp_estimate_to_guaranteed();
+        for m in [&mut self.printing, &mut self.card, &mut self.artwork] {
+            m.clamp_estimate_to_guaranteed();
+            m.raise_unproven_zero_estimate();
+        }
     }
 
     fn add(self, other: Self) -> Self {
@@ -10202,6 +10231,27 @@ enum Candidate {
     PrintingBound {
         printing: usize,
     },
+    /// A proven printing-space bound AND a separate guess, kept apart instead of pre-mixed.
+    ///
+    /// The two `rest_max` mechanisms (`SubtypePairEstimate`, `SubtypeSubtypeEstimate`) each hold a
+    /// real bound and an independence product, and used to fold `indep.min(rest_max)` as a single
+    /// ESTIMATE. That is correct as a number -- `min(a bound, a guess)` is not a bound, so it could
+    /// not be folded as one -- but it throws the bound away, and both sites' own comments named
+    /// recording it separately as a deferred follow-up.
+    ///
+    /// Keeping them apart is inert on every ACCURACY read, which is why it can be done as a routing
+    /// change rather than an estimator one: `min(g_old, min(indep, rest))` and
+    /// `min(min(g_old, rest), indep)` are the same value. What it changes is `proven()`, which gets
+    /// tighter -- and in the limiting case `rest_max == 0` it recovers a PROVEN emptiness the old
+    /// shape stored as a mere guess, which is what `raise_unproven_zero_estimate` would otherwise
+    /// (correctly, on the information available to it) have destroyed.
+    BoundedEstimate {
+        /// A real count of a real set: the max over every pair excluded from `top`, which bounds any
+        /// one of them. Admissible under this type's rule; see `top_n_union_and_rest_max`.
+        printing_bound: usize,
+        /// The independence product. A guess, and never allowed near the proven channel.
+        printing: usize,
+    },
 }
 
 impl Candidate {
@@ -10236,6 +10286,13 @@ impl Candidate {
             Candidate::PrintingBound { printing } => {
                 SpaceEstimate { printing: SpaceMeasure::known(printing), card: SpaceMeasure::UNKNOWN, artwork: SpaceMeasure::UNKNOWN }
             }
+            // The whole point of the variant: each number goes to the channel that can carry it, and
+            // the `min` that used to be applied here is left to `routing_cardinality()`.
+            Candidate::BoundedEstimate { printing_bound, printing } => SpaceEstimate {
+                printing: SpaceMeasure { guaranteed: Some(printing_bound), estimate: Some(printing) },
+                card: SpaceMeasure::UNKNOWN,
+                artwork: SpaceMeasure::UNKNOWN,
+            },
         }
     }
 }
@@ -10317,6 +10374,13 @@ fn fold_candidate(
         // (no same-set triple), which is why this cannot just be `Exact` with two invented numbers.
         Candidate::PrintingBound { printing } => {
             result.printing.lower_guaranteed(printing);
+            result.printing.lower_estimate(printing);
+        }
+        // Channel by channel, and deliberately NOT `lower_estimate(printing_bound)` as well: the
+        // bound reaches the estimate channel only through `clamp_estimate_to_guaranteed`, which is
+        // the one place that clamp lives.
+        Candidate::BoundedEstimate { printing_bound, printing } => {
+            result.printing.lower_guaranteed(printing_bound);
             result.printing.lower_estimate(printing);
         }
     }
@@ -11871,16 +11935,17 @@ fn compose_printing_estimate(
                 // card scalar times a global ratio. It is a genuine upper bound here -- this arm only
                 // fires when no exact subtype-pair hit covered these leaves, which means the pair was
                 // excluded from `top`, and a pair absent from the build's map entirely has count 0. The
-                // fold below still reports ESTIMATE class, because `min(indep, rest_max)` can land
-                // below truth whenever `indep` does; recording the bound in its own channel is a
-                // separate follow-up, deliberately not bundled here.
+                // fold below now records BOTH: `rest_max` into `guaranteed` (it is a real bound on
+                // its own), `indep` into `estimate`. The old shape folded `min(indep, rest_max)` as a
+                // single ESTIMATE -- correct as a number, since that min can land below truth
+                // whenever `indep` does, but it discarded the bound. This is the follow-up that
+                // comment used to defer. See `Candidate::BoundedEstimate`.
                 let rest_max_printing = match dim {
                     SubtypePairDim::Set(_) => indexes.subtype_pairs.set.rest_max.get(Mode::Printing),
                     SubtypePairDim::Colors(_) => indexes.subtype_pairs.colors.rest_max.get(Mode::Printing),
                     SubtypePairDim::Identity(_) => indexes.subtype_pairs.identity.rest_max.get(Mode::Printing),
                 };
-                let printing_est = indep.min(rest_max_printing);
-                let candidate = Candidate::Estimate { printing: printing_est, card: None, artwork: None };
+                let candidate = Candidate::BoundedEstimate { printing_bound: rest_max_printing, printing: indep };
                 fold_candidate(
                     &mut result,
                     &mut exact_domain_cards,
@@ -11889,9 +11954,9 @@ fn compose_printing_estimate(
                     "SubtypePairEstimate",
                     candidate,
                 );
-                // Round 40: ESTIMATE-class (a capped independence product, not a bound -- this
-                // mechanism's own doc above), marked defensively so the registry scan below never stacks
-                // a second inexact estimate on the same two leaves.
+                // Round 40: still marked defensively so the registry scan below never stacks a second
+                // inexact estimate on the same two leaves. The `estimate` channel this writes remains
+                // a capped independence product; only the separately-recorded `rest_max` is a bound.
                 let pair: [&FilterExpr; 2] = [&v[di], &v[si]];
                 mark_covered(v, &pair, &mut covered);
                 if let Some(t) = and_trace.as_mut() {
@@ -12249,8 +12314,7 @@ fn compose_printing_estimate(
                 let solo_b = indexes.value_totals.subtypes.get(b).map_or(0, |t| t.get(Mode::Printing));
                 let indep = solo_a.checked_mul(solo_b).and_then(|p| p.checked_div(n_printings)).unwrap_or(0);
                 let rest_max_printing = indexes.subtype_subtype.rest_max.get(Mode::Printing);
-                let printing_est = indep.min(rest_max_printing);
-                let candidate = Candidate::Estimate { printing: printing_est, card: None, artwork: None };
+                let candidate = Candidate::BoundedEstimate { printing_bound: rest_max_printing, printing: indep };
                 fold_candidate(
                     &mut result,
                     &mut exact_domain_cards,
@@ -12259,8 +12323,8 @@ fn compose_printing_estimate(
                     "SubtypeSubtypeEstimate",
                     candidate,
                 );
-                // ESTIMATE-class (a capped independence product, not a bound -- this mechanism's own
-                // doc above), marked defensively so the independence registry scan below never stacks
+                // The `estimate` channel is still a capped independence product, not a bound (this
+                // mechanism's own doc above); marked defensively so the independence registry scan below never stacks
                 // a second inexact estimate on the same two leaves (Round 40's own convention).
                 let pair: [&FilterExpr; 2] = [&v[pi], &v[pj]];
                 mark_covered(v, &pair, &mut covered);
@@ -12847,6 +12911,12 @@ fn compose_printing_estimate(
                         _ => true,
                     }),
                 "the And arm must not emit an estimate above its own proven bound"
+            );
+            debug_assert!(
+                [result_space.printing, result_space.card, result_space.artwork]
+                    .iter()
+                    .all(|m| !matches!((m.guaranteed, m.estimate), (Some(g), Some(0)) if g > 0)),
+                "the And arm must not GUESS empty under a nonzero proven bound -- only a proven zero may claim emptiness"
             );
             if let Some(t) = and_trace.as_mut() {
                 t.pre_clamp = Some(pre_clamp);
