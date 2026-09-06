@@ -33,7 +33,7 @@ WRITES INTO THE PROVEN CHANNEL, traced to source -- all sound except the above:
     11139/11142  pair.card / pair.artwork  PairTotals, real counts
     12807/12810  narrow_floor              THE DEFECT ABOVE
 
-NOT FIXED HERE, deliberately: narrow_floor is queue item #2, its own behaviour change with its
+NOT FIXED HERE, deliberately: narrow_floor is queue item #8, its own behaviour change with its
 own verification, and bundling it into a rename would make both unattributable. Note also that
 simply reading proven() there is NOT the fix -- it would drop every estimate-only child from the
 floor and widen the domain, which is a routing change rather than a no-op. Marked in-code at the

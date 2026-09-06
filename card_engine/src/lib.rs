@@ -12802,7 +12802,7 @@ fn compose_printing_estimate(
             // the Round 55 bug class, and the exact thing `min(a bound, a guess) is NOT a bound`
             // warns about in `SpaceMeasure`'s admission rule.
             //
-            // Left as-is deliberately. It is queue item #2, its own behaviour change with its own
+            // Left as-is deliberately. It is queue item #8, its own behaviour change with its own
             // verification, and bundling it into a rename would make both unattributable. It is not
             // currently biting the card channel at roots (Round 62 measured 0 of 27,459), so it is
             // latent by numeric coincidence rather than by any barrier. Reading `proven()` here is
