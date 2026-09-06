@@ -1,0 +1,37 @@
+Two pre-implementation checks on a proposed cheap contradiction prover for `c:X AND id:Y`.
+Proposed test: colors are always within identity, so `c:X` and `id:Y` force X subset-of Y;
+if `X & !Y != 0` the conjunction is empty. One u8 mask op, no plane operation.
+
+MOTIVATION (why it looked worth doing): proving a zero costs 4.3x more than proving an
+ordinary bound today -- and more than the plan execution it precedes.
+  compose_printing_estimate, proven ZERO     n=1,130   p50=7.83 us  p90=10.21 us
+  compose_printing_estimate, nonzero bound   n=29,740  p50=1.83 us  p90=10.54 us
+
+CHECK 1 -- does `colors subset-of color_identity` hold?  NO.
+  97,812 printings checked; 2 violate, both printings of one card:
+    Fallaji Wayfarer (dmc 87, dmc 11): colors {W,U,B,R,G}, identity {G}
+  Not a data bug. Its own oracle text: "Fallaji Wayfarer is all colors. This ability doesn't
+  affect its color identity." The invariant has a designed exception.
+
+  Confirmed against the live engine -- each returns exactly that card:
+    c:w id:g   total=1        <- mask test would say 0
+    c:u id:g   total=1        <- mask test would say 0
+    c:r id:g   total=1        <- mask test would say 0
+    c:g id:g   total=4,495
+    id:b c:g   total=0        (correctly 0: identity {G} is not a subset of {B})
+
+CHECK 2 -- where would the test fire, and would it ever be wrong?  1,425 survey rows:
+    already proves 0            truth 0          1,092    pure speedup
+    guaranteed>0, NEW zero      truth 0             93    genuine improvement
+    guaranteed>0, NEW zero      truth NONZERO      240    WRONG ANSWER (17% of firings)
+  All 240 are `id:g` paired with a non-green colour, i.e. all Fallaji Wayfarer. The current
+  estimator answers these CORRECTLY (guaranteed=2), so the naive test is a regression from a
+  right answer, not a missed opportunity.
+
+VERDICT. Do not ship the test as designed. Salvage: derive the exception set at LOAD time by
+scanning for `colors & !identity != 0` (no archive change, no format bump), and gate the test
+on it -- an exception can only match `id:Y` if its identity is a subset of Y, so precomputing
+the exception identity masks makes the gate one extra mask op (here: sound whenever G is not
+in Y). With that obligation priced in, stage 1 (the clamp) is the better next round: the
+prover's win is catalog-weighted with no traffic evidence, while stage 1 is unconditionally
+safe and verified the same way stage 0 was.

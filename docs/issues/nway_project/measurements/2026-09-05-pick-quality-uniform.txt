@@ -1,0 +1,55 @@
+Engine loaded: 97,812 printings in 2.7s
+
+5,385 queries with >= 2 plans timed, mode=uniform
+
+  picked the fastest plan              93.6%  (5,040 of 5,385)
+  picked within 1.09x of fastest        94.8%  <-- a miss inside the noise floor costs nothing
+  time-weighted hit rate               88.5%
+  total time lost to mis-picks          3.5%  (6.4 ms of 185.2 ms)
+
+  MISS MARGIN (picked / best), 345 missed queries -- how bad is a miss?
+    p10 1.041   p50 1.459   p90 4.009   p99 19.833   max 31.83
+
+  HEADROOM (second-best / best) -- how much was on the table at all?
+    on MISSED queries   p50 1.409   p90 3.748
+    on HIT queries      p50 3.532   p90 16.031
+    Misses concentrated at LOW headroom means the router loses ties, which is nearly free.
+
+  CONCENTRATION: the worst 1% of misses carry 12.6% of all lost time
+
+by acquire route
+  slice                                   n    hit%  tie-ok%  time-wtd hit%   lost%
+  printing_compose                    3,753   92.4%    93.7%          87.7%   94.3%
+  candidates                          1,058   94.8%    95.8%          91.0%    5.7%
+  plane                                 362   99.2%    99.7%          98.4%    0.0%
+  card_range_popcount                   114  100.0%   100.0%         100.0%    0.0%
+  printing_range_scan                    98  100.0%   100.0%         100.0%    0.0%
+
+by picked plan
+  slice                                   n    hit%  tie-ok%  time-wtd hit%   lost%
+  GatheredScan                        2,712   93.5%    94.7%          84.8%   35.8%
+  PrintingCompose                     1,187   95.3%    96.5%          91.4%   30.7%
+  StreamedSelect                        952   88.3%    90.2%          83.0%   33.5%
+  PlanePopcountOrder                    357   99.2%    99.7%          98.4%    0.0%
+  CardRangePopcount                     114  100.0%   100.0%         100.0%    0.0%
+  PrintingRangeScan                      63  100.0%   100.0%         100.0%    0.0%
+
+by distinct-on
+  slice                                   n    hit%  tie-ok%  time-wtd hit%   lost%
+  artwork                             1,820   94.3%    95.6%          91.7%   26.2%
+  printing                            1,804   94.5%    95.1%          91.0%   21.5%
+  card                                1,761   92.0%    93.6%          83.0%   52.3%
+
+by PAGE CLASS -- compose exits fast, model prices it INFINITY
+  slice                                   n    hit%  tie-ok%  time-wtd hit%   lost%
+  normal                              4,450   95.7%    96.4%          89.5%   79.5%
+  empty result                          639   91.5%    92.2%          69.0%    8.7%
+  offset past end                       296   66.6%    75.7%          33.3%   11.8%
+
+MISSES ONLY, by transition
+  slice                                   n    hit%  tie-ok%  time-wtd hit%   lost%
+  GatheredScan -> PrintingCompose       113    0.0%     5.3%           0.0%   32.2%
+  StreamedSelect -> GatheredScan         89    0.0%    11.2%           0.0%   19.8%
+  GatheredScan -> StreamedSelect         62    0.0%    38.7%           0.0%    3.6%
+  PrintingCompose -> GatheredScan        29    0.0%    24.1%           0.0%   11.6%
+  PrintingCompose -> StreamedSelect      27    0.0%    25.9%           0.0%   19.2%

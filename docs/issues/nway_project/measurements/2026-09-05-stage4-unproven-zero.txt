@@ -1,0 +1,66 @@
+STAGE 4 -- an estimate of 0 claims EMPTINESS, and only the proven channel may claim it.
+
+THE BUG. `c:bu t:whale` reported matches=0 in all three unique= modes while card_guaranteed was 17
+and the true totals were 1/2/1. Not a cross-space inference, as first framed: est_cards_before_and_arm
+is calibrated_balls_into_bins(printing_matches, n_cards), so card is DERIVED from printing, and the
+And arm's card bound is applied only as a .min() clamp -- which can lower but never raise. A printing
+estimate of 0 therefore collapses card and artwork too, and a correct card bound of 17 is powerless.
+
+THE SOURCE. An independence product rounding below 0.5 emits 0. Over 32,745 And roots:
+    estimate 0 AND guaranteed 0     2,418   proven empty -- must stay 0
+    estimate 0 BUT guaranteed > 0   1,347   guessed empty
+      of those, truly empty         1,266   right by luck
+      of those, NOT empty              81   predicted_matches 0 for up to 30 real results
+
+THE FIX, two parts.
+  1. raise_unproven_zero_estimate: raise a 0 guess to 1 when a nonzero bound exists. Mirror of
+     stage 1's clamp; together `1 <= estimate <= guaranteed`. A PROVEN zero is untouched, which is
+     what keeps matches == 0 meaning "proved empty".
+  2. Candidate::BoundedEstimate. Part 1 alone broke two tests, correctly: the rest_max mechanisms
+     folded `indep.min(rest_max)` as a single ESTIMATE, so a rest_max of 0 was a PROVEN emptiness
+     stored as a mere guess, which part 1 would have destroyed. Both sites' own comments had already
+     named recording the bound separately as a deferred follow-up. Now rest_max goes to guaranteed,
+     indep to estimate, and routing_cardinality() takes the min. Inert on every accuracy read by
+     construction: min(g_old, min(indep, rest)) == min(min(g_old, rest), indep).
+
+VERIFICATION.
+  collapse fixed        c:bu t:whale card mode: matches 0 -> 1 against a true 1 (printing 1 vs 2,
+                        artwork 1 vs 1). set:drb pow>6: 0 -> 1 against a true 3.
+  proven zeros kept     id:b c:g and c:uw id:r still read matches=0 against a true 0.
+  bound-class soundness OK: 7,716 bound-class candidates, none below truth -- and that check now
+                        COVERS SubtypePairEstimate (515 candidates) and SubtypeSubtypeEstimate (89),
+                        which were estimate-class before and so were not covered by it at all.
+  survey, 66,378 rows   predicted_matches moved on exactly the predicted 1,347 rows; ratio and
+                        abs_log_ratio moved on exactly the 81 that were fixes.
+  plan flips            266, of which 249 on genuinely empty queries, almost all
+                        PrintingCompose -> GatheredScan. Spot-measured, the flips are IMPROVEMENTS:
+                        t:bard set:eld -0.5 us, t:phoenix set:pznr -0.8 us, t:bard set:eld/printing
+                        -0.2 us. (An earlier worry that these were the 42.5 us compose-EmptyPage case
+                        was wrong -- that figure came from a much broader query at offset 100.)
+  wall clock            bench_pick_quality, 4,000 queries: time-weighted hit rate 90.7% -> 90.3%,
+                        misses 182 -> 184. Flat; 0.4pp is not resolvable across two runs.
+  tests                 310 debug / 307 release, clippy -D warnings clean, ruff clean.
+
+HONEST LIMIT: the 1,266 truly-empty roots trade a lucky-correct 0 for a 1. That is a rounding
+difference in the cost model and the pick-quality number above is where it would have shown up.
+
+THE POINT OF THE ROUND, restated after the fact. Stage 4 is not a latency change and the flat
+pick-quality number is the CORRECT result, not a weak one -- the flipped queries run in 1-2 us,
+which is close enough to the timer's own resolution that no useful latency signal exists there
+either way. What the round buys is that `matches == 0` now means exactly one thing.
+
+That is directly testable, because it is the signal the empty-page Tier 1 gate reads.
+scripts/bench_empty_page_provable.py, 8,000 queries, before -> after:
+
+    lies (acquire says 0, executor returns rows)      4  ->  0
+
+  coverage of the 1,857 genuinely empty queries:
+    candidates          899  ->  899   (unchanged: always a real count of a materialized list)
+    plane                 9  ->    9   (unchanged: always a popcount)
+    printing_compose     78  ->   43   (10.0% -> 5.5%)
+    ALL                 987  ->  952   (53.2% -> 51.3%)
+
+Compose lost 35 detections, and losing them is the improvement: they were GUESSED zeros that
+happened to be right. Tier 1's usable population is unchanged at 908 of 8,000 (11.4%), because it
+was already resting entirely on candidates+plane -- but it now rests on 908 proofs rather than on
+908 proofs plus some luck.

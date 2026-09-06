@@ -1,0 +1,15 @@
+Channel population and invariant violations, per space, over every node of every And trace
+in the 300-per-shape estimate survey (32,745 traced queries).
+
+  space       both present  estimate>guar    share |  guar only   est only    absent
+  card              57,282              0    0.00% |     33,222      2,712    54,519
+  printing         122,124          6,888    5.64% |      8,007     17,604         0
+  artwork           57,264              0    0.00% |     33,225      2,712    54,534
+
+Worst example seen: `pow>=2 pow<=2`, printing space, kind=op mechanism=None
+  guaranteed = 13,388   estimate = 24,351   -- a guess 82% above a PROVEN ceiling.
+
+Reading: `estimate <= guaranteed` already holds in card and artwork space with zero
+violations. best() therefore does two separable jobs -- clamping the guess to the ceiling
+(the 5.64% printing case) and falling back when a channel is absent (the guar-only /
+est-only columns). Retiring both leaves best() identically equal to .estimate.
